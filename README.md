@@ -6,14 +6,14 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 
 - **Full Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders, automatic asset metadata resolution
 - **Lua strategies** — sandboxed environment, automatic hot-reload (5s), comprehensive `bot.*` API, multi-coin per file (COIN injection)
-- **Active strategies** — BB Scalping on 6 coins (ETH, BTC, SOL, DOGE, HYPE, PUMP) — single `scalp.lua` file, coins configured in JSON, Bollinger Bands mean reversion
+- **Active strategies** — BB Scalping 15m on 6 coins (ETH, BTC, SOL, DOGE, HYPE, PUMP) — single `bb_scalp_15m.lua` file, coins configured in JSON, Bollinger Bands mean reversion
 - **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit, leverage and position size control
-- **Market data** — crypto prices via Hyperliquid, macro (Gold, S&P500, DXY), Fear & Greed Index, crypto news sentiment
+- **Market data** — crypto prices via Hyperliquid WebSocket, macro (Gold, Silver, indices, mega-caps, forex), Fear & Greed Index, crypto news sentiment
 - **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP + derived signals
 - **AI advisory** — Claude Haiku called on startup + twice daily (8h/20h UTC) to analyze positions and suggest adjustments
 - **Backtesting** — synthetic + real data (Hyperliquid REST), walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Paper trading** — real market data, locally simulated order execution
-- **Desktop GUI** — Electron + React app with start/stop, strategy selection, live logs (xterm.js), interactive backtesting with TradingView charts, market overview panel, and settings page
+- **Desktop GUI** — Electron + React app with dashboard, market overview (TOTAL1/2/3, stocks, forex, commodities), strategy selection, live logs (xterm.js), interactive backtesting with TradingView charts, settings page, trade notifications
 - **Terminal dashboard** — real-time display with ANSI colors
 - **Reports** — daily and weekly with win rate, profit factor, drawdown, per-strategy statistics
 - **SQLite database** — trade history, P&L, advisory logs
@@ -60,7 +60,7 @@ src/
     └── backtest_engine.c       Simulation on historical candles + metrics
 
 strategies/                     Lua strategies
-├── scalp.lua                   BB Scalping generic (COIN injected by engine, BB 20/2, SL=1.5%, TP=3.0%, $40/trade)
+├── bb_scalp_15m.lua                   BB Scalping generic (COIN injected by engine, BB 20/2, SL=1.5%, TP=3.0%, $40/trade)
 └── strategy_template.lua       Template with all documented callbacks
 
 scripts/                        Deployment scripts
@@ -82,13 +82,37 @@ tests/                          Unit tests & benchmarks
 
 gui/                            Electron + React desktop app
 ├── electron/
-│   ├── main.js                 Main process, BrowserWindow
+│   ├── main.js                 Main process, BrowserWindow, IPC registration
 │   ├── preload.js              contextBridge (IPC security)
-│   └── ipc/                    IPC handlers (bot, config, strategies, backtest, db, logs, market, sync, ws)
+│   └── ipc/
+│       ├── bot.js              Bot process spawn/stop
+│       ├── config.js           Config read/write (bot_config.json)
+│       ├── strategies.js       Strategy file listing
+│       ├── backtest.js         Backtest runner (spawns backtest_json)
+│       ├── db.js               SQLite read (positions, trades, P&L, unrealized PnL)
+│       ├── logs.js             Log file watching (chokidar)
+│       ├── market.js           Market data (CoinGecko, FMP, F&G, Frankfurter, dual cache)
+│       ├── sync.js             Market data cache sync
+│       └── ws.js               Hyperliquid WebSocket (allMids, userEvents)
 └── src/
-    ├── pages/                  Dashboard, Strategies, Backtest, Settings
-    ├── components/             UI components (charts, tables, forms, log viewer, market panel)
-    └── hooks/                  React hooks (bot status, live data, market data, backtest)
+    ├── App.jsx                 Root: hoisted hooks (market data, bot status, trade notifications)
+    ├── pages/
+    │   ├── Dashboard.jsx       Bot controls, account P&L, positions, trades, log viewer
+    │   ├── Market.jsx          Market overview (crypto, indices, stocks, commodities, forex)
+    │   ├── Strategies.jsx      Strategy browser, code viewer
+    │   ├── Backtest.jsx        Backtest runner, charts, trade log
+    │   └── Settings.jsx        Coins management, risk params, paper mode toggle
+    ├── components/
+    │   ├── MarketPanel.jsx     5-section market display (crypto+live, indices, stocks, commodities, forex)
+    │   ├── AccountPanel.jsx    Account value, realized + unrealized P&L, positions count
+    │   ├── Sidebar.jsx         Navigation (5 pages)
+    │   ├── TradeNotifications.jsx  Buy/sell toast notifications
+    │   └── SyncPanel.jsx       Market data cache management
+    └── hooks/
+        ├── useBotStatus.js     Bot running state polling
+        ├── useMarketData.js    Market data polling (120s, hoisted in App)
+        ├── usePrices.js        WebSocket live crypto prices
+        └── useTradeNotifications.js  Fill event listener (ws:user)
 ```
 
 ## Dependencies
@@ -187,7 +211,7 @@ TB_WALLET_ADDRESS=0x...     # Main wallet address (0x + 40 hex)
 
 # Optional
 TB_CLAUDE_API_KEY=sk-...    # Claude API key (for AI advisory)
-TB_MACRO_API_KEY=...        # FinancialModelingPrep (S&P500, DXY)
+TB_MACRO_API_KEY=...        # FinancialModelingPrep (indices, stocks, commodities)
 ```
 
 **Note:** `TB_PRIVATE_KEY` refers to the **API Wallet** key generated on Hyperliquid (Settings > API), not the main wallet private key.
@@ -226,7 +250,7 @@ The `.env` file is excluded from version control via `.gitignore` and restricted
         "dir": "./strategies",
         "reload_interval_sec": 5,
         "active": [
-            { "file": "scalp.lua", "coins": ["ETH","BTC","SOL","DOGE","HYPE","PUMP"], "role": "primary" }
+            { "file": "bb_scalp_15m.lua", "coins": ["ETH","BTC","SOL","DOGE","HYPE","PUMP"], "role": "primary" }
         ]
     },
     "ai_advisory": {
@@ -242,7 +266,8 @@ The `.env` file is excluded from version control via `.gitignore` and restricted
         "level": 0
     },
     "mode": {
-        "paper_trading": false
+        "paper_trading": false,
+        "paper_initial_balance": 100
     }
 }
 ```
@@ -272,7 +297,7 @@ The terminal dashboard displays automatically with positions, orders, P&L, macro
 A single `.lua` file can run on multiple coins simultaneously. The engine creates one isolated Lua instance per coin, injecting a `COIN` global before loading the file:
 
 ```json
-{ "file": "scalp.lua", "coins": ["ETH","BTC","SOL","DOGE","HYPE"], "role": "primary" }
+{ "file": "bb_scalp_15m.lua", "coins": ["ETH","BTC","SOL","DOGE","HYPE"], "role": "primary" }
 ```
 
 In the Lua strategy, use `COIN` to initialize:
@@ -283,7 +308,7 @@ local config = {
 }
 ```
 
-Each instance gets its own name (`scalp_eth`, `scalp_btc`, ...), its own state, and its own `bot.save_state`/`bot.load_state` namespace. To add or remove a coin, just edit the `coins` array in `bot_config.json` — no code changes needed.
+Each instance gets its own name (`bb_scalp_15m_eth`, `bb_scalp_15m_btc`, ...), its own state, and its own `bot.save_state`/`bot.load_state` namespace. To add or remove a coin, just edit the `coins` array in `bot_config.json` — no code changes needed.
 
 If the `coins` field is absent, the engine falls back to legacy mode (one file = one instance).
 
@@ -357,7 +382,7 @@ Runs 5 strategies across 5 market scenarios (ranging, bull, bear, high vol, 90-d
 Machine-readable JSON backtest output for the GUI:
 
 ```bash
-./build/backtest_json strategies/scalp.lua ETH 0 30 1h
+./build/backtest_json strategies/bb_scalp_15m.lua ETH 0 30 1h
 ```
 
 Arguments: `<strategy.lua> <coin> <end_days_ago> <n_days> [interval]`
@@ -397,7 +422,7 @@ Backtest config: $100 balance, 5x leverage, maker 2bps, taker 5bps, slippage 1bp
 - **Maximum leverage**: 5x
 - **Maximum position size**: 200 USD
 - **Automatic stop loss**: computed pre-trade
-- **Capital allocation**: 6 coins x $40/trade = $240 notional max, $48 margin at 5x (leaves $52 buffer on $100 account)
+- **Capital allocation**: 6 coins x $40/trade = $240 notional max, $48 margin at 5x (leaves buffer on $100 account)
 - **BB Scalping stops**: tight 1.5% SL + 3% TP per scalp, 2h max hold time — SL/TP placed as trigger orders on exchange immediately after entry fill
 - **BB regime filter**: skips trades when Bollinger Bands too tight (< 1%) or too wide (> 8%)
 - **Position reconciliation**: REST sync every 15 seconds to detect external fills and position changes
@@ -484,11 +509,11 @@ npm run dev   # Launches Vite + Electron with hot-reload
 
 ### Features
 
-- **Dashboard**: Start/stop bot, account summary, open positions, recent trades, live ANSI log viewer (xterm.js), paper trading banner
-- **Market Panel**: Real-time crypto prices via WebSocket + macro overview (BTC price, BTC dominance, ETH/BTC, Altcoin MCap, Gold, S&P 500, DXY, Fear & Greed Index) fetched from CoinGecko, alternative.me, and FinancialModelingPrep
+- **Dashboard**: Start/stop bot, account summary (realized + unrealized P&L), open positions, recent trades, live ANSI log viewer (xterm.js), paper trading banner, trade notifications (buy/sell toasts)
+- **Market**: Dedicated page with 5 sections — Crypto (live WebSocket prices, BTC.D, TOTAL1/2/3 market caps, Fear & Greed gauge), Indices (S&P 500, NASDAQ, Dow Jones, Hang Seng, Nikkei 225, Euro Stoxx 50, FTSE 100), Mega-Caps (AAPL, MSFT, NVDA, TSLA, GOOG, AMZN, META), Commodities (Gold, Silver), Forex (EUR/USD, GBP/USD, USD/JPY, USD/CHF)
 - **Strategies**: Browse all `.lua` files, toggle active/inactive (hot-reload compatible), syntax-highlighted code viewer (Prism.js)
 - **Backtest**: Configure strategy/coin/period/interval, multi-coin comparison, walk-forward statistics (IS/OOS/decay), equity curve (TradingView Lightweight Charts), sortable trade log with CSV export, verdict display
-- **Settings**: Active coins management (toggle/add/remove per strategy), market data cache sync, risk parameters overview, paper trading mode toggle
+- **Settings**: Active coins management (toggle/add/remove per strategy), market data cache sync, risk parameters overview, paper trading mode toggle with configurable bankroll
 
 ### Architecture
 
@@ -497,7 +522,7 @@ The GUI communicates with the bot via:
 - **SQLite**: Read-only WAL-mode access to `data/trading_bot.db` for positions, trades, P&L
 - **File watching**: `chokidar` monitors log files for real-time streaming
 - **WebSocket**: Hyperliquid `allMids` subscription for real-time crypto prices
-- **Market data**: Electron main process fetches macro data from CoinGecko, alternative.me, and FinancialModelingPrep (60s cache)
+- **Market data**: Electron main process fetches from CoinGecko (dominance, TOTAL MCaps), alternative.me (F&G), FMP stable API (indices, stocks, commodities — 1h cache, 250 calls/day free tier), Frankfurter (forex). Data persists across page switches (state hoisted to App level). Crypto data refreshes every 2min, FMP every 1h
 - **Backtest**: Spawns `build/backtest_json` and parses JSON output
 - **Config**: Reads/writes `config/bot_config.json` (atomic writes, secrets stripped)
 

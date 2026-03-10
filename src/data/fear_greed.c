@@ -138,7 +138,7 @@ int tb_fear_greed_refresh(tb_fear_greed_fetcher_t *f) {
 
     free(buf.buf);
 
-    tb_log_info("fear_greed: %d — %s", new_data.value, new_data.label);
+    tb_log_debug("fear_greed: %d — %s", new_data.value, new_data.label);
     return 0;
 }
 

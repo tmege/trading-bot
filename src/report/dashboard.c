@@ -130,43 +130,6 @@ void tb_dashboard_render(const tb_dashboard_data_t *d) {
         }
     }
 
-    /* ── Market Data ──────────────────────────────────────────────────── */
-    print_header("MARKET");
-    if (d->macro.valid) {
-        printf("  BTC " C_BOLD "$%.0f" C_RESET "  dom %.1f%%  ETH/BTC %.5f  T2 $%.0fB\n",
-               d->macro.btc_price, d->macro.btc_dominance,
-               d->macro.eth_btc, d->macro.total2_mcap);
-        if (d->macro.gold > 0)
-            printf("  Gold $%.0f", d->macro.gold);
-        if (d->macro.sp500 > 0)
-            printf("  S&P500 %.0f", d->macro.sp500);
-        if (d->macro.dxy > 0)
-            printf("  DXY %.1f", d->macro.dxy);
-        if (d->macro.gold > 0 || d->macro.sp500 > 0 || d->macro.dxy > 0)
-            printf("\n");
-    }
-
-    /* Fear & Greed */
-    if (d->fear_greed.valid) {
-        const char *fg_color = C_WHITE;
-        if (d->fear_greed.value <= 25) fg_color = C_RED;
-        else if (d->fear_greed.value <= 45) fg_color = C_YELLOW;
-        else if (d->fear_greed.value >= 75) fg_color = C_GREEN;
-
-        printf("  Fear & Greed: %s%s%d — %s" C_RESET "\n",
-               C_BOLD, fg_color, d->fear_greed.value, d->fear_greed.label);
-    }
-
-    /* Sentiment */
-    if (d->sentiment.valid) {
-        const char *s_color = d->sentiment.overall_score > 0.1 ? C_GREEN :
-                              d->sentiment.overall_score < -0.1 ? C_RED : C_YELLOW;
-        printf("  Sentiment: %s%.2f" C_RESET " (bull %.0f%% bear %.0f%% tweets %d)\n",
-               s_color, d->sentiment.overall_score,
-               d->sentiment.bullish_pct, d->sentiment.bearish_pct,
-               d->sentiment.total_tweets);
-    }
-
     /* ── Strategies ───────────────────────────────────────────────────── */
     if (d->n_strategies > 0) {
         print_header("STRATEGIES");

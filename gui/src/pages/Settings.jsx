@@ -310,6 +310,32 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                 )}
               </button>
             </div>
+
+            {/* Paper bankroll */}
+            {config.mode?.paper_trading && (
+              <div className="mt-3 pt-3 border-t border-yellow-500/20">
+                <label className="text-xs text-gray-500 block mb-1.5">Starting Bankroll (USDC)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="10"
+                    max="100000"
+                    step="10"
+                    value={config.mode?.paper_initial_balance ?? 100}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (isNaN(val) || val < 0) return;
+                      const updated = JSON.parse(JSON.stringify(config));
+                      if (!updated.mode) updated.mode = {};
+                      updated.mode.paper_initial_balance = val;
+                      saveConfig(updated);
+                    }}
+                    className="w-32 px-3 py-1.5 bg-surface-bg border border-yellow-500/30 rounded-lg text-sm text-white font-mono outline-none focus:border-yellow-400"
+                  />
+                  <span className="text-xs text-gray-600">Restart bot to apply</span>
+                </div>
+              </div>
+            )}
           </div>
         </section>
       </div>

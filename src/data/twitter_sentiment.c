@@ -210,7 +210,7 @@ static int fetch_rss(CURL *curl, const char *url, const char *source_name,
         if (http_code == 200 && buf.len > 0) {
             result = parse_rss_items(buf.buf, source_name, out, max_items);
             if (result > 0) {
-                tb_log_info("sentiment: fetched %d items from %s", result, source_name);
+                tb_log_debug("sentiment: fetched %d items from %s", result, source_name);
             }
         } else {
             tb_log_debug("sentiment: %s returned HTTP %ld", source_name, http_code);
@@ -329,7 +329,7 @@ int tb_sentiment_refresh(tb_twitter_sentiment_t *s) {
     s->data = new_data;
     pthread_mutex_unlock(&s->lock);
 
-    tb_log_info("sentiment: %d items, score=%.2f (bull=%.0f%% bear=%.0f%%)",
+    tb_log_debug("sentiment: %d items, score=%.2f (bull=%.0f%% bear=%.0f%%)",
                 total_items, new_data.overall_score,
                 new_data.bullish_pct, new_data.bearish_pct);
     free(all_items);

@@ -1,8 +1,9 @@
 import React from 'react';
-import { LayoutDashboard, Code2, FlaskConical, Settings } from 'lucide-react';
+import { LayoutDashboard, BarChart3, Code2, FlaskConical, Settings } from 'lucide-react';
 
 const NAV = [
   { id: 'dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
+  { id: 'market',     label: 'Market',     icon: BarChart3 },
   { id: 'strategies', label: 'Strategies', icon: Code2 },
   { id: 'backtest',   label: 'Backtest',   icon: FlaskConical },
   { id: 'settings',   label: 'Settings',   icon: Settings },

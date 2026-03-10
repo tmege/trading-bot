@@ -48,6 +48,7 @@ typedef struct {
 
     /* Mode */
     bool     paper_trading;
+    double   paper_initial_balance;   /* starting bankroll for paper mode */
 } tb_config_t;
 
 /* Load config from JSON file. Secrets come from environment variables. */

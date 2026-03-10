@@ -34,7 +34,7 @@
 #define C_CYAN    "\033[36m"
 
 /* ── Configuration ──────────────────────────────────────────────────────── */
-#define BASE_STRATEGY   "strategies/scalp_eth.lua"
+#define BASE_STRATEGY   "strategies/bb_scalp_15m.lua"
 #define N_DAYS_DEFAULT  30
 #define INITIAL_BALANCE 100.0
 #define MAX_LEVERAGE    5

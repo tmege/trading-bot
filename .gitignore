@@ -39,6 +39,9 @@ compile_commands.json
 # Dependencies (fetched by CMake)
 _deps/
 
+# Strategies (private, contain trading logic)
+strategies/
+
 # GUI build & deps
 gui/node_modules/
 gui/dist/

@@ -297,7 +297,7 @@ int tb_macro_fetcher_refresh(tb_macro_fetcher_t *f) {
     free(buf.buf);
 
     const char *src = f->hl_rest ? "HL" : "CoinGecko";
-    tb_log_info("macro: BTC=$%.0f(%s) dom=%.1f%% ETH/BTC=%.5f Gold=$%.0f SP500=$%.0f DXY=%.1f T2=$%.0fB",
+    tb_log_debug("macro: BTC=$%.0f(%s) dom=%.1f%% ETH/BTC=%.5f Gold=$%.0f SP500=$%.0f DXY=%.1f T2=$%.0fB",
                 working.btc_price, src, working.btc_dominance, working.eth_btc,
                 working.gold, working.sp500, working.dxy, working.total2_mcap);
     return 0;

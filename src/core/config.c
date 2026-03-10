@@ -176,8 +176,10 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
     yyjson_val *mode = yyjson_obj_get(root, "mode");
     if (mode) {
         cfg->paper_trading = json_bool(mode, "paper_trading", true);
+        cfg->paper_initial_balance = json_num(mode, "paper_initial_balance", 100.0);
     } else {
         cfg->paper_trading = true;
+        cfg->paper_initial_balance = 100.0;
     }
 
     yyjson_doc_free(doc);
@@ -228,7 +230,9 @@ void tb_config_dump(const tb_config_t *cfg) {
                         cfg->active_strategies[i], cfg->strategy_roles[i]);
         }
     }
-    tb_log_info("CONFIG: paper_trading=%s", cfg->paper_trading ? "true" : "false");
+    tb_log_info("CONFIG: paper_trading=%s (balance=$%.0f)",
+                cfg->paper_trading ? "true" : "false",
+                cfg->paper_initial_balance);
     tb_log_info("CONFIG: db_path=%s", cfg->db_path);
     tb_log_info("CONFIG: claude_model=%s", cfg->claude_model);
     tb_log_info("CONFIG: claude_api_key=%s",

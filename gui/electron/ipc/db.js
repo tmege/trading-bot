@@ -103,6 +103,13 @@ async function fetchHyperliquid(projectRoot) {
         });
       }
       cachedAccount.positions = positions;
+
+      // Sum unrealized P&L across all open positions
+      let unrealizedPnl = 0;
+      for (const pos of positions) {
+        unrealizedPnl += parseFloat(pos.unrealized_pnl || '0');
+      }
+      cachedAccount.unrealizedPnl = unrealizedPnl;
     }
 
     if (fillsRes.ok) {
@@ -183,8 +190,10 @@ module.exports = function registerDbIPC(ipcMain, projectRoot) {
         ok: true,
         account: {
           dailyPnl: hl.dailyPnl,
+          unrealizedPnl: hl.unrealizedPnl || 0,
           dailyFees: hl.dailyFees,
           dailyTrades: daily.n_trades,
+          nPositions: (hl.positions || []).length,
           balance: hl.balance,
         },
       };

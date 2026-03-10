@@ -192,21 +192,10 @@ int tb_engine_start(tb_engine_t *engine) {
     /* 4. Paper exchange (if paper trading mode) */
     engine->paper = NULL;
     if (cfg->paper_trading) {
-        /* Try to fetch real account balance from exchange */
-        double initial_balance = 100.0; /* safe default */
-        if (cfg->wallet_address[0] && engine->rest) {
-            tb_account_t acct;
-            if (hl_rest_get_account(engine->rest, cfg->wallet_address, &acct) == 0) {
-                double real_balance = tb_decimal_to_double(acct.account_value);
-                if (real_balance > 0) {
-                    initial_balance = real_balance;
-                    tb_log_info("paper: fetched real account balance: $%.2f", real_balance);
-                }
-            } else {
-                tb_log_warn("paper: could not fetch account balance, using default $%.0f",
-                            initial_balance);
-            }
-        }
+        double initial_balance = cfg->paper_initial_balance > 0
+            ? cfg->paper_initial_balance
+            : 100.0;
+        tb_log_info("paper: starting with bankroll $%.2f", initial_balance);
 
         tb_paper_config_t paper_cfg = {
             .initial_balance = initial_balance,

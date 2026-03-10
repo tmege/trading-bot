@@ -3,7 +3,6 @@ import BotControls from '../components/BotControls';
 import AccountPanel from '../components/AccountPanel';
 import PositionTable from '../components/PositionTable';
 import OrderTable from '../components/OrderTable';
-import MarketPanel from '../components/MarketPanel';
 import LogViewer from '../components/LogViewer';
 import useLiveData from '../hooks/useLiveData';
 
@@ -37,8 +36,6 @@ export default function Dashboard({ botStatus, paperMode }) {
           <PositionTable positions={positions} />
           <OrderTable trades={trades} />
         </div>
-
-        <MarketPanel />
 
         <LogViewer />
       </div>

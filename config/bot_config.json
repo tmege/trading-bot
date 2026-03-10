@@ -16,7 +16,7 @@
         "reload_interval_sec": 5,
         "active": [
             {
-                "file": "scalp.lua",
+                "file": "bb_scalp_15m.lua",
                 "coins": [
                     "ETH",
                     "BTC",
@@ -42,6 +42,7 @@
         "level": 0
     },
     "mode": {
-        "paper_trading": false
+        "paper_trading": false,
+        "paper_initial_balance": 100
     }
 }

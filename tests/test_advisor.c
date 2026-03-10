@@ -69,9 +69,9 @@ static void test_context_update(void) {
     ctx.macro.btc_price = 69000.0;
     ctx.macro.btc_dominance = 56.7;
     ctx.n_strategies = 2;
-    snprintf(ctx.strategies[0].name, sizeof(ctx.strategies[0].name), "scalp_eth");
+    snprintf(ctx.strategies[0].name, sizeof(ctx.strategies[0].name), "bb_scalp_15m_eth");
     ctx.strategies[0].enabled = true;
-    snprintf(ctx.strategies[1].name, sizeof(ctx.strategies[1].name), "scalp_btc");
+    snprintf(ctx.strategies[1].name, sizeof(ctx.strategies[1].name), "bb_scalp_15m_btc");
     ctx.strategies[1].enabled = true;
 
     tb_ai_advisor_update_context(adv, &ctx);
@@ -112,9 +112,9 @@ static void test_advisor_live(void) {
     ctx.macro.btc_dominance = 56.7;
     ctx.macro.eth_btc = 0.0295;
     ctx.n_strategies = 2;
-    snprintf(ctx.strategies[0].name, sizeof(ctx.strategies[0].name), "scalp_eth");
+    snprintf(ctx.strategies[0].name, sizeof(ctx.strategies[0].name), "bb_scalp_15m_eth");
     ctx.strategies[0].enabled = true;
-    snprintf(ctx.strategies[1].name, sizeof(ctx.strategies[1].name), "scalp_btc");
+    snprintf(ctx.strategies[1].name, sizeof(ctx.strategies[1].name), "bb_scalp_15m_btc");
     ctx.strategies[1].enabled = true;
     tb_ai_advisor_update_context(adv, &ctx);
 

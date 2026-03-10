@@ -4,7 +4,11 @@ const fs = require('fs');
 /* ── Cache ───────────────────────────────────────────────────────────────── */
 let cached = null;
 let fetchedAt = 0;
-const CACHE_MS = 60_000; // 60s
+const CACHE_MS = 120_000;       // 120s — crypto data (CoinGecko, F&G, forex)
+
+let fmpCached = null;
+let fmpFetchedAt = 0;
+const FMP_CACHE_MS = 3_600_000; // 1h — FMP free tier: 250 calls/day (16 syms × ~16 refreshes = ~256)
 
 /* ── Read optional macro API key from .env ───────────────────────────────── */
 function readMacroApiKey(projectRoot) {
@@ -26,6 +30,29 @@ function readMacroApiKey(projectRoot) {
   return null;
 }
 
+/* ── FMP symbols (stable API, individual calls on free tier) ──────────── */
+const FMP_INDICES = [
+  { sym: '^GSPC',     label: 'S&P 500' },
+  { sym: '^IXIC',     label: 'NASDAQ' },
+  { sym: '^DJI',      label: 'Dow Jones' },
+  { sym: '^HSI',      label: 'Hang Seng' },
+  { sym: '^N225',     label: 'Nikkei 225' },
+  { sym: '^STOXX50E', label: 'Euro Stoxx 50' },
+  { sym: '^FTSE',     label: 'FTSE 100' },
+];
+const FMP_STOCKS  = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'GOOG', 'AMZN', 'META'];
+const FMP_COMMODITIES = { GCUSD: 'gold', SIUSD: 'silver' };
+const ALL_FMP_SYMBOLS = [
+  ...FMP_INDICES.map(i => i.sym),
+  ...FMP_STOCKS,
+  ...Object.keys(FMP_COMMODITIES),
+];
+
+const STOCK_NAMES = {
+  AAPL: 'Apple',   MSFT: 'Microsoft', NVDA: 'Nvidia',
+  TSLA: 'Tesla',   GOOG: 'Alphabet',  AMZN: 'Amazon', META: 'Meta',
+};
+
 /* ── Fetch helpers ───────────────────────────────────────────────────────── */
 async function fetchJSON(url, timeoutMs = 8000) {
   const controller = new AbortController();
@@ -44,58 +71,88 @@ async function fetchJSON(url, timeoutMs = 8000) {
   }
 }
 
+/* ── Fetch all FMP symbols in parallel (individual calls, free tier) ───── */
+async function fetchAllFmpQuotes(apiKey) {
+  const results = await Promise.all(
+    ALL_FMP_SYMBOLS.map(sym =>
+      fetchJSON(`https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(sym)}&apikey=${apiKey}`)
+    )
+  );
+  const map = {};
+  for (const res of results) {
+    if (Array.isArray(res) && res.length > 0 && res[0].symbol) {
+      const item = res[0];
+      map[item.symbol] = {
+        price: item.price || 0,
+        change_pct: item.changePercentage || 0,
+        name: item.name || '',
+      };
+    }
+  }
+  return map;
+}
+
 async function fetchMarketData(projectRoot) {
   const now = Date.now();
   if (cached && now - fetchedAt < CACHE_MS) return cached;
 
-  const data = {
-    btc_price: 0,
-    eth_price: 0,
-    eth_btc: 0,
+  // Start from previous data to preserve FMP results across rate-limited refreshes
+  const data = cached ? { ...cached } : {
     btc_dominance: 0,
+    total1_mcap: 0,
     total2_mcap: 0,
-    gold: 0,
-    sp500: 0,
-    dxy: 0,
+    total3_mcap: 0,
     fear_greed: 0,
     fear_greed_label: '',
+    indices: [],
+    stocks: [],
+    gold: 0,
+    gold_pct: 0,
+    silver: 0,
+    silver_pct: 0,
+    forex: [],
     last_update: 0,
+    has_fmp: false,
   };
 
   const apiKey = readMacroApiKey(projectRoot);
 
-  // Fetch all sources in parallel
+  // FMP uses separate longer cache (250 calls/day free tier)
+  const now2 = Date.now();
+  let fmpQuotes = fmpCached;
+  const needFmp = apiKey && (!fmpCached || now2 - fmpFetchedAt >= FMP_CACHE_MS);
+
+  // Fetch all sources in parallel (1 CoinGecko call only to avoid rate limit)
   const promises = [
     // 1. CoinGecko global (dominance, total mcap)
     fetchJSON('https://api.coingecko.com/api/v3/global'),
-    // 2. CoinGecko prices (BTC, ETH, Gold via tether-gold)
-    fetchJSON('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,tether-gold&vs_currencies=usd,btc'),
-    // 3. Fear & Greed
+    // 2. Fear & Greed
     fetchJSON('https://api.alternative.me/fng/?limit=1'),
-    // 4. S&P500 + DXY (only if API key available)
-    apiKey
-      ? fetchJSON(`https://financialmodelingprep.com/api/v3/quote/%5EGSPC,DX-Y.NYB?apikey=${apiKey}`)
-      : Promise.resolve(null),
+    // 3. FMP: indices, stocks, commodities (separate cache, free tier)
+    needFmp ? fetchAllFmpQuotes(apiKey) : Promise.resolve(null),
+    // 4. Frankfurter: forex (always, no key needed)
+    fetchJSON('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF'),
   ];
 
-  const [globalData, pricesData, fngData, tradfiData] = await Promise.all(promises);
+  const [globalData, fngData, freshFmpQuotes, forexData] = await Promise.all(promises);
+
+  if (freshFmpQuotes && Object.keys(freshFmpQuotes).length > 0) {
+    fmpCached = freshFmpQuotes;
+    fmpFetchedAt = now2;
+    fmpQuotes = freshFmpQuotes;
+  }
 
   // Parse CoinGecko global
   if (globalData?.data) {
     const d = globalData.data;
     data.btc_dominance = d.market_cap_percentage?.btc || 0;
+    const ethDom = d.market_cap_percentage?.eth || 0;
     const totalMcap = d.total_market_cap?.usd || 0;
-    if (totalMcap > 0 && data.btc_dominance > 0) {
+    if (totalMcap > 0) {
+      data.total1_mcap = totalMcap / 1e9;
       data.total2_mcap = (totalMcap * (1 - data.btc_dominance / 100)) / 1e9;
+      data.total3_mcap = (totalMcap * (1 - data.btc_dominance / 100 - ethDom / 100)) / 1e9;
     }
-  }
-
-  // Parse CoinGecko prices
-  if (pricesData) {
-    data.btc_price = pricesData.bitcoin?.usd || 0;
-    data.eth_price = pricesData.ethereum?.usd || 0;
-    data.eth_btc = pricesData.ethereum?.btc || 0;
-    data.gold = pricesData['tether-gold']?.usd || 0;
   }
 
   // Parse Fear & Greed
@@ -105,12 +162,45 @@ async function fetchMarketData(projectRoot) {
     data.fear_greed_label = fg.value_classification || '';
   }
 
-  // Parse TradFi (S&P500, DXY)
-  if (Array.isArray(tradfiData)) {
-    for (const item of tradfiData) {
-      if (item.symbol === '^GSPC') data.sp500 = item.price || 0;
-      else if (item.symbol === 'DX-Y.NYB') data.dxy = item.price || 0;
+  // Parse FMP quotes (indices, stocks, commodities) — only rebuild if fresh data
+  if (fmpQuotes && Object.keys(fmpQuotes).length > 0) {
+    data.has_fmp = true;
+    const q = fmpQuotes;
+
+    // Rebuild arrays from scratch to avoid duplicates
+    data.indices = [];
+    data.stocks = [];
+
+    for (const idx of FMP_INDICES) {
+      if (q[idx.sym]) data.indices.push({
+        symbol: idx.label,
+        price: q[idx.sym].price,
+        change_pct: q[idx.sym].change_pct,
+      });
     }
+
+    for (const sym of FMP_STOCKS) {
+      if (q[sym]) data.stocks.push({
+        symbol: sym,
+        name: STOCK_NAMES[sym] || q[sym].name,
+        price: q[sym].price,
+        change_pct: q[sym].change_pct,
+      });
+    }
+
+    if (q.GCUSD) { data.gold = q.GCUSD.price; data.gold_pct = q.GCUSD.change_pct; }
+    if (q.SIUSD) { data.silver = q.SIUSD.price; data.silver_pct = q.SIUSD.change_pct; }
+  }
+  // else: keep previous indices/stocks/commodities from cached data
+
+  // Parse Frankfurter forex — rebuild to avoid duplicates
+  if (forexData?.rates) {
+    data.forex = [];
+    const r = forexData.rates;
+    if (r.EUR) data.forex.push({ pair: 'EUR/USD', rate: (1 / r.EUR).toFixed(4) });
+    if (r.GBP) data.forex.push({ pair: 'GBP/USD', rate: (1 / r.GBP).toFixed(4) });
+    if (r.JPY) data.forex.push({ pair: 'USD/JPY', rate: r.JPY.toFixed(2) });
+    if (r.CHF) data.forex.push({ pair: 'USD/CHF', rate: r.CHF.toFixed(4) });
   }
 
   data.last_update = now;

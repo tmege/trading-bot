@@ -6,7 +6,7 @@ module.exports = function registerBacktestIPC(ipcMain, projectRoot) {
 
   ipcMain.handle('backtest:run', async (event, params) => {
     const {
-      strategy,  // e.g. "scalp_eth.lua"
+      strategy,  // e.g. "bb_scalp_15m.lua"
       coins,     // e.g. ["ETH"] or ["ETH", "BTC", "SOL"]
       endDaysAgo = 0,
       nDays = 30,

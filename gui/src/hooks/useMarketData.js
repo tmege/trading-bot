@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-const POLL_MS = 60_000; // 60s
+const POLL_MS = 120_000; // 120s — aligned with main process cache
 
 export default function useMarketData() {
   const [data, setData] = useState(null);
