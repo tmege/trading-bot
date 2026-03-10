@@ -131,14 +131,15 @@ int hl_json_parse_l2_book(yyjson_val *root, tb_book_t *book) {
 }
 
 /* ── Parse candles ──────────────────────────────────────────────────────── */
-int hl_json_parse_candles(yyjson_val *root, tb_candle_t *candles, int *count) {
+int hl_json_parse_candles(yyjson_val *root, tb_candle_t *candles, int *count,
+                           int max_count) {
     if (!yyjson_is_arr(root)) return -1;
 
     int n = 0;
     size_t idx, max;
     yyjson_val *item;
     yyjson_arr_foreach(root, idx, max, item) {
-        if (n >= 5000) break; /* API max */
+        if (n >= max_count) break;
         candles[n].time_open  = get_int(item, "t");
         candles[n].time_close = get_int(item, "T");
         const char *o = get_str(item, "o");
@@ -221,14 +222,15 @@ int hl_json_parse_account(yyjson_val *root, tb_account_t *account) {
 }
 
 /* ── Parse open orders ──────────────────────────────────────────────────── */
-int hl_json_parse_orders(yyjson_val *root, tb_order_t *orders, int *count) {
+int hl_json_parse_orders(yyjson_val *root, tb_order_t *orders, int *count,
+                          int max_count) {
     if (!yyjson_is_arr(root)) return -1;
 
     int n = 0;
     size_t idx, max;
     yyjson_val *item;
     yyjson_arr_foreach(root, idx, max, item) {
-        if (n >= 1000) break;
+        if (n >= max_count) break;
 
         orders[n].oid = (uint64_t)get_int(item, "oid");
         safe_strcpy(orders[n].coin, sizeof(orders[n].coin), get_str(item, "coin"));
@@ -256,14 +258,15 @@ int hl_json_parse_orders(yyjson_val *root, tb_order_t *orders, int *count) {
 }
 
 /* ── Parse fills ────────────────────────────────────────────────────────── */
-int hl_json_parse_fills(yyjson_val *root, tb_fill_t *fills, int *count) {
+int hl_json_parse_fills(yyjson_val *root, tb_fill_t *fills, int *count,
+                         int max_count) {
     if (!yyjson_is_arr(root)) return -1;
 
     int n = 0;
     size_t idx, max;
     yyjson_val *item;
     yyjson_arr_foreach(root, idx, max, item) {
-        if (n >= 2000) break;
+        if (n >= max_count) break;
 
         safe_strcpy(fills[n].coin, sizeof(fills[n].coin), get_str(item, "coin"));
 

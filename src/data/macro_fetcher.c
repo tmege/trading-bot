@@ -16,6 +16,7 @@ struct tb_macro_fetcher {
     CURL            *curl;
     hl_rest_t       *hl_rest;       /* optional: Hyperliquid for crypto prices */
     tb_macro_data_t  data;
+    tb_macro_data_t *wd;            /* working data pointer for refresh */
     pthread_mutex_t  lock;
 };
 
@@ -51,6 +52,7 @@ static int fetch_url(CURL *curl, const char *url, tb_curl_buf_t *buf) {
     buf->len = 0;
     if (buf->buf) buf->buf[0] = '\0';
 
+    curl_easy_reset(curl);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
@@ -106,14 +108,14 @@ static int fetch_hl_crypto(tb_macro_fetcher_t *f) {
     }
 
     if (btc_price > 0) {
-        f->data.btc_price = btc_price;
+        f->wd->btc_price = btc_price;
         if (eth_price > 0) {
-            f->data.eth_btc = eth_price / btc_price;
+            f->wd->eth_btc = eth_price / btc_price;
         }
     }
 
     tb_log_debug("macro: HL prices — BTC=$%.0f ETH=$%.0f ETH/BTC=%.5f",
-                 btc_price, eth_price, f->data.eth_btc);
+                 btc_price, eth_price, f->wd->eth_btc);
     return 0;
 }
 
@@ -130,15 +132,15 @@ static int fetch_coingecko_macro(tb_macro_fetcher_t *f, tb_curl_buf_t *buf) {
                 yyjson_val *mcap_pct = yyjson_obj_get(data, "market_cap_percentage");
                 if (mcap_pct) {
                     yyjson_val *btc_dom = yyjson_obj_get(mcap_pct, "btc");
-                    if (btc_dom) f->data.btc_dominance = get_json_number(btc_dom);
+                    if (btc_dom) f->wd->btc_dominance = get_json_number(btc_dom);
                 }
                 yyjson_val *total_mcap = yyjson_obj_get(data, "total_market_cap");
                 if (total_mcap) {
                     yyjson_val *usd = yyjson_obj_get(total_mcap, "usd");
                     if (usd) {
                         double total = get_json_number(usd);
-                        double btc_pct = f->data.btc_dominance / 100.0;
-                        f->data.total2_mcap = (total * (1.0 - btc_pct)) / 1e9;
+                        double btc_pct = f->wd->btc_dominance / 100.0;
+                        f->wd->total2_mcap = (total * (1.0 - btc_pct)) / 1e9;
                     }
                 }
             }
@@ -160,12 +162,12 @@ static int fetch_coingecko_prices(tb_macro_fetcher_t *f, tb_curl_buf_t *buf) {
             yyjson_val *btc = yyjson_obj_get(root, "bitcoin");
             if (btc) {
                 yyjson_val *usd = yyjson_obj_get(btc, "usd");
-                if (usd) f->data.btc_price = get_json_number(usd);
+                if (usd) f->wd->btc_price = get_json_number(usd);
             }
             yyjson_val *eth = yyjson_obj_get(root, "ethereum");
             if (eth) {
                 yyjson_val *eth_btc = yyjson_obj_get(eth, "btc");
-                if (eth_btc) f->data.eth_btc = get_json_number(eth_btc);
+                if (eth_btc) f->wd->eth_btc = get_json_number(eth_btc);
             }
             yyjson_doc_free(doc);
         }
@@ -185,7 +187,7 @@ static int fetch_tradfi(tb_macro_fetcher_t *f, tb_curl_buf_t *buf) {
             yyjson_val *xaut = yyjson_obj_get(root, "tether-gold");
             if (xaut) {
                 yyjson_val *usd = yyjson_obj_get(xaut, "usd");
-                if (usd) f->data.gold = get_json_number(usd);
+                if (usd) f->wd->gold = get_json_number(usd);
             }
             yyjson_doc_free(doc);
         }
@@ -210,9 +212,9 @@ static int fetch_tradfi(tb_macro_fetcher_t *f, tb_curl_buf_t *buf) {
                         if (sym && price) {
                             const char *s = yyjson_get_str(sym);
                             if (s && strcmp(s, "^GSPC") == 0)
-                                f->data.sp500 = get_json_number(price);
+                                f->wd->sp500 = get_json_number(price);
                             else if (s && strcmp(s, "DX-Y.NYB") == 0)
-                                f->data.dxy = get_json_number(price);
+                                f->wd->dxy = get_json_number(price);
                         }
                     }
                 }
@@ -240,6 +242,7 @@ tb_macro_fetcher_t *tb_macro_fetcher_create(const char *api_key) {
         return NULL;
     }
 
+    f->wd = &f->data;
     pthread_mutex_init(&f->lock, NULL);
     tb_log_info("macro: fetcher created (api_key=%s)",
                 f->api_key[0] ? "set" : "none");
@@ -262,13 +265,13 @@ int tb_macro_fetcher_refresh(tb_macro_fetcher_t *f) {
     tb_curl_buf_t buf = { .buf = malloc(4096), .len = 0, .cap = 4096 };
     if (!buf.buf) return -1;
 
-    tb_macro_data_t new_data;
+    /* Work on a local copy — helpers write via f->wd, atomically committed. */
+    tb_macro_data_t working;
     pthread_mutex_lock(&f->lock);
-    new_data = f->data;  /* preserve old values as fallback */
+    working = f->data;  /* preserve old values as fallback */
     pthread_mutex_unlock(&f->lock);
 
-    /* Work on local copy via struct field */
-    f->data = new_data;
+    f->wd = &working;
 
     /* 1. Crypto prices: prefer Hyperliquid (real-time, free) */
     if (fetch_hl_crypto(f) != 0) {
@@ -282,20 +285,21 @@ int tb_macro_fetcher_refresh(tb_macro_fetcher_t *f) {
     /* 3. TradFi: Gold, S&P500, DXY */
     fetch_tradfi(f, &buf);
 
-    f->data.last_update_ms = (int64_t)time(NULL) * 1000;
-    f->data.valid = true;
+    working.last_update_ms = (int64_t)time(NULL) * 1000;
+    working.valid = true;
 
-    /* Commit */
+    /* Commit atomically */
     pthread_mutex_lock(&f->lock);
-    new_data = f->data;
+    f->data = working;
     pthread_mutex_unlock(&f->lock);
+    f->wd = &f->data;
 
     free(buf.buf);
 
     const char *src = f->hl_rest ? "HL" : "CoinGecko";
     tb_log_info("macro: BTC=$%.0f(%s) dom=%.1f%% ETH/BTC=%.5f Gold=$%.0f SP500=$%.0f DXY=%.1f T2=$%.0fB",
-                new_data.btc_price, src, new_data.btc_dominance, new_data.eth_btc,
-                new_data.gold, new_data.sp500, new_data.dxy, new_data.total2_mcap);
+                working.btc_price, src, working.btc_dominance, working.eth_btc,
+                working.gold, working.sp500, working.dxy, working.total2_mcap);
     return 0;
 }
 

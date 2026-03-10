@@ -234,6 +234,11 @@ static int api_cancel_all(lua_State *L) {
     }
 
     const char *coin = luaL_checkstring(L, 1);
+    if (!is_valid_coin(coin)) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "invalid coin");
+        return 2;
+    }
     int rc = tb_order_mgr_cancel_all_coin(ctx->order_mgr, coin);
     lua_pushboolean(L, rc == 0);
     return 1;
@@ -248,6 +253,10 @@ static int api_get_position(lua_State *L) {
     }
 
     const char *coin = luaL_checkstring(L, 1);
+    if (!is_valid_coin(coin)) {
+        lua_pushnil(L);
+        return 1;
+    }
     tb_position_t pos;
     if (tb_pos_tracker_get(ctx->pos_tracker, coin, &pos) != 0) {
         lua_pushnil(L);
@@ -314,6 +323,10 @@ static int api_get_open_orders(lua_State *L) {
     }
 
     const char *coin = luaL_checkstring(L, 1);
+    if (!is_valid_coin(coin)) {
+        lua_newtable(L);
+        return 1;
+    }
     tb_order_t orders[128];
     int count = 128;
     tb_order_mgr_get_open_orders(ctx->order_mgr, coin, orders, &count);
@@ -362,10 +375,12 @@ static int api_get_candles(lua_State *L) {
     int64_t now_ms = (int64_t)time(NULL) * 1000;
     int64_t start_ms = now_ms - (int64_t)req_count * interval_to_sec(interval) * 1000;
 
-    tb_candle_t candles[500];
+    tb_candle_t *candles = malloc(sizeof(tb_candle_t) * (size_t)req_count);
+    if (!candles) { lua_newtable(L); return 1; }
     int count = 0;
     if (hl_rest_get_candles(ctx->rest, coin, interval, start_ms, now_ms,
-                            candles, &count) != 0) {
+                            candles, &count, req_count) != 0) {
+        free(candles);
         lua_newtable(L);
         return 1;
     }
@@ -395,6 +410,7 @@ static int api_get_candles(lua_State *L) {
         lua_rawseti(L, -2, i + 1);
     }
 
+    free(candles);
     return 1;
 }
 
@@ -602,10 +618,12 @@ static int api_get_indicators(lua_State *L) {
     int64_t now_ms = (int64_t)time(NULL) * 1000;
     int64_t start_ms = now_ms - (int64_t)req_count * interval_to_sec(interval) * 1000;
 
-    tb_candle_t candles[500];
+    tb_candle_t *candles = malloc(sizeof(tb_candle_t) * (size_t)req_count);
+    if (!candles) { lua_newtable(L); return 1; }
     int count = 0;
     if (hl_rest_get_candles(ctx->rest, coin, interval, start_ms, now_ms,
-                            candles, &count) != 0 || count < 2) {
+                            candles, &count, req_count) != 0 || count < 2) {
+        free(candles);
         lua_newtable(L);
         lua_pushboolean(L, 0);
         lua_setfield(L, -2, "valid");
@@ -615,6 +633,7 @@ static int api_get_indicators(lua_State *L) {
     /* Convert to indicator input format */
     tb_candle_input_t *input = malloc(sizeof(tb_candle_input_t) * (size_t)count);
     if (!input) {
+        free(candles);
         lua_newtable(L);
         return 1;
     }
@@ -626,6 +645,7 @@ static int api_get_indicators(lua_State *L) {
         input[i].volume = tb_decimal_to_double(candles[i].volume);
         input[i].time_ms = candles[i].time_open;
     }
+    free(candles);
 
     tb_indicators_snapshot_t snap = tb_indicators_compute(input, count);
     free(input);

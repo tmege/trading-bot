@@ -6,7 +6,7 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 
 - **Full Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders
 - **Lua strategies** — sandboxed environment, automatic hot-reload (5s), comprehensive `bot.*` API
-- **Active strategy** — BB Scalping ETH (Bollinger Bands mean reversion, validated on 90 days of real data)
+- **Active strategies** — BB Scalping on 5 coins (ETH, BTC, SOL, DOGE, HYPE) — Bollinger Bands mean reversion, validated on 30 days real data (15m candles)
 - **Risk management** — automatic stop loss, daily loss limit, leverage and position size control
 - **Market data** — crypto prices via Hyperliquid, macro (Gold, S&P500, DXY), Fear & Greed Index, crypto news sentiment
 - **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP + derived signals
@@ -59,7 +59,11 @@ src/
     └── backtest_engine.c       Simulation on historical candles + metrics
 
 strategies/                     Lua strategies
-├── scalp_eth.lua               BB Scalping ETH [PRIMARY] (Bollinger Bands 20/2, SL=1.5%, TP=3.0%)
+├── scalp_eth.lua               BB Scalping ETH [PRIMARY] (BB 20/2, SL=1.5%, TP=3.0%, $40/trade)
+├── scalp_btc.lua               BB Scalping BTC (same params, $40/trade)
+├── scalp_sol.lua               BB Scalping SOL (same params, $40/trade)
+├── scalp_doge.lua              BB Scalping DOGE (same params, $40/trade)
+├── scalp_hype.lua              BB Scalping HYPE (same params, $40/trade)
 ├── momentum_eth.lua            Momentum ETH (EMA12/26, RSI, ATR trailing stop — inactive)
 ├── grid_eth.lua                Grid Trading ETH (dynamic ATR, 15 levels — inactive)
 ├── dca_eth.lua                 DCA ETH (RSI-based buy/sell zones — inactive)
@@ -79,7 +83,8 @@ tests/                          Unit tests & benchmarks
 ├── test_indicators.c           All technical indicators
 ├── bench_speed.c               Performance benchmark
 ├── bench_strategies.c          Strategy comparison (5 strategies x 5 synthetic scenarios)
-└── backtest_real.c             Real data backtest (Hyperliquid candles, walk-forward IS/OOS)
+├── backtest_real.c             Real data backtest (Hyperliquid candles, walk-forward IS/OOS)
+└── backtest_multi_coin.c       Multi-coin backtest (ETH, BTC, SOL, DOGE, HYPE, fork-isolated)
 ```
 
 ## Dependencies
@@ -109,7 +114,7 @@ cmake --build build -j$(nproc)
 cmake --build build && ctest --test-dir build --output-on-failure
 ```
 
-6 test suites, 96 assertions.
+6 test suites, 128 tests.
 
 ## Performance Benchmarks
 
@@ -210,14 +215,18 @@ The `.env` file is excluded from version control via `.gitignore` and restricted
         "daily_loss_limit_usdc": -15.0,
         "emergency_close_usdc": -12.0,
         "max_leverage": 5,
-        "per_trade_stop_pct": 2.0,
-        "max_position_usd": 300.0
+        "per_trade_stop_pct": 1.5,
+        "max_position_usd": 200.0
     },
     "strategies": {
         "dir": "./strategies",
         "reload_interval_sec": 5,
         "active": [
-            { "file": "scalp_eth.lua", "role": "primary" }
+            { "file": "scalp_eth.lua",  "role": "primary" },
+            { "file": "scalp_btc.lua",  "role": "secondary" },
+            { "file": "scalp_sol.lua",  "role": "secondary" },
+            { "file": "scalp_doge.lua", "role": "secondary" },
+            { "file": "scalp_hype.lua", "role": "secondary" }
         ]
     },
     "ai_advisory": {
@@ -233,7 +242,7 @@ The `.env` file is excluded from version control via `.gitignore` and restricted
         "level": 0
     },
     "mode": {
-        "paper_trading": true
+        "paper_trading": false
     }
 }
 ```
@@ -335,21 +344,26 @@ Fetches real ETH 1h candles from Hyperliquid (90 days) and runs walk-forward val
 - Statistical significance check (requires 100+ trades OOS)
 - Verdict: DEPLOYABLE / A OPTIMISER / ABANDON
 
-**Latest results (90d real ETH, OOS):**
+**Latest results (30d real data, 15m candles, OOS):**
 
-| Strategy | Return | Sharpe | MaxDD | Trades | PF | Win/Loss | Verdict |
+| Coin | OOS Return | Trades | Sharpe | MaxDD | PF | Alpha vs B&H | Verdict |
 |---|---|---|---|---|---|---|---|
-| BB Scalping | +124.3% | 27.70 | 1.7% | 128 | 16.12 | 1.98 | DEPLOYABLE |
+| BTC | +357.2% | 312 | 90.78 | 0.5% | inf | +351.1% | DEPLOYABLE |
+| DOGE | +289.5% | 275 | 74.24 | 0.0% | inf | +336.8% | DEPLOYABLE |
+| SOL | +271.2% | 243 | 67.60 | 1.3% | 49.50 | +288.1% | DEPLOYABLE |
+| ETH | +289.4% | 254 | 81.34 | 0.0% | inf | +326.8% | DEPLOYABLE |
+| HYPE | +245.8% | 232 | 70.34 | 0.0% | inf | +219.8% | DEPLOYABLE |
 
 Backtest config: $100 balance, 5x leverage, maker 2bps, taker 5bps, slippage 1bp.
 
 ## Risk Management
 
-- **Emergency close**: all positions closed at -12 USDC (before the daily limit)
+- **Emergency close**: all positions closed at -12 USDC (before the daily limit), fires once per session (atomic flag prevents re-entry loops)
 - **Daily loss limit**: -15 USDC (hard stop, automatic pause)
 - **Maximum leverage**: 5x
-- **Maximum position size**: 300 USD
+- **Maximum position size**: 200 USD
 - **Automatic stop loss**: computed pre-trade
+- **Capital allocation**: 5 strategies x $40/trade = $200 notional max, $40 margin at 5x (leaves $60 buffer on $100 account)
 - **BB Scalping stops**: tight 1.5% SL + 3% TP per scalp, 2h max hold time
 - **BB regime filter**: skips trades when Bollinger Bands too tight (< 1%) or too wide (> 8%)
 
@@ -389,7 +403,7 @@ Article titles are scored using keyword-based analysis (bullish/bearish word lis
 - API keys securely wiped from memory on shutdown (volatile wipe to prevent compiler optimization)
 - Stack-allocated configuration wiped in `main()` before return
 - Lua sandbox: no I/O, no `load()`/`loadstring()`/`loadfile()`, no metatable access, no bytecode serialization
-- Lua execution limits: 2M instruction cap (prevents infinite loops), 32 MB memory cap per state (custom allocator)
+- Lua execution limits: 10M instruction cap per call (prevents infinite loops), 16 MB memory cap per state (custom allocator)
 - Input validation: price/size checked for NaN, Inf, and negative values before order submission
 - Parameterized SQL queries throughout (no string concatenation)
 - SQLite opened with `FULLMUTEX` mode and 5s busy timeout for thread-safe concurrent access
@@ -401,7 +415,11 @@ Article titles are scored using keyword-based analysis (bullish/bearish word lis
 - Monotonic nonce generation: `now_ms() * 1000 + atomic_counter % 1000` prevents replay attacks
 - Shell injection prevention: `.env` parsing uses safe KEY=VALUE extraction (no `source`)
 - Exchange response bounds checking: `oids[]` array writes validated against `max_oids` parameter
-- Emergency close: positions are force-closed (not just orders cancelled) when daily loss threshold hit
+- JSON parse buffer overflow prevention: `max_count` parameter threaded through all parse → REST → caller chains
+- Double-buffer pattern for thread-safe data refresh (macro fetcher writes to working copy, commits atomically under lock)
+- WebSocket thread safety: cross-thread wakeup via `lws_cancel_service` (not `lws_callback_on_writable`)
+- CURL handle hygiene: `curl_easy_reset` before each request to prevent option leakage between calls
+- Emergency close: positions force-closed with 5% slippage tolerance (IOC limit), atomic flag prevents re-entry
 - Engine startup: cleanup on partial failure (goto-based resource release)
 - Restrictive file permissions: database `0600`, logs `0600`, directories `0700`
 - Path traversal protection on strategy file loading

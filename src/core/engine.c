@@ -330,6 +330,8 @@ int tb_engine_start(tb_engine_t *engine) {
         } else {
             tb_log_info("dashboard started");
         }
+    } else {
+        tb_log_warn("dashboard creation failed");
     }
 
     /* 12. Timer thread — periodic tasks */
@@ -362,6 +364,14 @@ void tb_engine_stop(tb_engine_t *engine) {
         engine->timer_running = false;
         pthread_join(engine->timer_thread, NULL);
         tb_log_info("timer thread stopped");
+    }
+
+    /* WebSocket FIRST — stops all WS callbacks before destroying subsystems */
+    if (engine->ws) {
+        hl_ws_disconnect(engine->ws);
+        hl_ws_destroy(engine->ws);
+        engine->ws = NULL;
+        tb_log_info("WebSocket disconnected");
     }
 
     /* Dashboard */
@@ -401,14 +411,6 @@ void tb_engine_stop(tb_engine_t *engine) {
         tb_order_mgr_destroy(engine->order_mgr);
         engine->order_mgr = NULL;
         tb_log_info("order manager stopped");
-    }
-
-    /* WebSocket */
-    if (engine->ws) {
-        hl_ws_disconnect(engine->ws);
-        hl_ws_destroy(engine->ws);
-        engine->ws = NULL;
-        tb_log_info("WebSocket disconnected");
     }
 
     /* REST */

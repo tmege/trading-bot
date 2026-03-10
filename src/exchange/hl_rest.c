@@ -229,7 +229,8 @@ int hl_rest_get_l2_book(hl_rest_t *rest, const char *coin, tb_book_t *out_book) 
 
 int hl_rest_get_candles(hl_rest_t *rest, const char *coin, const char *interval,
                         int64_t start_ms, int64_t end_ms,
-                        tb_candle_t *out_candles, int *out_count) {
+                        tb_candle_t *out_candles, int *out_count,
+                        int max_count) {
     char body[256];
     snprintf(body, sizeof(body),
              "{\"type\":\"candleSnapshot\",\"req\":{\"coin\":\"%s\","
@@ -239,7 +240,8 @@ int hl_rest_get_candles(hl_rest_t *rest, const char *coin, const char *interval,
     yyjson_doc *doc = info_request(rest, body, 20);
     if (!doc) return -1;
 
-    int rc = hl_json_parse_candles(yyjson_doc_get_root(doc), out_candles, out_count);
+    int rc = hl_json_parse_candles(yyjson_doc_get_root(doc), out_candles, out_count,
+                                    max_count);
     yyjson_doc_free(doc);
     return rc;
 }
@@ -258,7 +260,8 @@ int hl_rest_get_account(hl_rest_t *rest, const char *user_addr, tb_account_t *ou
 }
 
 int hl_rest_get_open_orders(hl_rest_t *rest, const char *user_addr,
-                            tb_order_t *out_orders, int *out_count) {
+                            tb_order_t *out_orders, int *out_count,
+                            int max_count) {
     char body[128];
     snprintf(body, sizeof(body),
              "{\"type\":\"openOrders\",\"user\":\"%s\"}", user_addr);
@@ -266,13 +269,15 @@ int hl_rest_get_open_orders(hl_rest_t *rest, const char *user_addr,
     yyjson_doc *doc = info_request(rest, body, 20);
     if (!doc) return -1;
 
-    int rc = hl_json_parse_orders(yyjson_doc_get_root(doc), out_orders, out_count);
+    int rc = hl_json_parse_orders(yyjson_doc_get_root(doc), out_orders, out_count,
+                                   max_count);
     yyjson_doc_free(doc);
     return rc;
 }
 
 int hl_rest_get_user_fills(hl_rest_t *rest, const char *user_addr,
-                           tb_fill_t *out_fills, int *out_count) {
+                           tb_fill_t *out_fills, int *out_count,
+                           int max_count) {
     char body[128];
     snprintf(body, sizeof(body),
              "{\"type\":\"userFills\",\"user\":\"%s\"}", user_addr);
@@ -280,7 +285,8 @@ int hl_rest_get_user_fills(hl_rest_t *rest, const char *user_addr,
     yyjson_doc *doc = info_request(rest, body, 20);
     if (!doc) return -1;
 
-    int rc = hl_json_parse_fills(yyjson_doc_get_root(doc), out_fills, out_count);
+    int rc = hl_json_parse_fills(yyjson_doc_get_root(doc), out_fills, out_count,
+                                  max_count);
     yyjson_doc_free(doc);
     return rc;
 }

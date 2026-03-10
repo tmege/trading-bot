@@ -99,7 +99,8 @@ static int fetch_candles(const char *coin, int n_days, int end_days_ago,
     while (cursor < end_ms && total < max) {
         int batch = 0;
         int rc = hl_rest_get_candles(rest, coin, g_interval,
-                                      cursor, end_ms, &out[total], &batch);
+                                      cursor, end_ms, &out[total], &batch,
+                                      max - total);
         if (rc != 0 || batch == 0) {
             if (total > 0) break;
             hl_rest_destroy(rest);

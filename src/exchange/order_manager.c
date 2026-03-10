@@ -148,9 +148,9 @@ void tb_order_mgr_handle_ws_fills(tb_order_mgr_t *mgr,
             mgr->fill_cb(fill, strategy, mgr->fill_cb_userdata);
         }
 
-        /* Remove filled order from tracking (if fully filled, will be
-         * corrected by reconciliation if partially filled) */
-        remove_tracked_order(mgr, fill->oid);
+        /* Don't remove here — WS order update (sz=0) or reconciliation
+         * will handle removal.  Removing on every fill loses tracking
+         * for partially-filled orders. */
     }
 }
 
@@ -218,6 +218,7 @@ tb_order_mgr_t *tb_order_mgr_create(hl_rest_t *rest, hl_ws_t *ws,
     pthread_rwlock_init(&mgr->orders_lock, NULL);
 
     if (prepare_statements(mgr) != 0) {
+        pthread_rwlock_destroy(&mgr->orders_lock);
         free(mgr);
         return NULL;
     }
@@ -324,6 +325,9 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
         t->order.reduce_only = submit->order.reduce_only;
         snprintf(t->strategy, sizeof(t->strategy), "%s", submit->strategy_name);
         mgr->n_orders++;
+    } else {
+        tb_log_warn("order tracking full (%d), oid=%llu untracked",
+                    MAX_OPEN_ORDERS, (unsigned long long)oid);
     }
     pthread_rwlock_unlock(&mgr->orders_lock);
 
@@ -373,7 +377,14 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
 
     if (n == 0) return 0;
 
-    int rc = hl_rest_cancel_orders(mgr->rest, assets, oids, n);
+    int rc;
+    if (mgr->paper) {
+        rc = 0;
+        for (int i = 0; i < n && rc == 0; i++)
+            rc = tb_paper_cancel_order(mgr->paper, assets[i], oids[i]);
+    } else {
+        rc = hl_rest_cancel_orders(mgr->rest, assets, oids, n);
+    }
     if (rc == 0) {
         for (int i = 0; i < n; i++) {
             remove_tracked_order(mgr, oids[i]);
@@ -434,7 +445,8 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
     if (!exchange_orders) return -1;
     int n_exchange = 0;
     if (hl_rest_get_open_orders(mgr->rest, mgr->user_addr,
-                                 exchange_orders, &n_exchange) == 0) {
+                                 exchange_orders, &n_exchange,
+                                 MAX_OPEN_ORDERS) == 0) {
         pthread_rwlock_wrlock(&mgr->orders_lock);
 
         /* Remove local orders not on exchange */
@@ -458,10 +470,11 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
             }
         }
 
+        int local_count = mgr->n_orders;
         pthread_rwlock_unlock(&mgr->orders_lock);
 
         tb_log_debug("reconciled: %d local orders, %d on exchange",
-                     mgr->n_orders, n_exchange);
+                     local_count, n_exchange);
     }
 
     /* Check emergency close */
@@ -480,14 +493,18 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
             memset(&close_order, 0, sizeof(close_order));
             snprintf(close_order.strategy_name, sizeof(close_order.strategy_name),
                      "emergency_close");
+            close_order.order.asset = positions[p].asset;
             snprintf(close_order.order.coin, sizeof(close_order.order.coin),
                      "%s", positions[p].coin);
             close_order.order.side = sz > 0 ? TB_SIDE_SELL : TB_SIDE_BUY;
             close_order.order.size = tb_decimal_abs(positions[p].size);
-            /* Use aggressive price to ensure IOC fill: sell at $0.01, buy at $999999 */
+            /* Use entry price ± 5% slippage for IOC.  Wide enough to fill
+             * in volatile conditions, tight enough to avoid catastrophic fills. */
+            double entry = tb_decimal_to_double(positions[p].entry_px);
+            if (entry < 1e-9) entry = 1.0; /* fallback if no entry price */
             close_order.order.price = (sz > 0)
-                ? tb_decimal_from_double(0.01, 2)
-                : tb_decimal_from_double(999999.0, 2);
+                ? tb_decimal_from_double(entry * 0.95, 6)
+                : tb_decimal_from_double(entry * 1.05, 6);
             close_order.order.type = TB_ORDER_LIMIT;
             close_order.order.tif = TB_TIF_IOC;
             close_order.order.reduce_only = true;

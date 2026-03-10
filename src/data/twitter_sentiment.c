@@ -191,6 +191,7 @@ static int fetch_rss(CURL *curl, const char *url, const char *source_name,
     tb_curl_buf_t buf = { .buf = malloc(65536), .len = 0, .cap = 65536 };
     if (!buf.buf) return 0;
 
+    curl_easy_reset(curl);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);

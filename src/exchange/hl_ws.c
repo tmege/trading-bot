@@ -181,7 +181,7 @@ static void dispatch_message(hl_ws_t *ws, const char *data, size_t len) {
         if (yyjson_is_arr(data_val)) {
             tb_order_t orders[100];
             int n = 0;
-            hl_json_parse_orders(data_val, orders, &n);
+            hl_json_parse_orders(data_val, orders, &n, 100);
             if (n > 0) ws->cbs.on_order_update(orders, n, ws->cbs.userdata);
         }
     }
@@ -189,7 +189,7 @@ static void dispatch_message(hl_ws_t *ws, const char *data, size_t len) {
         if (yyjson_is_arr(data_val)) {
             tb_fill_t fills[100];
             int n = 0;
-            hl_json_parse_fills(data_val, fills, &n);
+            hl_json_parse_fills(data_val, fills, &n, 100);
             if (n > 0) ws->cbs.on_fill(fills, n, ws->cbs.userdata);
         }
     }
@@ -281,6 +281,16 @@ static int lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
         tb_log_warn("WebSocket closed");
         ws->connected = false;
         ws->wsi = NULL;
+        break;
+
+    case LWS_CALLBACK_EVENT_WAIT_CANCELLED:
+        /* Woken by lws_cancel_service — check if there are queued messages */
+        if (ws->wsi && ws->connected) {
+            pthread_mutex_lock(&ws->send_queue.lock);
+            bool has_msgs = ws->send_queue.count > 0;
+            pthread_mutex_unlock(&ws->send_queue.lock);
+            if (has_msgs) lws_callback_on_writable(ws->wsi);
+        }
         break;
 
     default:
@@ -438,9 +448,10 @@ static int send_subscribe(hl_ws_t *ws, const char *sub_json) {
         return -1;
     }
 
-    /* Request writable callback */
-    if (ws->wsi) {
-        lws_callback_on_writable(ws->wsi);
+    /* Wake the LWS service thread — lws_cancel_service is thread-safe,
+     * unlike lws_callback_on_writable which must run on the LWS thread. */
+    if (ws->lws_ctx) {
+        lws_cancel_service(ws->lws_ctx);
     }
 
     return 0;

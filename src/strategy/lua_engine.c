@@ -43,7 +43,7 @@ struct tb_lua_engine {
 /* ── Lua execution limits ──────────────────────────────────────────────── */
 
 /* Max instructions per Lua call (prevents infinite loops) */
-#define LUA_MAX_INSTRUCTIONS 1000000
+#define LUA_MAX_INSTRUCTIONS 10000000
 
 /* Max memory per Lua state (16 MB) */
 #define LUA_MAX_MEMORY (16 * 1024 * 1024)

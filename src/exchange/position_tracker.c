@@ -58,7 +58,8 @@ void tb_pos_tracker_on_fill(tb_position_tracker_t *pt, const tb_fill_t *fill) {
         tb_position_t *pos = &pt->positions[found];
         double fill_sz = tb_decimal_to_double(fill->sz);
         double fill_px = tb_decimal_to_double(fill->px);
-        double cur_sz = tb_decimal_to_double(pos->size);
+        double prev_sz = tb_decimal_to_double(pos->size);
+        double cur_sz = prev_sz;
 
         if (fill->side == TB_SIDE_BUY) {
             cur_sz += fill_sz;
@@ -73,7 +74,7 @@ void tb_pos_tracker_on_fill(tb_position_tracker_t *pt, const tb_fill_t *fill) {
             if ((fill->side == TB_SIDE_BUY && cur_sz > 0) ||
                 (fill->side == TB_SIDE_SELL && cur_sz < 0)) {
                 double old_entry = tb_decimal_to_double(pos->entry_px);
-                double old_sz = fabs(tb_decimal_to_double(pos->size)) - fill_sz;
+                double old_sz = fabs(prev_sz);
                 if (old_sz > 0) {
                     double new_entry = (old_entry * old_sz + fill_px * fill_sz) /
                                        (old_sz + fill_sz);
@@ -103,6 +104,9 @@ void tb_pos_tracker_on_fill(tb_position_tracker_t *pt, const tb_fill_t *fill) {
         pt->n_positions++;
     }
 
+    double log_pnl = pt->daily_realized_pnl;
+    double log_fees = pt->daily_fees;
+    int    log_trades = pt->daily_trade_count;
     pthread_rwlock_unlock(&pt->lock);
 
     tb_log_info("fill: %s %s %.4f @ %.2f | daily_pnl=%.2f fees=%.2f trades=%d",
@@ -110,9 +114,7 @@ void tb_pos_tracker_on_fill(tb_position_tracker_t *pt, const tb_fill_t *fill) {
                 fill->coin,
                 tb_decimal_to_double(fill->sz),
                 tb_decimal_to_double(fill->px),
-                pt->daily_realized_pnl,
-                pt->daily_fees,
-                pt->daily_trade_count);
+                log_pnl, log_fees, log_trades);
 }
 
 void tb_pos_tracker_sync(tb_position_tracker_t *pt, const tb_account_t *account) {

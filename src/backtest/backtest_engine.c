@@ -136,16 +136,16 @@ static void record_trade(tb_backtest_engine_t *bt, const char *side,
 static void execute_fill(tb_backtest_engine_t *bt, tb_side_t side,
                          double price, double size, bool is_taker,
                          uint64_t oid) {
-    double fee_rate = is_taker ? bt->cfg.taker_fee_rate : bt->cfg.maker_fee_rate;
-    double notional = price * size;
-    double fee = notional * fee_rate;
-    double pnl = 0;
-
-    /* Apply slippage for taker orders */
+    /* Apply slippage before fee calculation */
     if (is_taker && bt->cfg.slippage_bps > 0) {
         double slip = price * bt->cfg.slippage_bps / 10000.0;
         price += (side == TB_SIDE_BUY) ? slip : -slip;
     }
+
+    double fee_rate = is_taker ? bt->cfg.taker_fee_rate : bt->cfg.maker_fee_rate;
+    double notional = price * size;
+    double fee = notional * fee_rate;
+    double pnl = 0;
 
     double signed_size = (side == TB_SIDE_BUY) ? size : -size;
 

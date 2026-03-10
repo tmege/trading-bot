@@ -43,10 +43,12 @@ int tb_paper_cancel_order(tb_paper_exchange_t *pe,
 /* ── Query interface ───────────────────────────────────────────────────── */
 
 int tb_paper_get_open_orders(tb_paper_exchange_t *pe,
-                             tb_order_t *out_orders, int *out_count);
+                             tb_order_t *out_orders, int *out_count,
+                             int max_count);
 
 int tb_paper_get_positions(tb_paper_exchange_t *pe,
-                           tb_position_t *out_positions, int *out_count);
+                           tb_position_t *out_positions, int *out_count,
+                           int max_count);
 
 double tb_paper_get_account_value(tb_paper_exchange_t *pe);
 double tb_paper_get_daily_pnl(tb_paper_exchange_t *pe);

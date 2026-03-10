@@ -56,9 +56,9 @@ static int load_trades_for_date(sqlite3 *db, const char *date,
     if (!db) return 0;
 
     const char *sql =
-        "SELECT coin, side, price, size, pnl, fee, time_ms, strategy "
-        "FROM trades WHERE date(time_ms/1000, 'unixepoch') = ? "
-        "ORDER BY time_ms ASC LIMIT ?";
+        "SELECT coin, side, price, size, pnl, fee, timestamp_ms, strategy "
+        "FROM trades WHERE date(timestamp_ms/1000, 'unixepoch') = ? "
+        "ORDER BY timestamp_ms ASC LIMIT ?";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -94,8 +94,10 @@ static int load_trades_for_date(sqlite3 *db, const char *date,
 static double load_account_value_at(sqlite3 *db, const char *date) {
     if (!db) return 0;
 
+    /* daily_pnl has realized_pnl, unrealized_pnl, fees_paid — no account_value.
+       Approximate: sum realized_pnl for the date as a proxy. */
     const char *sql =
-        "SELECT account_value FROM daily_pnl WHERE date = ? LIMIT 1";
+        "SELECT CAST(realized_pnl AS REAL) FROM daily_pnl WHERE date = ? LIMIT 1";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
@@ -341,15 +343,18 @@ int tb_report_gen_weekly(tb_report_gen_t *rg, const char *date,
     }
 
     /* Aggregate strategy stats from all daily trades */
-    tb_report_trade_t all_trades[1792]; /* 256 * 7 */
+    tb_report_trade_t *all_trades = malloc(sizeof(tb_report_trade_t) * 1792);
     int all_n = 0;
-    for (int d = 0; d < out->n_days; d++) {
-        for (int i = 0; i < out->daily[d].n_trades && all_n < 1792; i++) {
-            all_trades[all_n++] = out->daily[d].trades[i];
+    if (all_trades) {
+        for (int d = 0; d < out->n_days; d++) {
+            for (int i = 0; i < out->daily[d].n_trades && all_n < 1792; i++) {
+                all_trades[all_n++] = out->daily[d].trades[i];
+            }
         }
+        compute_strategy_stats(all_trades, all_n,
+                               out->strategy_stats, &out->n_strategy_stats);
+        free(all_trades);
     }
-    compute_strategy_stats(all_trades, all_n,
-                           out->strategy_stats, &out->n_strategy_stats);
 
     return 0;
 }

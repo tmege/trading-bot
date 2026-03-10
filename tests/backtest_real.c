@@ -79,7 +79,8 @@ static int fetch_real_candles(const char *coin, int n_days, int end_days_ago,
         int batch_count = 0;
         int rc = hl_rest_get_candles(rest, coin, "1h",
                                       cursor, end_ms,
-                                      &out[total], &batch_count);
+                                      &out[total], &batch_count,
+                                      max - total);
         if (rc != 0 || batch_count == 0) {
             if (total > 0) break;  /* partial data is OK */
             fprintf(stderr, "ERROR: failed to fetch candles (rc=%d)\n", rc);

@@ -246,7 +246,8 @@ double tb_risk_compute_stop_price(const tb_risk_mgr_t *mgr,
 bool tb_risk_should_emergency_close(const tb_risk_mgr_t *mgr) {
     pthread_mutex_lock((pthread_mutex_t *)&mgr->lock);
     double net = mgr->daily_realized_pnl - mgr->daily_fees;
-    bool result = net <= mgr->emergency_close_usd;
+    bool result = (net <= mgr->emergency_close_usd && !mgr->emergency_triggered);
+    if (result) ((tb_risk_mgr_t *)mgr)->emergency_triggered = true;
     pthread_mutex_unlock((pthread_mutex_t *)&mgr->lock);
     return result;
 }

@@ -187,12 +187,12 @@ function on_tick(coin, mid_price)
         -- Check if price reached mid BB (conservative exit)
         if in_position and config.tp_mid_bb then
             local ind = bot.get_indicators(config.coin, "15m", 30)
-            if ind and ind.bb_mid then
-                if position_side == "long" and mid_price >= ind.bb_mid then
+            if ind and ind.bb_middle then
+                if position_side == "long" and mid_price >= ind.bb_middle then
                     close_position("reached mid BB")
                     last_trade = now
                     return
-                elseif position_side == "short" and mid_price <= ind.bb_mid then
+                elseif position_side == "short" and mid_price <= ind.bb_middle then
                     close_position("reached mid BB")
                     last_trade = now
                     return
@@ -213,7 +213,7 @@ function on_tick(coin, mid_price)
     local rsi = ind.rsi
     local bb_upper = ind.bb_upper
     local bb_lower = ind.bb_lower
-    local bb_mid = ind.bb_mid
+    local bb_mid = ind.bb_middle
 
     if not rsi or not bb_upper or not bb_lower or not bb_mid then return end
 

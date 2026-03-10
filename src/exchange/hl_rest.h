@@ -16,12 +16,15 @@ int hl_rest_get_all_mids(hl_rest_t *rest, tb_mid_t *out_mids, int *out_count);
 int hl_rest_get_l2_book(hl_rest_t *rest, const char *coin, tb_book_t *out_book);
 int hl_rest_get_candles(hl_rest_t *rest, const char *coin, const char *interval,
                         int64_t start_ms, int64_t end_ms,
-                        tb_candle_t *out_candles, int *out_count);
+                        tb_candle_t *out_candles, int *out_count,
+                        int max_count);
 int hl_rest_get_account(hl_rest_t *rest, const char *user_addr, tb_account_t *out);
 int hl_rest_get_open_orders(hl_rest_t *rest, const char *user_addr,
-                            tb_order_t *out_orders, int *out_count);
+                            tb_order_t *out_orders, int *out_count,
+                            int max_count);
 int hl_rest_get_user_fills(hl_rest_t *rest, const char *user_addr,
-                           tb_fill_t *out_fills, int *out_count);
+                           tb_fill_t *out_fills, int *out_count,
+                           int max_count);
 
 /* ── Exchange endpoints (POST /exchange, EIP-712 auth) ────────────────────── */
 int hl_rest_place_order(hl_rest_t *rest,

@@ -352,12 +352,14 @@ int tb_paper_cancel_order(tb_paper_exchange_t *pe,
 }
 
 int tb_paper_get_open_orders(tb_paper_exchange_t *pe,
-                             tb_order_t *out_orders, int *out_count) {
+                             tb_order_t *out_orders, int *out_count,
+                             int max_count) {
     pthread_mutex_lock(&pe->lock);
     int n = 0;
     for (int i = 0; i < pe->n_orders; i++) {
         paper_order_t *o = &pe->orders[i];
         if (!o->active) continue;
+        if (n >= max_count) break;
 
         tb_order_t *dst = &out_orders[n++];
         dst->oid = o->oid;
@@ -378,12 +380,14 @@ int tb_paper_get_open_orders(tb_paper_exchange_t *pe,
 }
 
 int tb_paper_get_positions(tb_paper_exchange_t *pe,
-                           tb_position_t *out_positions, int *out_count) {
+                           tb_position_t *out_positions, int *out_count,
+                           int max_count) {
     pthread_mutex_lock(&pe->lock);
     int n = 0;
     for (int i = 0; i < pe->n_positions; i++) {
         paper_position_t *p = &pe->positions[i];
         if (fabs(p->size) < 1e-12) continue;
+        if (n >= max_count) break;
 
         tb_position_t *dst = &out_positions[n++];
         memset(dst, 0, sizeof(*dst));
