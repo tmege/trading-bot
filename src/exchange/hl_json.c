@@ -1,4 +1,5 @@
 #include "exchange/hl_json.h"
+#include "core/logging.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -324,6 +325,8 @@ int hl_json_parse_exchange_response(yyjson_val *root,
     if (!statuses || !yyjson_is_arr(statuses)) return 0;
 
     int filled = 0;
+    int n_errors = 0;
+    int n_ok = 0;
     size_t idx, max;
     yyjson_val *item;
     yyjson_arr_foreach(statuses, idx, max, item) {
@@ -331,6 +334,7 @@ int hl_json_parse_exchange_response(yyjson_val *root,
         yyjson_val *resting = yyjson_obj_get(item, "resting");
         if (resting) {
             if (oids && (int)idx < max_oids) oids[idx] = (uint64_t)get_int(resting, "oid");
+            n_ok++;
             continue;
         }
         /* Filled order: { "filled": { "totalSz": "..", "avgPx": "..", "oid": N } } */
@@ -338,17 +342,94 @@ int hl_json_parse_exchange_response(yyjson_val *root,
         if (fld) {
             if (oids && (int)idx < max_oids) oids[idx] = (uint64_t)get_int(fld, "oid");
             filled++;
+            n_ok++;
             continue;
         }
         /* Error for this specific order */
         yyjson_val *error = yyjson_obj_get(item, "error");
-        if (error && err_msg && err_len > 0) {
+        if (error) {
             const char *e = yyjson_get_str(error);
-            if (e) snprintf(err_msg, err_len, "%s", e);
+            if (e) {
+                tb_log_error("order[%zu] error: %s", idx, e);
+                if (err_msg && err_len > 0) snprintf(err_msg, err_len, "%s", e);
+            }
+            n_errors++;
         }
     }
 
     if (n_filled) *n_filled = filled;
+    /* Return error if ALL orders failed */
+    if (n_errors > 0 && n_ok == 0) return -1;
+    return 0;
+}
+
+/* ── Parse exchange response (extended — with fill details) ─────────────── */
+int hl_json_parse_exchange_response_ex(yyjson_val *root,
+                                        hl_rest_fill_info_t *fill_infos,
+                                        int max_orders,
+                                        int *n_filled,
+                                        char *err_msg, size_t err_len) {
+    const char *status = get_str(root, "status");
+    if (!status || strcmp(status, "ok") != 0) {
+        const char *response = get_str(root, "response");
+        if (response && err_msg) snprintf(err_msg, err_len, "%s", response);
+        return -1;
+    }
+
+    yyjson_val *response = yyjson_obj_get(root, "response");
+    if (!response) return 0;
+    yyjson_val *data = yyjson_obj_get(response, "data");
+    if (!data) return 0;
+    yyjson_val *statuses = yyjson_obj_get(data, "statuses");
+    if (!statuses || !yyjson_is_arr(statuses)) return 0;
+
+    int filled = 0;
+    int n_errors = 0;
+    int n_ok = 0;
+    size_t idx, max;
+    yyjson_val *item;
+    yyjson_arr_foreach(statuses, idx, max, item) {
+        if (fill_infos && (int)idx < max_orders) {
+            memset(&fill_infos[idx], 0, sizeof(fill_infos[idx]));
+        }
+
+        yyjson_val *resting = yyjson_obj_get(item, "resting");
+        if (resting) {
+            if (fill_infos && (int)idx < max_orders) {
+                fill_infos[idx].oid = (uint64_t)get_int(resting, "oid");
+            }
+            n_ok++;
+            continue;
+        }
+
+        yyjson_val *fld = yyjson_obj_get(item, "filled");
+        if (fld) {
+            if (fill_infos && (int)idx < max_orders) {
+                fill_infos[idx].oid = (uint64_t)get_int(fld, "oid");
+                const char *avg = get_str(fld, "avgPx");
+                const char *tsz = get_str(fld, "totalSz");
+                if (avg) fill_infos[idx].avg_px = atof(avg);
+                if (tsz) fill_infos[idx].total_sz = atof(tsz);
+                fill_infos[idx].filled = true;
+            }
+            filled++;
+            n_ok++;
+            continue;
+        }
+
+        yyjson_val *error = yyjson_obj_get(item, "error");
+        if (error) {
+            const char *e = yyjson_get_str(error);
+            if (e) {
+                tb_log_error("order[%zu] error: %s", idx, e);
+                if (err_msg && err_len > 0) snprintf(err_msg, err_len, "%s", e);
+            }
+            n_errors++;
+        }
+    }
+
+    if (n_filled) *n_filled = filled;
+    if (n_errors > 0 && n_ok == 0) return -1;
     return 0;
 }
 

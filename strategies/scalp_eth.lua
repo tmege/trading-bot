@@ -40,7 +40,7 @@ local config = {
     sl_pct        = 1.5,         -- tight stop loss
 
     -- Timing
-    check_sec     = 15,          -- check every 15s (fast scalping)
+    check_sec     = 5,           -- check every 5s (fast scalping)
     cooldown_sec  = 180,         -- 3 min between scalps
     max_hold_sec  = 7200,        -- max hold 2h (force close if stuck)
 
@@ -76,12 +76,16 @@ local function near_band(price, band, pct)
 end
 
 local function place_entry(side, mid)
+    -- Add 0.1% slippage so IOC crosses the spread and actually fills
+    local price = side == "long"
+        and mid * 1.001   -- buy slightly above mid (toward ask)
+        or  mid * 0.999   -- sell slightly below mid (toward bid)
     local size = config.entry_size / mid
     local order_side = side == "long" and "buy" or "sell"
-    local oid = bot.place_limit(config.coin, order_side, mid, size, { tif = "ioc" })
+    local oid = bot.place_limit(config.coin, order_side, price, size, { tif = "ioc" })
     if oid then
         bot.log("info", string.format("scalp: ENTRY %s @ $%.2f ($%.0f)",
-            string.upper(side), mid, config.entry_size))
+            string.upper(side), price, config.entry_size))
         return oid
     end
     return nil
@@ -186,7 +190,7 @@ function on_tick(coin, mid_price)
 
         -- Check if price reached mid BB (conservative exit)
         if in_position and config.tp_mid_bb then
-            local ind = bot.get_indicators(config.coin, "15m", 30)
+            local ind = bot.get_indicators(config.coin, "15m", 30, mid_price)
             if ind and ind.bb_middle then
                 if position_side == "long" and mid_price >= ind.bb_middle then
                     close_position("reached mid BB")
@@ -207,7 +211,7 @@ function on_tick(coin, mid_price)
     if now - last_trade < config.cooldown_sec then return end
 
     -- Get indicators
-    local ind = bot.get_indicators(config.coin, "15m", 30)
+    local ind = bot.get_indicators(config.coin, "15m", 30, mid_price)
     if not ind then
         bot.log("warn", "scalp: get_indicators returned nil")
         return
@@ -237,10 +241,10 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- LONG: price near lower BB + RSI oversold
-    if near_band(mid_price, bb_lower, config.bb_touch_pct) and rsi < config.rsi_oversold then
+    -- LONG: price at or below lower BB + RSI oversold
+    if mid_price <= bb_lower * (1 + config.bb_touch_pct / 100) and rsi < config.rsi_oversold then
         bot.log("info", string.format(
-            "scalp: LOWER BB touch ($%.2f ≈ $%.2f) + RSI=%.0f → LONG",
+            "scalp: LOWER BB touch ($%.2f <= $%.2f) + RSI=%.0f → LONG",
             mid_price, bb_lower, rsi))
         local oid = place_entry("long", mid_price)
         if oid then
@@ -250,10 +254,10 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- SHORT: price near upper BB + RSI overbought
-    if near_band(mid_price, bb_upper, config.bb_touch_pct) and rsi > config.rsi_overbought then
+    -- SHORT: price at or above upper BB + RSI overbought
+    if mid_price >= bb_upper * (1 - config.bb_touch_pct / 100) and rsi > config.rsi_overbought then
         bot.log("info", string.format(
-            "scalp: UPPER BB touch ($%.2f ≈ $%.2f) + RSI=%.0f → SHORT",
+            "scalp: UPPER BB touch ($%.2f >= $%.2f) + RSI=%.0f → SHORT",
             mid_price, bb_upper, rsi))
         local oid = place_entry("short", mid_price)
         if oid then

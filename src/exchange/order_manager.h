@@ -30,6 +30,9 @@ tb_order_mgr_t *tb_order_mgr_create(hl_rest_t *rest, hl_ws_t *ws,
                                      sqlite3 *db);
 void            tb_order_mgr_destroy(tb_order_mgr_t *mgr);
 
+/* Load asset metadata from exchange (call before start in live mode) */
+int  tb_order_mgr_load_meta(tb_order_mgr_t *mgr);
+
 /* Start: subscribe to WS updates, begin reconciliation loop */
 int  tb_order_mgr_start(tb_order_mgr_t *mgr, const char *user_addr);
 void tb_order_mgr_stop(tb_order_mgr_t *mgr);

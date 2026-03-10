@@ -297,10 +297,11 @@ static int exchange_request(hl_rest_t *rest,
                             const uint8_t *msgpack_data, size_t msgpack_len,
                             const char *action_json,
                             yyjson_doc **out_doc) {
-    /* Monotonic nonce: timestamp + atomic counter to prevent replay */
+    /* Nonce in milliseconds — Hyperliquid rejects microsecond-scale nonces.
+     * Atomic counter ensures uniqueness if multiple orders within same ms. */
     static _Atomic uint64_t g_nonce_counter = 0;
-    uint64_t nonce = (uint64_t)now_ms() * 1000 +
-                     atomic_fetch_add(&g_nonce_counter, 1) % 1000;
+    uint64_t nonce = (uint64_t)now_ms() +
+                     atomic_fetch_add(&g_nonce_counter, 1) % 100;
 
     /* Sign */
     hl_signature_t sig;
@@ -326,6 +327,9 @@ static int exchange_request(hl_rest_t *rest,
     free(body);
 
     if (rc != 0) return -1;
+
+    /* Log raw API response for diagnostics */
+    tb_log_info("exchange response: %.*s", (int)(resp.size > 1024 ? 1024 : resp.size), resp.data);
 
     *out_doc = yyjson_read(resp.data, resp.size, 0);
     free(resp.data);
@@ -416,6 +420,9 @@ int hl_rest_place_orders(hl_rest_t *rest,
     char *action_json = yyjson_mut_write(adoc, 0, NULL);
     yyjson_mut_doc_free(adoc);
 
+    /* Log action for diagnostics */
+    tb_log_info("place_orders: action=%s", action_json);
+
     /* Send request */
     yyjson_doc *resp_doc = NULL;
     int rc = exchange_request(rest, mp_data, mp_len, action_json, &resp_doc);
@@ -428,6 +435,99 @@ int hl_rest_place_orders(hl_rest_t *rest,
     rc = hl_json_parse_exchange_response(yyjson_doc_get_root(resp_doc),
                                           out_oids, n_orders, out_n_filled,
                                           err_msg, sizeof(err_msg));
+    yyjson_doc_free(resp_doc);
+
+    if (rc != 0) {
+        tb_log_error("order placement failed: %s", err_msg);
+    } else if (out_oids) {
+        for (int i = 0; i < n_orders; i++) {
+            if (out_oids[i] == 0) {
+                tb_log_warn("order[%d]: oid=0 (likely rejected by exchange)", i);
+            }
+        }
+    }
+    return rc;
+}
+
+int hl_rest_place_orders_ex(hl_rest_t *rest,
+                             const tb_order_request_t *orders, int n_orders,
+                             tb_grouping_t grouping,
+                             hl_rest_fill_info_t *out_fill_infos,
+                             int *out_n_filled) {
+    /* Serialize to msgpack for signing */
+    uint8_t *mp_data = NULL;
+    size_t mp_len = 0;
+    if (hl_msgpack_order_action(orders, n_orders, grouping,
+                                 &mp_data, &mp_len) != 0) {
+        return -1;
+    }
+
+    /* Build action JSON (same as hl_rest_place_orders) */
+    yyjson_mut_doc *adoc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *aroot = yyjson_mut_obj(adoc);
+    yyjson_mut_doc_set_root(adoc, aroot);
+    yyjson_mut_obj_add_str(adoc, aroot, "type", "order");
+
+    yyjson_mut_val *arr = yyjson_mut_arr(adoc);
+    for (int i = 0; i < n_orders; i++) {
+        yyjson_mut_val *o = yyjson_mut_obj(adoc);
+        yyjson_mut_obj_add_uint(adoc, o, "a", orders[i].asset);
+        yyjson_mut_obj_add_bool(adoc, o, "b", orders[i].side == TB_SIDE_BUY);
+
+        char px_buf[64], sz_buf[64];
+        tb_decimal_to_str(orders[i].price, px_buf, sizeof(px_buf));
+        tb_decimal_to_str(orders[i].size, sz_buf, sizeof(sz_buf));
+        yyjson_mut_obj_add_strcpy(adoc, o, "p", px_buf);
+        yyjson_mut_obj_add_strcpy(adoc, o, "s", sz_buf);
+        yyjson_mut_obj_add_bool(adoc, o, "r", orders[i].reduce_only);
+
+        yyjson_mut_val *t = yyjson_mut_obj(adoc);
+        if (orders[i].type == TB_ORDER_LIMIT) {
+            yyjson_mut_val *lim = yyjson_mut_obj(adoc);
+            const char *tif = "Gtc";
+            if (orders[i].tif == TB_TIF_IOC) tif = "Ioc";
+            else if (orders[i].tif == TB_TIF_ALO) tif = "Alo";
+            yyjson_mut_obj_add_str(adoc, lim, "tif", tif);
+            yyjson_mut_obj_add_val(adoc, t, "limit", lim);
+        } else {
+            yyjson_mut_val *trig = yyjson_mut_obj(adoc);
+            yyjson_mut_obj_add_bool(adoc, trig, "isMarket", orders[i].is_market);
+            char tpx_buf[64];
+            tb_decimal_to_str(orders[i].trigger_px, tpx_buf, sizeof(tpx_buf));
+            yyjson_mut_obj_add_strcpy(adoc, trig, "triggerPx", tpx_buf);
+            yyjson_mut_obj_add_str(adoc, trig, "tpsl",
+                                    orders[i].tpsl == TB_TPSL_TP ? "tp" : "sl");
+            yyjson_mut_obj_add_val(adoc, t, "trigger", trig);
+        }
+        yyjson_mut_obj_add_val(adoc, o, "t", t);
+        if (orders[i].cloid[0]) {
+            yyjson_mut_obj_add_strcpy(adoc, o, "c", orders[i].cloid);
+        }
+        yyjson_mut_arr_append(arr, o);
+    }
+    yyjson_mut_obj_add_val(adoc, aroot, "orders", arr);
+
+    const char *grp_str = "na";
+    if (grouping == TB_GROUP_NORMAL_TPSL) grp_str = "normalTpsl";
+    else if (grouping == TB_GROUP_POS_TPSL) grp_str = "positionTpsl";
+    yyjson_mut_obj_add_str(adoc, aroot, "grouping", grp_str);
+
+    char *action_json = yyjson_mut_write(adoc, 0, NULL);
+    yyjson_mut_doc_free(adoc);
+
+    tb_log_info("place_orders_ex: action=%s", action_json);
+
+    yyjson_doc *resp_doc = NULL;
+    int rc = exchange_request(rest, mp_data, mp_len, action_json, &resp_doc);
+    free(mp_data);
+    free(action_json);
+    if (rc != 0) return -1;
+
+    char err_msg[256] = {0};
+    rc = hl_json_parse_exchange_response_ex(yyjson_doc_get_root(resp_doc),
+                                             out_fill_infos, n_orders,
+                                             out_n_filled,
+                                             err_msg, sizeof(err_msg));
     yyjson_doc_free(resp_doc);
 
     if (rc != 0) {

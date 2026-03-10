@@ -4,10 +4,10 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 
 ## Features
 
-- **Full Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders
+- **Full Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders, automatic asset metadata resolution
 - **Lua strategies** — sandboxed environment, automatic hot-reload (5s), comprehensive `bot.*` API
 - **Active strategies** — BB Scalping on 5 coins (ETH, BTC, SOL, DOGE, HYPE) — Bollinger Bands mean reversion, validated on 30 days real data (15m candles)
-- **Risk management** — automatic stop loss, daily loss limit, leverage and position size control
+- **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit, leverage and position size control
 - **Market data** — crypto prices via Hyperliquid, macro (Gold, S&P500, DXY), Fear & Greed Index, crypto news sentiment
 - **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP + derived signals
 - **AI advisory** — Claude Haiku called on startup + twice daily (8h/20h UTC) to analyze positions and suggest adjustments
@@ -37,8 +37,8 @@ src/
 │   ├── keccak256.c             Keccak-256 implementation (Ethereum variant)
 │   ├── hl_json.c               JSON parsing for Hyperliquid responses
 │   ├── hl_types.c              Exchange type conversions
-│   ├── order_manager.c         Open order management, REST/WS reconciliation
-│   ├── position_tracker.c      Real-time position tracking
+│   ├── order_manager.c         Order management, asset resolution, price/size precision, immediate fill dispatch
+│   ├── position_tracker.c      Real-time position tracking (15s REST reconciliation)
 │   └── paper_exchange.c        Simulated exchange (paper trading)
 ├── strategy/                   Lua engine + technical indicators
 │   ├── lua_engine.c            Lua sandbox, hot-reload, callbacks
@@ -364,8 +364,9 @@ Backtest config: $100 balance, 5x leverage, maker 2bps, taker 5bps, slippage 1bp
 - **Maximum position size**: 200 USD
 - **Automatic stop loss**: computed pre-trade
 - **Capital allocation**: 5 strategies x $40/trade = $200 notional max, $40 margin at 5x (leaves $60 buffer on $100 account)
-- **BB Scalping stops**: tight 1.5% SL + 3% TP per scalp, 2h max hold time
+- **BB Scalping stops**: tight 1.5% SL + 3% TP per scalp, 2h max hold time — SL/TP placed as trigger orders on exchange immediately after entry fill
 - **BB regime filter**: skips trades when Bollinger Bands too tight (< 1%) or too wide (> 8%)
+- **Position reconciliation**: REST sync every 15 seconds to detect external fills and position changes
 
 ## AI Advisory
 
@@ -412,8 +413,13 @@ Article titles are scored using keyword-based analysis (bullish/bearish word lis
 - Risk parameter hard bounds: daily limit [-100, 0], leverage [1x, 10x], position [$10, $10k] — immune to AI prompt injection
 - TOCTOU race prevention: risk check-and-set under mutex, atomic flags for cross-thread state
 - Thread-safe initialization: `pthread_once` for EIP-712 constants, `_Atomic bool` for shutdown flags
-- Monotonic nonce generation: `now_ms() * 1000 + atomic_counter % 1000` prevents replay attacks
+- Monotonic nonce generation: `now_ms() + atomic_counter % 100` prevents replay attacks
 - Shell injection prevention: `.env` parsing uses safe KEY=VALUE extraction (no `source`)
+- Asset metadata resolution: exchange metadata fetched at startup to map coin names to asset IDs and size decimals
+- Price precision: all order prices rounded to 5 significant figures before submission (Hyperliquid requirement)
+- Size precision: order sizes rounded to per-asset `sz_decimals` from exchange metadata
+- Immediate fill dispatch: IOC orders that fill via REST trigger `on_fill` synchronously (no dependency on delayed WS events)
+- Recursive mutex on Lua engine: prevents deadlock when `on_tick` → `place_order` → REST fill → `on_fill` re-enters the lock
 - Exchange response bounds checking: `oids[]` array writes validated against `max_oids` parameter
 - JSON parse buffer overflow prevention: `max_count` parameter threaded through all parse → REST → caller chains
 - Double-buffer pattern for thread-safe data refresh (macro fetcher writes to working copy, commits atomically under lock)

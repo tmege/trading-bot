@@ -245,7 +245,13 @@ tb_lua_engine_t *tb_lua_engine_create(const tb_config_t *cfg) {
     snprintf(engine->strategies_dir, sizeof(engine->strategies_dir),
              "%s", cfg->strategies_dir);
     engine->reload_sec = cfg->strategy_reload_sec > 0 ? cfg->strategy_reload_sec : 5;
-    pthread_mutex_init(&engine->lock, NULL);
+    /* Recursive mutex: on_tick → place_limit → immediate fill → on_fill
+     * can re-enter from the same thread. */
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&engine->lock, &attr);
+    pthread_mutexattr_destroy(&attr);
 
     tb_log_info("lua engine: dir=%s, reload=%ds",
                 engine->strategies_dir, engine->reload_sec);

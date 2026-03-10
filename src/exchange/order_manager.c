@@ -27,6 +27,10 @@ struct tb_order_mgr {
 
     char                    user_addr[44];
 
+    /* Asset metadata (fetched from exchange) */
+    tb_asset_meta_t         assets[TB_MAX_ASSETS];
+    int                     n_assets;
+
     /* Local order state */
     tracked_order_t         orders[MAX_OPEN_ORDERS];
     int                     n_orders;
@@ -199,6 +203,49 @@ static void *recon_thread_func(void *arg) {
     return NULL;
 }
 
+/* ── Asset resolution helpers ──────────────────────────────────────────────── */
+
+/* Look up asset metadata by coin name. Returns NULL if not found. */
+static const tb_asset_meta_t *find_asset(const tb_order_mgr_t *mgr,
+                                          const char *coin) {
+    for (int i = 0; i < mgr->n_assets; i++) {
+        if (strcmp(mgr->assets[i].name, coin) == 0) {
+            return &mgr->assets[i];
+        }
+    }
+    return NULL;
+}
+
+/* Round price to max 5 significant figures (Hyperliquid requirement).
+ * E.g. BTC 69474.9 → 69475, ETH 2017.57 → 2017.6, SOL 85.479 → 85.479 */
+static tb_decimal_t round_price_sigfigs(double price, int max_sigfigs) {
+    if (price <= 0.0) return tb_decimal_from_double(0, 0);
+
+    /* Count integer digits */
+    int int_digits = 0;
+    double tmp = price;
+    while (tmp >= 1.0) { tmp /= 10.0; int_digits++; }
+
+    /* Max decimal places = max(max_sigfigs - int_digits, 0) */
+    int max_decimals = max_sigfigs - int_digits;
+    if (max_decimals < 0) max_decimals = 0;
+    if (max_decimals > 8) max_decimals = 8;
+
+    /* Round to that many decimal places */
+    double factor = 1.0;
+    for (int i = 0; i < max_decimals; i++) factor *= 10.0;
+    double rounded = round(price * factor) / factor;
+
+    return tb_decimal_from_double(rounded, (uint8_t)max_decimals);
+}
+
+/* Round size to sz_decimals from asset metadata */
+static tb_decimal_t round_size(double size, int sz_decimals) {
+    if (sz_decimals < 0) sz_decimals = 0;
+    if (sz_decimals > 8) sz_decimals = 8;
+    return tb_decimal_from_double(size, (uint8_t)sz_decimals);
+}
+
 /* ── Public API ────────────────────────────────────────────────────────────── */
 
 tb_order_mgr_t *tb_order_mgr_create(hl_rest_t *rest, hl_ws_t *ws,
@@ -213,7 +260,7 @@ tb_order_mgr_t *tb_order_mgr_create(hl_rest_t *rest, hl_ws_t *ws,
     mgr->risk = risk;
     mgr->pos_tracker = pos_tracker;
     mgr->db = db;
-    mgr->recon_interval_sec = 60;
+    mgr->recon_interval_sec = 15;
 
     pthread_rwlock_init(&mgr->orders_lock, NULL);
 
@@ -236,6 +283,29 @@ void tb_order_mgr_destroy(tb_order_mgr_t *mgr) {
     tb_log_info("order manager destroyed");
 }
 
+int tb_order_mgr_load_meta(tb_order_mgr_t *mgr) {
+    if (!mgr->rest) return -1;
+    int count = 0;
+    int rc = hl_rest_get_meta(mgr->rest, mgr->assets, &count);
+    if (rc != 0) {
+        tb_log_error("failed to fetch asset metadata from exchange");
+        return -1;
+    }
+    mgr->n_assets = count;
+    tb_log_info("loaded %d assets from exchange metadata", count);
+
+    /* Log a few key assets for debugging */
+    const char *important[] = {"BTC", "ETH", "SOL", "DOGE", "HYPE", NULL};
+    for (int i = 0; important[i]; i++) {
+        const tb_asset_meta_t *a = find_asset(mgr, important[i]);
+        if (a) {
+            tb_log_info("  asset: %s → id=%u, sz_decimals=%d",
+                        a->name, a->asset_id, a->sz_decimals);
+        }
+    }
+    return 0;
+}
+
 int tb_order_mgr_start(tb_order_mgr_t *mgr, const char *user_addr) {
     snprintf(mgr->user_addr, sizeof(mgr->user_addr), "%s",
              user_addr ? user_addr : "paper");
@@ -245,6 +315,11 @@ int tb_order_mgr_start(tb_order_mgr_t *mgr, const char *user_addr) {
         mgr->running = true;
         tb_log_info("order manager started in PAPER mode");
         return 0;
+    }
+
+    /* Fetch asset metadata (asset IDs + size decimals) */
+    if (mgr->n_assets == 0) {
+        tb_order_mgr_load_meta(mgr);
     }
 
     /* Subscribe to WS updates */
@@ -299,14 +374,45 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
         return -1;
     }
 
+    /* Resolve asset ID and normalize price/size precision for exchange */
+    tb_order_request_t resolved = submit->order;
+    if (!mgr->paper) {
+        const tb_asset_meta_t *meta = find_asset(mgr, coin);
+        if (!meta) {
+            tb_log_error("unknown asset '%s' — not in exchange metadata", coin);
+            return -1;
+        }
+        resolved.asset = meta->asset_id;
+
+        /* Round price to 5 significant figures (Hyperliquid requirement) */
+        double raw_price = tb_decimal_to_double(resolved.price);
+        resolved.price = round_price_sigfigs(raw_price, 5);
+
+        /* Round size to sz_decimals from metadata */
+        double raw_size = tb_decimal_to_double(resolved.size);
+        resolved.size = round_size(raw_size, meta->sz_decimals);
+
+        /* Also round trigger_px if this is a trigger order */
+        if (resolved.type == TB_ORDER_TRIGGER) {
+            double raw_tpx = tb_decimal_to_double(resolved.trigger_px);
+            resolved.trigger_px = round_price_sigfigs(raw_tpx, 5);
+        }
+    }
+
     /* Place order via paper exchange or REST */
     uint64_t oid = 0;
     int rc;
+    hl_rest_fill_info_t fill_info;
+    memset(&fill_info, 0, sizeof(fill_info));
+    int n_filled = 0;
+
     if (mgr->paper) {
         rc = tb_paper_place_order(mgr->paper, &submit->order, &oid);
     } else {
-        rc = hl_rest_place_order(mgr->rest, &submit->order,
-                                  submit->order.grouping, &oid);
+        rc = hl_rest_place_orders_ex(mgr->rest, &resolved, 1,
+                                      resolved.grouping,
+                                      &fill_info, &n_filled);
+        oid = fill_info.oid;
     }
     if (rc != 0) return -1;
 
@@ -316,7 +422,7 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
         tracked_order_t *t = &mgr->orders[mgr->n_orders];
         memset(t, 0, sizeof(*t));
         t->order.oid = oid;
-        t->order.asset = submit->order.asset;
+        t->order.asset = resolved.asset;
         snprintf(t->order.coin, sizeof(t->order.coin), "%s", coin);
         t->order.side = submit->order.side;
         t->order.limit_px = submit->order.price;
@@ -342,6 +448,39 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
                 coin,
                 px_str, sz_str,
                 submit->strategy_name);
+
+    /* Dispatch immediate fill to callback (IOC orders fill in REST response) */
+    if (!mgr->paper && fill_info.filled && fill_info.avg_px > 0 && mgr->fill_cb) {
+        tb_fill_t synth_fill;
+        memset(&synth_fill, 0, sizeof(synth_fill));
+        snprintf(synth_fill.coin, sizeof(synth_fill.coin), "%s", coin);
+        synth_fill.px = tb_decimal_from_double(fill_info.avg_px, 6);
+        synth_fill.sz = tb_decimal_from_double(fill_info.total_sz, 6);
+        synth_fill.side = submit->order.side;
+        synth_fill.oid = oid;
+        synth_fill.time_ms = (int64_t)time(NULL) * 1000;
+        synth_fill.crossed = true;  /* IOC = taker */
+
+        tb_log_info("immediate fill: %s %s %.6f @ %.2f (oid=%llu)",
+                    submit->order.side == TB_SIDE_BUY ? "BUY" : "SELL",
+                    coin, fill_info.total_sz, fill_info.avg_px,
+                    (unsigned long long)oid);
+
+        /* Update position tracker */
+        tb_pos_tracker_on_fill(mgr->pos_tracker, &synth_fill);
+
+        /* Update risk manager */
+        tb_risk_update_pnl(mgr->risk,
+                           tb_decimal_to_double(synth_fill.closed_pnl),
+                           tb_decimal_to_double(synth_fill.fee));
+
+        /* Log to database */
+        log_trade_to_db(mgr, &synth_fill, submit->strategy_name);
+
+        /* Notify strategy (triggers on_fill → place_sl_tp) */
+        mgr->fill_cb(&synth_fill, submit->strategy_name, mgr->fill_cb_userdata);
+    }
+
     return 0;
 }
 

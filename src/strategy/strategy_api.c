@@ -613,6 +613,9 @@ static int api_get_indicators(lua_State *L) {
     int req_count = (int)luaL_optinteger(L, 3, 200);
     if (req_count > 500) req_count = 500;
     if (req_count < 20) req_count = 20;
+    /* Optional 4th arg: current mid_price for live indicator updates.
+     * Without this, RSI/BB only update when a new candle closes. */
+    double live_price = luaL_optnumber(L, 4, 0);
 
     /* Fetch candles */
     int64_t now_ms = (int64_t)time(NULL) * 1000;
@@ -646,6 +649,17 @@ static int api_get_indicators(lua_State *L) {
         input[i].time_ms = candles[i].time_open;
     }
     free(candles);
+
+    /* Inject live price into last candle so RSI/BB reflect current price,
+     * not just the last closed candle. This is critical for intra-candle
+     * signal detection (e.g. 15m candles checked every 15s). */
+    if (live_price > 0 && count > 0) {
+        input[count - 1].close = live_price;
+        if (live_price > input[count - 1].high)
+            input[count - 1].high = live_price;
+        if (live_price < input[count - 1].low)
+            input[count - 1].low = live_price;
+    }
 
     tb_indicators_snapshot_t snap = tb_indicators_compute(input, count);
     free(input);

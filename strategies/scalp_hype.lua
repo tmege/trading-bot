@@ -32,7 +32,7 @@ local config = {
     sl_pct        = 1.5,
 
     -- Timing
-    check_sec     = 15,
+    check_sec     = 5,
     cooldown_sec  = 180,
     max_hold_sec  = 7200,
 
@@ -68,12 +68,15 @@ local function near_band(price, band, pct)
 end
 
 local function place_entry(side, mid)
+    local price = side == "long"
+        and mid * 1.001
+        or  mid * 0.999
     local size = config.entry_size / mid
     local order_side = side == "long" and "buy" or "sell"
-    local oid = bot.place_limit(config.coin, order_side, mid, size, { tif = "ioc" })
+    local oid = bot.place_limit(config.coin, order_side, price, size, { tif = "ioc" })
     if oid then
         bot.log("info", string.format("scalp_hype: ENTRY %s @ $%.2f ($%.0f)",
-            string.upper(side), mid, config.entry_size))
+            string.upper(side), price, config.entry_size))
         return oid
     end
     return nil
@@ -159,7 +162,7 @@ function on_tick(coin, mid_price)
             sl_oid = nil; tp_oid = nil
         end
         if in_position and config.tp_mid_bb then
-            local ind = bot.get_indicators(config.coin, "15m", 30)
+            local ind = bot.get_indicators(config.coin, "15m", 30, mid_price)
             if ind and ind.bb_middle then
                 if position_side == "long" and mid_price >= ind.bb_middle then
                     close_position("reached mid BB"); last_trade = now; return
@@ -173,7 +176,7 @@ function on_tick(coin, mid_price)
 
     if now - last_trade < config.cooldown_sec then return end
 
-    local ind = bot.get_indicators(config.coin, "15m", 30)
+    local ind = bot.get_indicators(config.coin, "15m", 30, mid_price)
     if not ind then return end
     local rsi = ind.rsi
     local bb_upper = ind.bb_upper
@@ -184,13 +187,13 @@ function on_tick(coin, mid_price)
     local width = bb_width_pct(bb_upper, bb_lower, bb_mid)
     if width < config.min_bb_width or width > config.max_bb_width then return end
 
-    if near_band(mid_price, bb_lower, config.bb_touch_pct) and rsi < config.rsi_oversold then
+    if mid_price <= bb_lower * (1 + config.bb_touch_pct / 100) and rsi < config.rsi_oversold then
         local oid = place_entry("long", mid_price)
         if oid then last_trade = now; entry_time = now end
         return
     end
 
-    if near_band(mid_price, bb_upper, config.bb_touch_pct) and rsi > config.rsi_overbought then
+    if mid_price >= bb_upper * (1 - config.bb_touch_pct / 100) and rsi > config.rsi_overbought then
         local oid = place_entry("short", mid_price)
         if oid then last_trade = now; entry_time = now end
         return

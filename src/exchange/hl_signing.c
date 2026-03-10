@@ -2,7 +2,7 @@
  * EIP-712 signing for Hyperliquid L1 actions.
  *
  * Domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: 0x0...0 }
- * Primary type: Agent { source: bytes1, connectionId: bytes32 }
+ * Primary type: Agent { source: string, connectionId: bytes32 }
  *
  * The phantom Agent is constructed from the action hash:
  *   connectionId = keccak256(msgpack(action) || nonce_le_8bytes)
@@ -114,8 +114,10 @@ static void compute_eip712_constants(void) {
     memcpy(buf + 128, contract, 32);
     keccak256(buf, 160, g_domain_separator);
 
-    /* Agent type hash: "Agent(address source,bytes32 connectionId)" */
-    const char *agent_type = "Agent(address source,bytes32 connectionId)";
+    /* Agent type hash: "Agent(string source,bytes32 connectionId)"
+     * IMPORTANT: Hyperliquid uses "string" not "address" for source.
+     * Matches the official Python SDK: hyperliquid-dex/hyperliquid-python-sdk */
+    const char *agent_type = "Agent(string source,bytes32 connectionId)";
     keccak256((const uint8_t *)agent_type, strlen(agent_type), g_agent_type_hash);
 }
 
@@ -208,9 +210,10 @@ static void compute_agent_hash(const uint8_t *connection_id, bool is_mainnet,
     /* agentTypeHash */
     memcpy(buf, g_agent_type_hash, 32);
 
-    /* source: address padded to 32 bytes, source byte at position 31 */
-    memset(buf + 32, 0, 32);
-    buf[32 + 31] = is_mainnet ? 0x61 : 0x62; /* 'a' or 'b' */
+    /* source: EIP-712 encodes "string" as keccak256(bytes_of_string)
+     * mainnet source = "a" (0x61), testnet source = "b" (0x62) */
+    uint8_t source_byte = is_mainnet ? 0x61 : 0x62;
+    keccak256(&source_byte, 1, buf + 32);
 
     /* connectionId */
     memcpy(buf + 64, connection_id, 32);
@@ -241,24 +244,30 @@ int hl_sign_l1_action(
 ) {
     if (!signer || !msgpack_data || !out_sig) return -1;
 
-    /* Step 1: connectionId = keccak256(msgpack || nonce_le_8 [|| vault_20]) */
+    /* Step 1: connectionId = keccak256(msgpack || nonce_be_8 || vault_flag [|| vault_20])
+     * Matches Python SDK: action_hash() in hyperliquid-python-sdk */
     keccak256_ctx_t ctx;
     keccak256_init(&ctx);
     keccak256_update(&ctx, msgpack_data, msgpack_len);
 
-    /* Nonce as 8-byte little-endian */
-    uint8_t nonce_le[8];
+    /* Nonce as 8-byte BIG-endian (Python: nonce.to_bytes(8, "big")) */
+    uint8_t nonce_be[8];
     for (int i = 0; i < 8; i++) {
-        nonce_le[i] = (uint8_t)(nonce >> (i * 8));
+        nonce_be[i] = (uint8_t)(nonce >> ((7 - i) * 8));
     }
-    keccak256_update(&ctx, nonce_le, 8);
+    keccak256_update(&ctx, nonce_be, 8);
 
-    /* Optional vault address */
+    /* Vault address flag: 0x00 = no vault, 0x01 = vault present */
     if (vault_address) {
+        uint8_t flag = 0x01;
+        keccak256_update(&ctx, &flag, 1);
         uint8_t vault_bytes[20];
         if (hex_decode(vault_address, vault_bytes, 20) == 0) {
             keccak256_update(&ctx, vault_bytes, 20);
         }
+    } else {
+        uint8_t flag = 0x00;
+        keccak256_update(&ctx, &flag, 1);
     }
 
     uint8_t connection_id[32];

@@ -34,6 +34,21 @@ int hl_json_parse_exchange_response(yyjson_val *root,
                                      int *n_filled,
                                      char *err_msg, size_t err_len);
 
+/* REST fill info — returned when an order fills immediately */
+typedef struct {
+    uint64_t oid;
+    double   avg_px;
+    double   total_sz;
+    bool     filled;    /* true if this order was filled (not resting/error) */
+} hl_rest_fill_info_t;
+
+/* Parse exchange response with fill details */
+int hl_json_parse_exchange_response_ex(yyjson_val *root,
+                                        hl_rest_fill_info_t *fill_infos,
+                                        int max_orders,
+                                        int *n_filled,
+                                        char *err_msg, size_t err_len);
+
 /* Build JSON body for POST /exchange request */
 int hl_json_build_exchange_body(const char *action_json, uint64_t nonce,
                                  const char *sig_hex, const char *vault_addr,

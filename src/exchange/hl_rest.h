@@ -37,6 +37,14 @@ int hl_rest_place_orders(hl_rest_t *rest,
                          tb_grouping_t grouping,
                          uint64_t *out_oids, int *out_n_filled);
 
+/* Extended version that returns fill details for immediate fills */
+#include "exchange/hl_json.h"
+int hl_rest_place_orders_ex(hl_rest_t *rest,
+                             const tb_order_request_t *orders, int n_orders,
+                             tb_grouping_t grouping,
+                             hl_rest_fill_info_t *out_fill_infos,
+                             int *out_n_filled);
+
 int hl_rest_cancel_order(hl_rest_t *rest, uint32_t asset, uint64_t oid);
 
 int hl_rest_cancel_orders(hl_rest_t *rest,
