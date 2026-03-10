@@ -12,11 +12,15 @@ static void signal_handler(int sig) {
     g_shutdown = 1;
 }
 
-static void print_banner(void) {
+static void print_banner(const tb_config_t *cfg) {
+    const char *mode = cfg->paper_trading ? "PAPER" : "LIVE";
+    const char *color = cfg->paper_trading ? "\033[33m" : "\033[32m";
     printf("\n");
     printf("  ╔══════════════════════════════════════════╗\n");
-    printf("  ║     TRADING BOT v0.2.0                   ║\n");
-    printf("  ║     Hyperliquid Momentum + BB Scalping    ║\n");
+    printf("  ║     TRADING BOT v0.4.0                   ║\n");
+    printf("  ║     BB Scalping Multi-Coin — Hyperliquid ║\n");
+    printf("  ║     ETH | BTC | SOL | DOGE | HYPE        ║\n");
+    printf("  ║     Mode: %s%-5s\033[0m                          ║\n", color, mode);
     printf("  ╚══════════════════════════════════════════╝\n");
     printf("\n");
 }
@@ -27,14 +31,14 @@ int main(int argc, char *argv[]) {
         config_path = argv[1];
     }
 
-    print_banner();
-
     /* Load config */
     tb_config_t cfg;
     if (tb_config_load(&cfg, config_path) != 0) {
         fprintf(stderr, "Failed to load config from %s\n", config_path);
         return 1;
     }
+
+    print_banner(&cfg);
 
     /* Initialize logging */
     if (tb_log_init(cfg.log_dir, cfg.log_level) != 0) {

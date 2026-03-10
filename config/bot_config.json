@@ -8,14 +8,18 @@
         "daily_loss_limit_usdc": -15.0,
         "emergency_close_usdc": -12.0,
         "max_leverage": 5,
-        "per_trade_stop_pct": 2.0,
-        "max_position_usd": 300.0
+        "per_trade_stop_pct": 1.5,
+        "max_position_usd": 200.0
     },
     "strategies": {
         "dir": "./strategies",
         "reload_interval_sec": 5,
         "active": [
-            { "file": "scalp_eth.lua", "role": "primary" }
+            { "file": "scalp_eth.lua",  "role": "primary" },
+            { "file": "scalp_btc.lua",  "role": "secondary" },
+            { "file": "scalp_sol.lua",  "role": "secondary" },
+            { "file": "scalp_doge.lua", "role": "secondary" },
+            { "file": "scalp_hype.lua", "role": "secondary" }
         ]
     },
     "ai_advisory": {
@@ -31,6 +35,6 @@
         "level": 0
     },
     "mode": {
-        "paper_trading": true
+        "paper_trading": false
     }
 }

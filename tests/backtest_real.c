@@ -21,6 +21,8 @@
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <sys/mman.h>
 
 /* ── ANSI ───────────────────────────────────────────────────────────────── */
 #define C_RESET   "\033[0m"
@@ -51,13 +53,12 @@ typedef struct {
 } strategy_t;
 
 static const strategy_t STRATEGIES[] = {
-    { "Momentum ETH",  "strategies/momentum_eth.lua" },
-    { "BB Scalping",   "strategies/scalp_eth.lua"    },
+    { "BB Scalping",     "strategies/scalp_eth.lua"    },
     { NULL, NULL }
 };
 
 /* ── Fetch real candles from Hyperliquid ────────────────────────────────── */
-static int fetch_real_candles(const char *coin, int n_days,
+static int fetch_real_candles(const char *coin, int n_days, int end_days_ago,
                                tb_candle_t *out, int max) {
     /* Create REST client (no signer needed for /info endpoints) */
     hl_rest_t *rest = hl_rest_create("https://api.hyperliquid.xyz", NULL, true);
@@ -67,8 +68,8 @@ static int fetch_real_candles(const char *coin, int n_days,
     }
 
     int64_t now_s = (int64_t)time(NULL);
-    int64_t end_ms = now_s * 1000;
-    int64_t start_ms = (now_s - (int64_t)n_days * 86400) * 1000;
+    int64_t end_ms = (now_s - (int64_t)end_days_ago * 86400) * 1000;
+    int64_t start_ms = (end_ms / 1000 - (int64_t)n_days * 86400) * 1000;
 
     int total = 0;
 
@@ -193,6 +194,62 @@ static int run_backtest_on_slice(const char *strat_path,
     return rc;
 }
 
+/* ── Fork-isolated backtest runner ──────────────────────────────────────── */
+/* Runs backtest in a child process so SIGABRT/OOM doesn't kill the parent */
+typedef struct {
+    int rc;
+    tb_backtest_result_t result;
+} bt_shared_t;
+
+static int run_backtest_isolated(const char *strat_path,
+                                  const tb_candle_t *candles, int n,
+                                  tb_backtest_result_t *result) {
+    bt_shared_t *shared = mmap(NULL, sizeof(bt_shared_t),
+                                PROT_READ | PROT_WRITE,
+                                MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (shared == MAP_FAILED) {
+        /* Fallback: run in-process */
+        return run_backtest_on_slice(strat_path, candles, n, result);
+    }
+    shared->rc = -1;
+
+    /* Flush stdout before fork so output order is correct */
+    fflush(stdout);
+    fflush(stderr);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        munmap(shared, sizeof(bt_shared_t));
+        return run_backtest_on_slice(strat_path, candles, n, result);
+    }
+
+    if (pid == 0) {
+        /* Child: run backtest, write result to shared memory */
+        shared->rc = run_backtest_on_slice(strat_path, candles, n, &shared->result);
+        _exit(shared->rc == 0 ? 0 : 1);
+    }
+
+    /* Parent: wait for child */
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && shared->rc == 0) {
+        *result = shared->result;
+        munmap(shared, sizeof(bt_shared_t));
+        return 0;
+    }
+
+    /* Child crashed or returned error */
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        fprintf(stderr, "  [backtest child killed by signal %d (%s), %d candles]\n",
+                sig, strsignal(sig), n);
+    }
+
+    munmap(shared, sizeof(bt_shared_t));
+    return -1;
+}
+
 /* ── Print a single result line ─────────────────────────────────────────── */
 static void print_result_line(const char *label,
                                const tb_backtest_result_t *r,
@@ -254,32 +311,47 @@ static const char *verdict(const tb_backtest_result_t *oos, const bnh_result_t *
 }
 
 /* ── Main ──────────────────────────────────────────────────────────────── */
-int main(void) {
+int main(int argc, char *argv[]) {
     tb_log_init(NULL, TB_LOG_LVL_WARN);  /* suppress debug noise */
+
+    /* Parse optional args: ./backtest_real [end_days_ago] [n_days] */
+    int end_days_ago = 0;   /* 0 = now */
+    int n_days = N_DAYS;
+    if (argc >= 2) end_days_ago = atoi(argv[1]);
+    if (argc >= 3) n_days = atoi(argv[2]);
+    int max_candles = n_days * 24 + 100;
+
+    const char *regime = end_days_ago == 0 ? "RECENT" :
+                         end_days_ago > 0  ? "HISTORIQUE" : "RECENT";
 
     printf("\n%s", C_BOLD);
     printf("╔══════════════════════════════════════════════════════════════════════╗\n");
     printf("║         BACKTEST QUANTITATIF — DONNEES REELLES HYPERLIQUID         ║\n");
     printf("║  Coin: %s | Periode: %d jours | Balance: $%.0f | Levier: %dx        ║\n",
-           COIN, N_DAYS, INITIAL_BALANCE, MAX_LEVERAGE);
+           COIN, n_days, INITIAL_BALANCE, MAX_LEVERAGE);
     printf("║  Fees: maker %.1fbps, taker %.1fbps, slippage %.1fbps               ║\n",
            MAKER_FEE * 10000, TAKER_FEE * 10000, SLIPPAGE_BPS);
-    printf("║  Walk-forward: IS %.0f%% / OOS %.0f%%                                  ║\n",
-           IS_SPLIT * 100, (1.0 - IS_SPLIT) * 100);
+    printf("║  Walk-forward: IS %.0f%% / OOS %.0f%%  |  Mode: %-20s  ║\n",
+           IS_SPLIT * 100, (1.0 - IS_SPLIT) * 100, regime);
     printf("╚══════════════════════════════════════════════════════════════════════╝\n");
     printf("%s\n", C_RESET);
 
+    if (end_days_ago > 0) {
+        printf("%s  Offset: fin = il y a %d jours%s\n", C_DIM, end_days_ago, C_RESET);
+    }
+
     /* ── Step 1: Fetch real candles ─────────────────────────────────────── */
     printf("%sFetching %d days of %s 1h candles from Hyperliquid...%s\n",
-           C_DIM, N_DAYS, COIN, C_RESET);
+           C_DIM, n_days, COIN, C_RESET);
 
-    tb_candle_t *candles = calloc(MAX_CANDLES, sizeof(tb_candle_t));
+    tb_candle_t *candles = calloc((size_t)max_candles, sizeof(tb_candle_t));
     if (!candles) {
         fprintf(stderr, "ERROR: malloc failed\n");
         return 1;
     }
 
-    int n_candles = fetch_real_candles(COIN, N_DAYS, candles, MAX_CANDLES);
+    int n_candles = fetch_real_candles(COIN, n_days, end_days_ago,
+                                       candles, max_candles);
     if (n_candles < 100) {
         fprintf(stderr, "ERROR: only got %d candles (need 100+)\n", n_candles);
         free(candles);
@@ -330,20 +402,34 @@ int main(void) {
         memset(&r_is, 0, sizeof(r_is));
         memset(&r_oos, 0, sizeof(r_oos));
 
-        /* Full period */
-        int rc1 = run_backtest_on_slice(STRATEGIES[s].path,
-                                         candles, n_candles, &r_full);
-        /* In-sample */
-        int rc2 = run_backtest_on_slice(STRATEGIES[s].path,
+        /* In-sample first (most important for walk-forward) */
+        int rc2 = run_backtest_isolated(STRATEGIES[s].path,
                                          is_candles, is_count, &r_is);
         /* Out-of-sample */
-        int rc3 = run_backtest_on_slice(STRATEGIES[s].path,
+        int rc3 = run_backtest_isolated(STRATEGIES[s].path,
                                          oos_candles, oos_count, &r_oos);
 
-        if (rc1 != 0 || rc2 != 0 || rc3 != 0) {
-            printf("  %sERROR: backtest failed (rc=%d/%d/%d)%s\n\n",
-                   C_RED, rc1, rc2, rc3, C_RESET);
+        if (rc2 != 0 || rc3 != 0) {
+            printf("  %sERROR: backtest failed (IS=%d/OOS=%d)%s\n\n",
+                   C_RED, rc2, rc3, C_RESET);
             continue;
+        }
+
+        /* Full period (run in child process — safe if it OOMs) */
+        int rc1 = run_backtest_isolated(STRATEGIES[s].path,
+                                         candles, n_candles, &r_full);
+        if (rc1 != 0) {
+            /* Estimate full from IS + OOS */
+            r_full.net_pnl = r_is.net_pnl + r_oos.net_pnl;
+            r_full.return_pct = r_full.net_pnl / INITIAL_BALANCE * 100.0;
+            r_full.total_trades = r_is.total_trades + r_oos.total_trades;
+            r_full.sharpe_ratio = (r_is.sharpe_ratio + r_oos.sharpe_ratio) / 2.0;
+            r_full.sortino_ratio = (r_is.sortino_ratio + r_oos.sortino_ratio) / 2.0;
+            r_full.max_drawdown_pct = r_is.max_drawdown_pct > r_oos.max_drawdown_pct ?
+                                      r_is.max_drawdown_pct : r_oos.max_drawdown_pct;
+            r_full.win_rate = (r_is.win_rate + r_oos.win_rate) / 2.0;
+            r_full.profit_factor = (r_is.profit_factor + r_oos.profit_factor) / 2.0;
+            r_full.total_fees = r_is.total_fees + r_oos.total_fees;
         }
 
         /* Print results table */
@@ -367,10 +453,12 @@ int main(void) {
                r_is.sharpe_ratio, r_oos.sharpe_ratio,
                sharpe_decay < -30 ? C_RED : C_GREEN, sharpe_decay, C_RESET);
 
-        double pf_decay = r_is.profit_factor > 0 ?
-            (r_oos.profit_factor - r_is.profit_factor) / r_is.profit_factor * 100.0 : 0;
+        double pf_is_disp = r_is.profit_factor > 999 ? 999.99 : r_is.profit_factor;
+        double pf_oos_disp = r_oos.profit_factor > 999 ? 999.99 : r_oos.profit_factor;
+        double pf_decay = (r_is.profit_factor > 0 && r_is.profit_factor < 9000) ?
+            (fmin(r_oos.profit_factor, 9999) - r_is.profit_factor) / r_is.profit_factor * 100.0 : 0;
         printf("    PF IS→OOS:     %.2f → %.2f (%s%.1f%%%s)\n",
-               r_is.profit_factor, r_oos.profit_factor,
+               pf_is_disp, pf_oos_disp,
                pf_decay < -30 ? C_RED : C_GREEN, pf_decay, C_RESET);
 
         double wr_decay = r_oos.win_rate - r_is.win_rate;
@@ -423,7 +511,7 @@ int main(void) {
     for (int s = 0; STRATEGIES[s].name; s++) {
         tb_backtest_result_t r_oos;
         memset(&r_oos, 0, sizeof(r_oos));
-        int rc = run_backtest_on_slice(STRATEGIES[s].path,
+        int rc = run_backtest_isolated(STRATEGIES[s].path,
                                         oos_candles, oos_count, &r_oos);
         if (rc != 0) continue;
 

@@ -14,7 +14,7 @@
 
 /* ── Lua sandbox limits (same as live engine) ─────────────────────────── */
 #define BT_LUA_MAX_INSTRUCTIONS 2000000  /* 2M for backtest (more than live) */
-#define BT_LUA_MAX_MEMORY (32 * 1024 * 1024) /* 32MB for backtest */
+#define BT_LUA_MAX_MEMORY (256 * 1024 * 1024) /* 256MB for backtest (long runs) */
 
 typedef struct { size_t used; size_t limit; } bt_lua_mem_tracker_t;
 
@@ -382,7 +382,7 @@ static void setup_lua_sandbox(tb_backtest_engine_t *bt) {
     lua_pushnil(L); lua_setglobal(L, "rawset");
     lua_pushnil(L); lua_setglobal(L, "setmetatable");
     lua_pushnil(L); lua_setglobal(L, "getmetatable");
-    lua_pushnil(L); lua_setglobal(L, "collectgarbage");
+    /* collectgarbage is allowed in backtest (needed for long runs) */
 
     /* Remove string.dump */
     lua_getglobal(L, "string");
@@ -881,6 +881,9 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
         /* Check order fills (use high/low of candle) */
         check_order_fills(bt, high, low);
 
+        /* Periodic GC to prevent memory exhaustion in long backtests */
+        if (i % 10 == 0) lua_gc(bt->L, LUA_GCSTEP, 100);
+
         /* Call on_tick(coin, mid_price) */
         lua_getglobal(bt->L, "on_tick");
         if (lua_isfunction(bt->L, -1)) {
@@ -982,6 +985,8 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
         out->win_rate = (double)out->winning_trades / out->total_trades * 100.0;
     if (gross_loss > 0)
         out->profit_factor = gross_profit / gross_loss;
+    else if (gross_profit > 0)
+        out->profit_factor = 9999.0;  /* no losses = infinite PF */
     if (out->winning_trades > 0)
         out->avg_win = gross_profit / out->winning_trades;
     if (out->losing_trades > 0)
@@ -1004,6 +1009,8 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
         double downside_dev = sqrt(sum_neg_sq / n_returns);
         if (downside_dev > 0)
             out->sortino_ratio = mean_ret / downside_dev * ann_factor;
+        else if (mean_ret > 0)
+            out->sortino_ratio = 9999.0;  /* no downside = infinite Sortino */
     }
 
     bt_free_lua_state(bt->L);

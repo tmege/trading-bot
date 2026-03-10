@@ -308,6 +308,25 @@ if(TB_BUILD_TESTS)
         ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
         ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
     )
+
+    add_executable(backtest_multi_coin tests/backtest_multi_coin.c ${TB_LIB_SOURCES})
+    target_include_directories(backtest_multi_coin PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${LUA_INCLUDE_DIRS}
+        ${LWS_INCLUDE_DIRS}
+        ${SECP256K1_INCLUDE_DIRS}
+        ${MSGPACK_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
+    )
+    target_link_libraries(backtest_multi_coin PRIVATE
+        yyjson CURL::libcurl OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+        ${LUA_LIBRARIES} ${LWS_LIBRARIES} ${SECP256K1_LIBRARIES}
+        ${MSGPACK_LIBRARIES} ${SQLITE3_LIBRARIES}
+    )
+    target_link_directories(backtest_multi_coin PRIVATE
+        ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
+        ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
+    )
 endif()
 
 # ── Install ──────────────────────────────────────────────────────────────────
