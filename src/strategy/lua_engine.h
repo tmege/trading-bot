@@ -15,7 +15,7 @@ typedef struct tb_data_mgr tb_data_mgr_t;
 typedef struct tb_lua_engine tb_lua_engine_t;
 
 /* ── Strategy info ──────────────────────────────────────────────────────── */
-#define TB_MAX_STRATEGIES 8
+#define TB_MAX_STRATEGIES 32
 
 typedef struct {
     char    name[64];

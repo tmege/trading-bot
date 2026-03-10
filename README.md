@@ -5,14 +5,15 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 ## Features
 
 - **Full Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders, automatic asset metadata resolution
-- **Lua strategies** — sandboxed environment, automatic hot-reload (5s), comprehensive `bot.*` API
-- **Active strategies** — BB Scalping on 5 coins (ETH, BTC, SOL, DOGE, HYPE) — Bollinger Bands mean reversion, validated on 30 days real data (15m candles)
+- **Lua strategies** — sandboxed environment, automatic hot-reload (5s), comprehensive `bot.*` API, multi-coin per file (COIN injection)
+- **Active strategies** — BB Scalping on 6 coins (ETH, BTC, SOL, DOGE, HYPE, PUMP) — single `scalp.lua` file, coins configured in JSON, Bollinger Bands mean reversion
 - **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit, leverage and position size control
 - **Market data** — crypto prices via Hyperliquid, macro (Gold, S&P500, DXY), Fear & Greed Index, crypto news sentiment
 - **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP + derived signals
 - **AI advisory** — Claude Haiku called on startup + twice daily (8h/20h UTC) to analyze positions and suggest adjustments
 - **Backtesting** — synthetic + real data (Hyperliquid REST), walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Paper trading** — real market data, locally simulated order execution
+- **Desktop GUI** — Electron + React app with start/stop, strategy selection, live logs (xterm.js), interactive backtesting with TradingView charts, market overview panel, and settings page
 - **Terminal dashboard** — real-time display with ANSI colors
 - **Reports** — daily and weekly with win rate, profit factor, drawdown, per-strategy statistics
 - **SQLite database** — trade history, P&L, advisory logs
@@ -41,7 +42,7 @@ src/
 │   ├── position_tracker.c      Real-time position tracking (15s REST reconciliation)
 │   └── paper_exchange.c        Simulated exchange (paper trading)
 ├── strategy/                   Lua engine + technical indicators
-│   ├── lua_engine.c            Lua sandbox, hot-reload, callbacks
+│   ├── lua_engine.c            Lua sandbox, hot-reload, multi-coin COIN injection, callbacks
 │   ├── strategy_api.c          18 bot.* functions exposed to Lua
 │   └── indicators.c            SMA, EMA, RSI, MACD, BB, ATR, VWAP
 ├── data/                       External data sources
@@ -59,15 +60,7 @@ src/
     └── backtest_engine.c       Simulation on historical candles + metrics
 
 strategies/                     Lua strategies
-├── scalp_eth.lua               BB Scalping ETH [PRIMARY] (BB 20/2, SL=1.5%, TP=3.0%, $40/trade)
-├── scalp_btc.lua               BB Scalping BTC (same params, $40/trade)
-├── scalp_sol.lua               BB Scalping SOL (same params, $40/trade)
-├── scalp_doge.lua              BB Scalping DOGE (same params, $40/trade)
-├── scalp_hype.lua              BB Scalping HYPE (same params, $40/trade)
-├── momentum_eth.lua            Momentum ETH (EMA12/26, RSI, ATR trailing stop — inactive)
-├── grid_eth.lua                Grid Trading ETH (dynamic ATR, 15 levels — inactive)
-├── dca_eth.lua                 DCA ETH (RSI-based buy/sell zones — inactive)
-├── signal_doge.lua             Signal DOGE (sentiment + volume — inactive)
+├── scalp.lua                   BB Scalping generic (COIN injected by engine, BB 20/2, SL=1.5%, TP=3.0%, $40/trade)
 └── strategy_template.lua       Template with all documented callbacks
 
 scripts/                        Deployment scripts
@@ -84,7 +77,18 @@ tests/                          Unit tests & benchmarks
 ├── bench_speed.c               Performance benchmark
 ├── bench_strategies.c          Strategy comparison (5 strategies x 5 synthetic scenarios)
 ├── backtest_real.c             Real data backtest (Hyperliquid candles, walk-forward IS/OOS)
-└── backtest_multi_coin.c       Multi-coin backtest (ETH, BTC, SOL, DOGE, HYPE, fork-isolated)
+├── backtest_multi_coin.c       Multi-coin backtest (ETH, BTC, SOL, DOGE, HYPE, fork-isolated)
+└── backtest_json.c             JSON-output backtest for GUI consumption
+
+gui/                            Electron + React desktop app
+├── electron/
+│   ├── main.js                 Main process, BrowserWindow
+│   ├── preload.js              contextBridge (IPC security)
+│   └── ipc/                    IPC handlers (bot, config, strategies, backtest, db, logs, market, sync, ws)
+└── src/
+    ├── pages/                  Dashboard, Strategies, Backtest, Settings
+    ├── components/             UI components (charts, tables, forms, log viewer, market panel)
+    └── hooks/                  React hooks (bot status, live data, market data, backtest)
 ```
 
 ## Dependencies
@@ -222,11 +226,7 @@ The `.env` file is excluded from version control via `.gitignore` and restricted
         "dir": "./strategies",
         "reload_interval_sec": 5,
         "active": [
-            { "file": "scalp_eth.lua",  "role": "primary" },
-            { "file": "scalp_btc.lua",  "role": "secondary" },
-            { "file": "scalp_sol.lua",  "role": "secondary" },
-            { "file": "scalp_doge.lua", "role": "secondary" },
-            { "file": "scalp_hype.lua", "role": "secondary" }
+            { "file": "scalp.lua", "coins": ["ETH","BTC","SOL","DOGE","HYPE","PUMP"], "role": "primary" }
         ]
     },
     "ai_advisory": {
@@ -267,6 +267,28 @@ The terminal dashboard displays automatically with positions, orders, P&L, macro
 
 ## Lua Strategies
 
+### Multi-Coin Architecture
+
+A single `.lua` file can run on multiple coins simultaneously. The engine creates one isolated Lua instance per coin, injecting a `COIN` global before loading the file:
+
+```json
+{ "file": "scalp.lua", "coins": ["ETH","BTC","SOL","DOGE","HYPE"], "role": "primary" }
+```
+
+In the Lua strategy, use `COIN` to initialize:
+```lua
+local config = {
+    coin = COIN or "ETH",  -- fallback for manual testing
+    -- ...
+}
+```
+
+Each instance gets its own name (`scalp_eth`, `scalp_btc`, ...), its own state, and its own `bot.save_state`/`bot.load_state` namespace. To add or remove a coin, just edit the `coins` array in `bot_config.json` — no code changes needed.
+
+If the `coins` field is absent, the engine falls back to legacy mode (one file = one instance).
+
+### Callbacks
+
 Each strategy is a `.lua` file in `strategies/` with the following callbacks:
 
 ```lua
@@ -304,7 +326,7 @@ function on_shutdown()       -- Graceful shutdown
 
 ### Hot-Reload
 
-Lua files are monitored every 5 seconds. Any modification is detected and the `lua_State` is transparently swapped — no bot restart required.
+Lua files are monitored every 5 seconds. Any modification is detected and all instances sharing that file are transparently reloaded (each with its own `COIN` re-injected) — no bot restart required.
 
 ### Lua Sandbox
 
@@ -329,6 +351,18 @@ Runs 5 strategies across 5 market scenarios (ranging, bull, bear, high vol, 90-d
 ```bash
 ./build/bench_strategies
 ```
+
+### JSON output (`backtest_json`)
+
+Machine-readable JSON backtest output for the GUI:
+
+```bash
+./build/backtest_json strategies/scalp.lua ETH 0 30 1h
+```
+
+Arguments: `<strategy.lua> <coin> <end_days_ago> <n_days> [interval]`
+
+Outputs JSON with: config, stats (full/IS/OOS), buy & hold, walk-forward analysis, trade log, equity curve, verdict.
 
 ### Real data (`backtest_real`)
 
@@ -363,7 +397,7 @@ Backtest config: $100 balance, 5x leverage, maker 2bps, taker 5bps, slippage 1bp
 - **Maximum leverage**: 5x
 - **Maximum position size**: 200 USD
 - **Automatic stop loss**: computed pre-trade
-- **Capital allocation**: 5 strategies x $40/trade = $200 notional max, $40 margin at 5x (leaves $60 buffer on $100 account)
+- **Capital allocation**: 6 coins x $40/trade = $240 notional max, $48 margin at 5x (leaves $52 buffer on $100 account)
 - **BB Scalping stops**: tight 1.5% SL + 3% TP per scalp, 2h max hold time — SL/TP placed as trigger orders on exchange immediately after entry fill
 - **BB regime filter**: skips trades when Bollinger Bands too tight (< 1%) or too wide (> 8%)
 - **Position reconciliation**: REST sync every 15 seconds to detect external fills and position changes
@@ -430,6 +464,44 @@ Article titles are scored using keyword-based analysis (bullish/bearish word lis
 - Restrictive file permissions: database `0600`, logs `0600`, directories `0700`
 - Path traversal protection on strategy file loading
 - Rate limiting on Hyperliquid REST API calls (1200 requests/minute)
+
+## Desktop GUI
+
+An Electron + React desktop application that wraps the C bot with a graphical interface.
+
+### Setup
+
+```bash
+cd gui
+npm install
+```
+
+### Development
+
+```bash
+npm run dev   # Launches Vite + Electron with hot-reload
+```
+
+### Features
+
+- **Dashboard**: Start/stop bot, account summary, open positions, recent trades, live ANSI log viewer (xterm.js), paper trading banner
+- **Market Panel**: Real-time crypto prices via WebSocket + macro overview (BTC price, BTC dominance, ETH/BTC, Altcoin MCap, Gold, S&P 500, DXY, Fear & Greed Index) fetched from CoinGecko, alternative.me, and FinancialModelingPrep
+- **Strategies**: Browse all `.lua` files, toggle active/inactive (hot-reload compatible), syntax-highlighted code viewer (Prism.js)
+- **Backtest**: Configure strategy/coin/period/interval, multi-coin comparison, walk-forward statistics (IS/OOS/decay), equity curve (TradingView Lightweight Charts), sortable trade log with CSV export, verdict display
+- **Settings**: Active coins management (toggle/add/remove per strategy), market data cache sync, risk parameters overview, paper trading mode toggle
+
+### Architecture
+
+The GUI communicates with the bot via:
+- **Process management**: `child_process.spawn` for bot start/stop
+- **SQLite**: Read-only WAL-mode access to `data/trading_bot.db` for positions, trades, P&L
+- **File watching**: `chokidar` monitors log files for real-time streaming
+- **WebSocket**: Hyperliquid `allMids` subscription for real-time crypto prices
+- **Market data**: Electron main process fetches macro data from CoinGecko, alternative.me, and FinancialModelingPrep (60s cache)
+- **Backtest**: Spawns `build/backtest_json` and parses JSON output
+- **Config**: Reads/writes `config/bot_config.json` (atomic writes, secrets stripped)
+
+Security: `contextIsolation: true`, no `nodeIntegration`, path traversal protection, secrets stripped from renderer, SQLite read-only.
 
 ## Recommended Deployment
 

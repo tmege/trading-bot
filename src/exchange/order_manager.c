@@ -497,6 +497,16 @@ int tb_order_mgr_cancel(tb_order_mgr_t *mgr, uint32_t asset, uint64_t oid) {
     return rc;
 }
 
+int tb_order_mgr_cancel_by_coin(tb_order_mgr_t *mgr, const char *coin,
+                                 uint64_t oid) {
+    const tb_asset_meta_t *meta = find_asset(mgr, coin);
+    uint32_t asset = meta ? meta->asset_id : 0;
+    if (!meta) {
+        tb_log_warn("cancel: unknown coin '%s', using asset=0", coin);
+    }
+    return tb_order_mgr_cancel(mgr, asset, oid);
+}
+
 int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
     /* Collect all oids for this coin */
     uint32_t assets[MAX_OPEN_ORDERS];

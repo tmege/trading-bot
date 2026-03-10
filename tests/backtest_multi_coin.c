@@ -238,8 +238,8 @@ int main(int argc, char *argv[]) {
     } coin_result_t;
 
     /* ETH + 4 coins */
-    const char *all_coins[] = { "ETH", "BTC", "SOL", "DOGE", "HYPE", NULL };
-    coin_result_t results[5];
+    const char *all_coins[] = { "ETH", "BTC", "SOL", "DOGE", "HYPE", "PUMP", NULL };
+    coin_result_t results[6];
     memset(results, 0, sizeof(results));
 
     /* ── Run for each coin ─────────────────────────────────────────────── */

@@ -7,6 +7,7 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/*.pid
+data/*.json
 logs/
 reports/
 
@@ -37,3 +38,7 @@ compile_commands.json
 
 # Dependencies (fetched by CMake)
 _deps/
+
+# GUI build & deps
+gui/node_modules/
+gui/dist/

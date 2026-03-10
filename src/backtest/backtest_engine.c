@@ -12,29 +12,11 @@
 #include <math.h>
 #include <stddef.h>
 
-/* ── Lua sandbox limits (same as live engine) ─────────────────────────── */
-#define BT_LUA_MAX_INSTRUCTIONS 2000000  /* 2M for backtest (more than live) */
-#define BT_LUA_MAX_MEMORY (256 * 1024 * 1024) /* 256MB for backtest (long runs) */
-
-typedef struct { size_t used; size_t limit; } bt_lua_mem_tracker_t;
-
-static void bt_lua_instruction_hook(lua_State *L, lua_Debug *ar) {
-    (void)ar;
-    luaL_error(L, "instruction limit exceeded (%d instructions)", BT_LUA_MAX_INSTRUCTIONS);
-}
-
-static void *bt_lua_mem_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
-    bt_lua_mem_tracker_t *tracker = (bt_lua_mem_tracker_t *)ud;
-    if (nsize == 0) {
-        tracker->used -= osize;
-        free(ptr);
-        return NULL;
-    }
-    if (tracker->used - osize + nsize > tracker->limit) return NULL;
-    void *new_ptr = realloc(ptr, nsize);
-    if (new_ptr) tracker->used = tracker->used - osize + nsize;
-    return new_ptr;
-}
+/* ── Lua sandbox limits ────────────────────────────────────────────────── */
+/* No instruction limit or memory limit for backtests: they run fork-isolated,
+   so the child process has its own virtual address space. The OS reclaims all
+   memory when the child exits. The custom allocator had subtle accounting bugs
+   (osize = type tag for new allocations) causing false OOM at ~2500 candles. */
 
 /* ── ANSI codes ────────────────────────────────────────────────────────── */
 #define C_RESET   "\033[0m"
@@ -774,11 +756,7 @@ tb_backtest_engine_t *tb_backtest_create(const tb_backtest_config_t *cfg) {
 
 static void bt_free_lua_state(lua_State *L) {
     if (!L) return;
-    lua_getfield(L, LUA_REGISTRYINDEX, "bt_mem_tracker");
-    void *tracker = lua_touserdata(L, -1);
-    lua_pop(L, 1);
     lua_close(L);
-    free(tracker);
 }
 
 void tb_backtest_destroy(tb_backtest_engine_t *bt) {
@@ -816,19 +794,17 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
     out->n_days = (int)((out->end_time_ms - out->start_time_ms) /
                         (86400LL * 1000)) + 1;
 
-    /* Initialize Lua with memory limits */
-    bt_lua_mem_tracker_t *tracker = calloc(1, sizeof(bt_lua_mem_tracker_t));
-    if (!tracker) return -1;
-    tracker->limit = BT_LUA_MAX_MEMORY;
-    bt->L = lua_newstate(bt_lua_mem_alloc, tracker, 0);
-    if (!bt->L) { free(tracker); return -1; }
+    /* Initialize Lua — no memory limit, backtests run fork-isolated */
+    bt->L = luaL_newstate();
+    if (!bt->L) return -1;
     luaL_openlibs(bt->L);
-    /* Install instruction limit hook */
-    lua_sethook(bt->L, bt_lua_instruction_hook, LUA_MASKCOUNT, BT_LUA_MAX_INSTRUCTIONS);
-    /* Store tracker for cleanup */
-    lua_pushlightuserdata(bt->L, tracker);
-    lua_setfield(bt->L, LUA_REGISTRYINDEX, "bt_mem_tracker");
     setup_lua_sandbox(bt);
+
+    /* Inject COIN global so generic strategies know which coin to trade */
+    if (bt->cfg.coin[0] != '\0') {
+        lua_pushstring(bt->L, bt->cfg.coin);
+        lua_setglobal(bt->L, "COIN");
+    }
 
     /* Load strategy */
     if (luaL_dofile(bt->L, bt->cfg.strategy_path) != LUA_OK) {
@@ -881,8 +857,11 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
         /* Check order fills (use high/low of candle) */
         check_order_fills(bt, high, low);
 
-        /* Periodic GC to prevent memory exhaustion in long backtests */
-        if (i % 10 == 0) lua_gc(bt->L, LUA_GCSTEP, 100);
+        /* Periodic GC to keep memory reasonable (no hard limit since
+           backtests run fork-isolated — OS reclaims everything on exit) */
+        if (i % 1000 == 0) {
+            lua_gc(bt->L, LUA_GCCOLLECT, 0);
+        }
 
         /* Call on_tick(coin, mid_price) */
         lua_getglobal(bt->L, "on_tick");

@@ -43,6 +43,8 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
 
 /* Cancel */
 int tb_order_mgr_cancel(tb_order_mgr_t *mgr, uint32_t asset, uint64_t oid);
+int tb_order_mgr_cancel_by_coin(tb_order_mgr_t *mgr, const char *coin,
+                                 uint64_t oid);
 int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin);
 
 /* Query open orders for a coin (thread-safe) */

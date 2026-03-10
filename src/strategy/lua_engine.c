@@ -23,6 +23,7 @@ typedef struct {
 typedef struct {
     char        name[64];
     char        path[512];
+    char        coin[16];       /* injected COIN global (empty = no injection) */
     lua_State  *L;
     lua_mem_tracker_t *mem_tracker;  /* memory limit tracker */
     bool        loaded;
@@ -187,6 +188,12 @@ static int load_strategy_file(tb_lua_engine_t *engine, tb_strategy_slot_t *slot)
     /* Register bot.* API */
     tb_strategy_api_register(L, &slot->ctx);
 
+    /* Inject COIN global if this slot has a coin assigned */
+    if (slot->coin[0] != '\0') {
+        lua_pushstring(L, slot->coin);
+        lua_setglobal(L, "COIN");
+    }
+
     /* Load and execute the file */
     if (luaL_dofile(L, slot->path) != LUA_OK) {
         tb_log_error("lua: error loading %s: %s", slot->name, lua_tostring(L, -1));
@@ -303,17 +310,50 @@ int tb_lua_engine_load_strategies(tb_lua_engine_t *engine) {
                 continue;
             }
 
-            tb_strategy_slot_t *slot = &engine->slots[engine->n_strategies];
-            snprintf(slot->path, sizeof(slot->path), "%s/%s",
-                     engine->strategies_dir, fname);
-            name_from_path(slot->path, slot->name, sizeof(slot->name));
+            if (cfg->n_strategy_coins[i] > 0) {
+                /* Multi-coin mode: create one slot per coin from the same file */
+                char base_name[64];
+                char full_path[512];
+                snprintf(full_path, sizeof(full_path), "%s/%s",
+                         engine->strategies_dir, fname);
+                name_from_path(full_path, base_name, sizeof(base_name));
 
-            if (load_strategy_file(engine, slot) == 0) {
-                engine->n_strategies++;
-                loaded++;
+                for (int c = 0; c < cfg->n_strategy_coins[i] && engine->n_strategies < TB_MAX_STRATEGIES; c++) {
+                    tb_strategy_slot_t *slot = &engine->slots[engine->n_strategies];
+                    snprintf(slot->path, sizeof(slot->path), "%s", full_path);
+                    snprintf(slot->coin, sizeof(slot->coin), "%s", cfg->strategy_coins[i][c]);
+
+                    /* Instance name = base_coinlower, e.g. "scalp_eth" */
+                    char coin_lower[16];
+                    snprintf(coin_lower, sizeof(coin_lower), "%s", slot->coin);
+                    for (char *p = coin_lower; *p; p++) {
+                        if (*p >= 'A' && *p <= 'Z') *p += 32;
+                    }
+                    snprintf(slot->name, sizeof(slot->name), "%s_%s", base_name, coin_lower);
+
+                    if (load_strategy_file(engine, slot) == 0) {
+                        engine->n_strategies++;
+                        loaded++;
+                    } else {
+                        tb_log_error("lua: failed to load '%s' for coin %s",
+                                     fname, slot->coin);
+                    }
+                }
             } else {
-                tb_log_error("lua: failed to load active strategy '%s'",
-                             cfg->active_strategies[i]);
+                /* Legacy mode: single strategy, no coins array */
+                tb_strategy_slot_t *slot = &engine->slots[engine->n_strategies];
+                snprintf(slot->path, sizeof(slot->path), "%s/%s",
+                         engine->strategies_dir, fname);
+                name_from_path(slot->path, slot->name, sizeof(slot->name));
+                slot->coin[0] = '\0';
+
+                if (load_strategy_file(engine, slot) == 0) {
+                    engine->n_strategies++;
+                    loaded++;
+                } else {
+                    tb_log_error("lua: failed to load active strategy '%s'",
+                                 cfg->active_strategies[i]);
+                }
             }
         }
     } else {
@@ -393,6 +433,8 @@ int tb_lua_engine_check_reload(tb_lua_engine_t *engine) {
         lua_pop((slot)->L, 1); \
         continue; \
     } \
+    /* Reset instruction counter so each call gets a fresh 10M budget */ \
+    lua_sethook((slot)->L, lua_instruction_hook, LUA_MASKCOUNT, LUA_MAX_INSTRUCTIONS); \
 } while(0)
 
 void tb_lua_engine_on_init(tb_lua_engine_t *engine) {

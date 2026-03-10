@@ -86,11 +86,7 @@ typedef struct {
 } strategy_entry_t;
 
 static const strategy_entry_t strategies[] = {
-    { "Grid ETH v2",    "strategies/grid_eth.lua",      "ATR dynamic grid + breakout, 15 levels, 5x" },
-    { "Signal DOGE",    "strategies/signal_doge.lua",    "Sentiment + volume, TP 8%, trailing stop"    },
-    { "DCA Mean Rev",   "strategies/dca_eth.lua",        "Buy dips (RSI<30), sell recovery (RSI>70)"   },
-    { "Momentum",       "strategies/momentum_eth.lua",   "EMA12/26 cross + RSI + ATR trailing stop"    },
-    { "BB Scalping",    "strategies/scalp_eth.lua",      "Bollinger Band mean reversion, tight SL"     },
+    { "BB Scalping",    "strategies/scalp.lua",          "Bollinger Band mean reversion, tight SL"     },
 };
 
 #define N_STRATEGIES (sizeof(strategies) / sizeof(strategies[0]))

@@ -111,6 +111,24 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
                     snprintf(cfg->active_strategies[i], 64, "%s", yyjson_get_str(f));
                     snprintf(cfg->strategy_roles[i], 16, "%s",
                              yyjson_get_str(r) ? yyjson_get_str(r) : "secondary");
+
+                    /* Parse optional "coins" array */
+                    cfg->n_strategy_coins[i] = 0;
+                    yyjson_val *coins = yyjson_obj_get(item, "coins");
+                    if (coins && yyjson_is_arr(coins)) {
+                        size_t cidx, cmax;
+                        yyjson_val *coin;
+                        yyjson_arr_foreach(coins, cidx, cmax, coin) {
+                            if (cfg->n_strategy_coins[i] >= TB_MAX_STRATEGY_COINS) break;
+                            const char *cs = yyjson_get_str(coin);
+                            if (cs) {
+                                snprintf(cfg->strategy_coins[i][cfg->n_strategy_coins[i]],
+                                         16, "%s", cs);
+                                cfg->n_strategy_coins[i]++;
+                            }
+                        }
+                    }
+
                     cfg->n_active_strategies++;
                 }
             }
@@ -196,8 +214,19 @@ void tb_config_dump(const tb_config_t *cfg) {
     tb_log_info("CONFIG: max_leverage=%.1fx", cfg->max_leverage);
     tb_log_info("CONFIG: strategies_dir=%s", cfg->strategies_dir);
     for (int i = 0; i < cfg->n_active_strategies; i++) {
-        tb_log_info("CONFIG: strategy[%d]=%s (%s)", i,
-                    cfg->active_strategies[i], cfg->strategy_roles[i]);
+        if (cfg->n_strategy_coins[i] > 0) {
+            char coins_buf[256] = "";
+            for (int c = 0; c < cfg->n_strategy_coins[i]; c++) {
+                if (c > 0) strncat(coins_buf, ",", sizeof(coins_buf) - strlen(coins_buf) - 1);
+                strncat(coins_buf, cfg->strategy_coins[i][c],
+                        sizeof(coins_buf) - strlen(coins_buf) - 1);
+            }
+            tb_log_info("CONFIG: strategy[%d]=%s (%s) coins=[%s]", i,
+                        cfg->active_strategies[i], cfg->strategy_roles[i], coins_buf);
+        } else {
+            tb_log_info("CONFIG: strategy[%d]=%s (%s)", i,
+                        cfg->active_strategies[i], cfg->strategy_roles[i]);
+        }
     }
     tb_log_info("CONFIG: paper_trading=%s", cfg->paper_trading ? "true" : "false");
     tb_log_info("CONFIG: db_path=%s", cfg->db_path);

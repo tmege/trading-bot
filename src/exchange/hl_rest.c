@@ -123,11 +123,17 @@ static int post_json(hl_rest_t *rest, const char *endpoint,
                      const char *body, int weight,
                      response_buf_t *resp) {
     if (!rate_limiter_acquire(&rest->rate_limiter, weight)) {
-        tb_log_warn("rate limit exceeded, waiting...");
-        struct timespec ts = {0, 100000000}; /* 100ms */
+        /* Adaptive wait: scale by weight relative to regeneration rate.
+         * Tokens regenerate at max_tokens/60s, so wait proportional to
+         * the weight requested. Clamp between 100ms and 2000ms. */
+        int wait_ms = weight * 60000 / rest->rate_limiter.max_tokens;
+        if (wait_ms < 100) wait_ms = 100;
+        if (wait_ms > 2000) wait_ms = 2000;
+        tb_log_warn("rate limit exceeded, waiting %dms (weight=%d)...", wait_ms, weight);
+        struct timespec ts = {wait_ms / 1000, (wait_ms % 1000) * 1000000L};
         nanosleep(&ts, NULL);
         if (!rate_limiter_acquire(&rest->rate_limiter, weight)) {
-            tb_log_error("rate limit still exceeded after wait");
+            tb_log_error("rate limit still exceeded after %dms wait", wait_ms);
             return -1;
         }
     }

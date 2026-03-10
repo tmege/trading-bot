@@ -20,6 +20,86 @@
 /* Registry key for our context pointer */
 static const char *CTX_REGISTRY_KEY = "tb_lua_ctx";
 
+/* ── Candle cache for get_indicators ────────────────────────────────────── */
+/* Caches fetched candles by coin+interval with a 30s TTL.
+ * Thread-safe because all strategies execute sequentially under engine->lock. */
+#define CANDLE_CACHE_SIZE 8
+#define CANDLE_CACHE_TTL_MS 30000
+#define CANDLE_CACHE_MAX 300
+
+typedef struct {
+    char    coin[16];
+    char    interval[8];
+    double  closes[CANDLE_CACHE_MAX];
+    double  highs[CANDLE_CACHE_MAX];
+    double  lows[CANDLE_CACHE_MAX];
+    double  opens[CANDLE_CACHE_MAX];
+    double  volumes[CANDLE_CACHE_MAX];
+    int64_t times[CANDLE_CACHE_MAX];
+    int     count;
+    int64_t fetched_at_ms;
+} candle_cache_t;
+
+static candle_cache_t g_candle_cache[CANDLE_CACHE_SIZE];
+
+static int64_t cache_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Find a cache entry for coin+interval that is still fresh. Returns index or -1. */
+static int candle_cache_find(const char *coin, const char *interval) {
+    int64_t now = cache_now_ms();
+    for (int i = 0; i < CANDLE_CACHE_SIZE; i++) {
+        if (g_candle_cache[i].count > 0 &&
+            strcmp(g_candle_cache[i].coin, coin) == 0 &&
+            strcmp(g_candle_cache[i].interval, interval) == 0 &&
+            (now - g_candle_cache[i].fetched_at_ms) < CANDLE_CACHE_TTL_MS) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Store candles in cache, evicting the oldest entry if full. */
+static int candle_cache_store(const char *coin, const char *interval,
+                               const tb_candle_input_t *input, int count) {
+    if (count > CANDLE_CACHE_MAX) count = CANDLE_CACHE_MAX;
+
+    /* Find existing slot or oldest entry to evict */
+    int slot = -1;
+    int64_t oldest_ts = INT64_MAX;
+    for (int i = 0; i < CANDLE_CACHE_SIZE; i++) {
+        if (g_candle_cache[i].count == 0 ||
+            (strcmp(g_candle_cache[i].coin, coin) == 0 &&
+             strcmp(g_candle_cache[i].interval, interval) == 0)) {
+            slot = i;
+            break;
+        }
+        if (g_candle_cache[i].fetched_at_ms < oldest_ts) {
+            oldest_ts = g_candle_cache[i].fetched_at_ms;
+            slot = i;
+        }
+    }
+    if (slot < 0) slot = 0;
+
+    candle_cache_t *c = &g_candle_cache[slot];
+    snprintf(c->coin, sizeof(c->coin), "%s", coin);
+    snprintf(c->interval, sizeof(c->interval), "%s", interval);
+    c->count = count;
+    c->fetched_at_ms = cache_now_ms();
+    for (int i = 0; i < count; i++) {
+        c->opens[i]   = input[i].open;
+        c->highs[i]   = input[i].high;
+        c->lows[i]    = input[i].low;
+        c->closes[i]  = input[i].close;
+        c->volumes[i] = input[i].volume;
+        c->times[i]   = input[i].time_ms;
+    }
+    return slot;
+}
+
 /* Validate a string for safe JSON interpolation: alphanumeric + limited
  * punctuation, bounded length. Used for coin names and intervals. */
 static bool is_safe_json_value(const char *s, size_t max_len) {
@@ -213,9 +293,8 @@ static int api_cancel(lua_State *L) {
 
     const char *coin = luaL_checkstring(L, 1);
     lua_Integer oid = luaL_checkinteger(L, 2);
-    (void)coin;
 
-    int rc = tb_order_mgr_cancel(ctx->order_mgr, 0, (uint64_t)oid);
+    int rc = tb_order_mgr_cancel_by_coin(ctx->order_mgr, coin, (uint64_t)oid);
     lua_pushboolean(L, rc == 0);
     if (rc != 0) {
         lua_pushstring(L, "cancel failed");
@@ -617,38 +696,62 @@ static int api_get_indicators(lua_State *L) {
      * Without this, RSI/BB only update when a new candle closes. */
     double live_price = luaL_optnumber(L, 4, 0);
 
-    /* Fetch candles */
-    int64_t now_ms = (int64_t)time(NULL) * 1000;
-    int64_t start_ms = now_ms - (int64_t)req_count * interval_to_sec(interval) * 1000;
-
-    tb_candle_t *candles = malloc(sizeof(tb_candle_t) * (size_t)req_count);
-    if (!candles) { lua_newtable(L); return 1; }
+    /* Check candle cache first (30s TTL). On hit, reuse cached candles
+     * and only inject the fresh live_price. Saves ~1000 weight/min. */
+    int cache_idx = candle_cache_find(coin, interval);
+    tb_candle_input_t *input = NULL;
     int count = 0;
-    if (hl_rest_get_candles(ctx->rest, coin, interval, start_ms, now_ms,
-                            candles, &count, req_count) != 0 || count < 2) {
-        free(candles);
-        lua_newtable(L);
-        lua_pushboolean(L, 0);
-        lua_setfield(L, -2, "valid");
-        return 1;
-    }
 
-    /* Convert to indicator input format */
-    tb_candle_input_t *input = malloc(sizeof(tb_candle_input_t) * (size_t)count);
-    if (!input) {
+    if (cache_idx >= 0) {
+        /* Cache hit — copy cached data into input array */
+        candle_cache_t *cc = &g_candle_cache[cache_idx];
+        count = cc->count;
+        input = malloc(sizeof(tb_candle_input_t) * (size_t)count);
+        if (!input) { lua_newtable(L); return 1; }
+        for (int i = 0; i < count; i++) {
+            input[i].open    = cc->opens[i];
+            input[i].high    = cc->highs[i];
+            input[i].low     = cc->lows[i];
+            input[i].close   = cc->closes[i];
+            input[i].volume  = cc->volumes[i];
+            input[i].time_ms = cc->times[i];
+        }
+    } else {
+        /* Cache miss — fetch from REST API */
+        int64_t now_val = (int64_t)time(NULL) * 1000;
+        int64_t start_ms = now_val - (int64_t)req_count * interval_to_sec(interval) * 1000;
+
+        tb_candle_t *candles = malloc(sizeof(tb_candle_t) * (size_t)req_count);
+        if (!candles) { lua_newtable(L); return 1; }
+        if (hl_rest_get_candles(ctx->rest, coin, interval, start_ms, now_val,
+                                candles, &count, req_count) != 0 || count < 2) {
+            free(candles);
+            lua_newtable(L);
+            lua_pushboolean(L, 0);
+            lua_setfield(L, -2, "valid");
+            return 1;
+        }
+
+        /* Convert to indicator input format */
+        input = malloc(sizeof(tb_candle_input_t) * (size_t)count);
+        if (!input) {
+            free(candles);
+            lua_newtable(L);
+            return 1;
+        }
+        for (int i = 0; i < count; i++) {
+            input[i].open    = tb_decimal_to_double(candles[i].open);
+            input[i].high    = tb_decimal_to_double(candles[i].high);
+            input[i].low     = tb_decimal_to_double(candles[i].low);
+            input[i].close   = tb_decimal_to_double(candles[i].close);
+            input[i].volume  = tb_decimal_to_double(candles[i].volume);
+            input[i].time_ms = candles[i].time_open;
+        }
         free(candles);
-        lua_newtable(L);
-        return 1;
+
+        /* Store in cache for next caller */
+        candle_cache_store(coin, interval, input, count);
     }
-    for (int i = 0; i < count; i++) {
-        input[i].open   = tb_decimal_to_double(candles[i].open);
-        input[i].high   = tb_decimal_to_double(candles[i].high);
-        input[i].low    = tb_decimal_to_double(candles[i].low);
-        input[i].close  = tb_decimal_to_double(candles[i].close);
-        input[i].volume = tb_decimal_to_double(candles[i].volume);
-        input[i].time_ms = candles[i].time_open;
-    }
-    free(candles);
 
     /* Inject live price into last candle so RSI/BB reflect current price,
      * not just the last closed candle. This is critical for intra-candle

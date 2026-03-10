@@ -152,21 +152,27 @@ static char *build_prompt(const tb_advisory_context_t *ctx) {
     char *prompt = malloc(prompt_len);
     if (!prompt) { free(json); return NULL; }
 
+    /* Build dynamic strategy adjustment fields from active strategies */
+    char strat_fields[1024] = "";
+    for (int i = 0; i < ctx->n_strategies; i++) {
+        char line[128];
+        snprintf(line, sizeof(line),
+            "- %s: {sl_pct, tp_pct, rsi_oversold, rsi_overbought, pause(bool)}\n",
+            ctx->strategies[i].name);
+        strncat(strat_fields, line, sizeof(strat_fields) - strlen(strat_fields) - 1);
+    }
+
     snprintf(prompt, prompt_len,
         "You are an AI trading advisor for a crypto trading bot on Hyperliquid.\n"
         "Budget: ~100 USDC. Leverage: 5x. Active strategies:\n"
-        "1) BB Scalping on 5 coins (ETH, BTC, SOL, DOGE, HYPE): Bollinger Band mean reversion, "
+        "1) BB Scalping on multiple coins: Bollinger Band mean reversion, "
         "$40/trade each. RSI<35 at lower BB → long, RSI>65 at upper BB → short, SL 1.5%%, TP 3%%\n"
         "Emergency close at -12 USDC, hard limit at -15 USDC.\n"
         "\n"
         "Current state:\n%s\n"
         "\n"
         "Provide adjustments as JSON with these optional fields:\n"
-        "- scalp_eth: {sl_pct, tp_pct, rsi_oversold, rsi_overbought, pause(bool)}\n"
-        "- scalp_btc: {sl_pct, tp_pct, rsi_oversold, rsi_overbought, pause(bool)}\n"
-        "- scalp_sol: {sl_pct, tp_pct, rsi_oversold, rsi_overbought, pause(bool)}\n"
-        "- scalp_doge: {sl_pct, tp_pct, rsi_oversold, rsi_overbought, pause(bool)}\n"
-        "- scalp_hype: {sl_pct, tp_pct, rsi_oversold, rsi_overbought, pause(bool)}\n"
+        "%s"
         "- risk: {daily_limit, max_leverage} — adjust risk parameters\n"
         "- analysis: brief text reasoning (1-2 sentences)\n"
         "\n"
@@ -179,7 +185,7 @@ static char *build_prompt(const tb_advisory_context_t *ctx) {
         "- Max leverage 5x, max position $300\n"
         "- Momentum is the primary profit driver — avoid pausing unless clear signal\n"
         "- Respond ONLY with valid JSON\n",
-        json);
+        json, strat_fields);
 
     free(json);
     return prompt;

@@ -25,6 +25,11 @@ typedef struct {
     char     strategy_roles[8][16];      /* "primary" or "secondary" */
     int      n_active_strategies;        /* how many active strategies */
 
+    /* Per-strategy coins (multi-coin: 1 file → N instances) */
+    #define TB_MAX_STRATEGY_COINS 16
+    char     strategy_coins[8][TB_MAX_STRATEGY_COINS][16];
+    int      n_strategy_coins[8];
+
     /* AI Advisory */
     char     claude_api_key[256];     /* from env TB_CLAUDE_API_KEY */
     char     claude_model[64];

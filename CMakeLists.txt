@@ -327,6 +327,44 @@ if(TB_BUILD_TESTS)
         ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
         ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
     )
+
+    add_executable(backtest_json tests/backtest_json.c ${TB_LIB_SOURCES})
+    target_include_directories(backtest_json PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${LUA_INCLUDE_DIRS}
+        ${LWS_INCLUDE_DIRS}
+        ${SECP256K1_INCLUDE_DIRS}
+        ${MSGPACK_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
+    )
+    target_link_libraries(backtest_json PRIVATE
+        yyjson CURL::libcurl OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+        ${LUA_LIBRARIES} ${LWS_LIBRARIES} ${SECP256K1_LIBRARIES}
+        ${MSGPACK_LIBRARIES} ${SQLITE3_LIBRARIES}
+    )
+    target_link_directories(backtest_json PRIVATE
+        ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
+        ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
+    )
+
+    add_executable(candle_fetcher tools/candle_fetcher.c ${TB_LIB_SOURCES})
+    target_include_directories(candle_fetcher PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${LUA_INCLUDE_DIRS}
+        ${LWS_INCLUDE_DIRS}
+        ${SECP256K1_INCLUDE_DIRS}
+        ${MSGPACK_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
+    )
+    target_link_libraries(candle_fetcher PRIVATE
+        yyjson CURL::libcurl OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+        ${LUA_LIBRARIES} ${LWS_LIBRARIES} ${SECP256K1_LIBRARIES}
+        ${MSGPACK_LIBRARIES} ${SQLITE3_LIBRARIES}
+    )
+    target_link_directories(candle_fetcher PRIVATE
+        ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
+        ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
+    )
 endif()
 
 # ── Install ──────────────────────────────────────────────────────────────────
