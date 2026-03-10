@@ -1,0 +1,36 @@
+{
+    "exchange": {
+        "rest_url": "https://api.hyperliquid.xyz",
+        "ws_url": "wss://api.hyperliquid.xyz/ws",
+        "is_testnet": false
+    },
+    "risk": {
+        "daily_loss_limit_usdc": -15.0,
+        "emergency_close_usdc": -12.0,
+        "max_leverage": 5,
+        "per_trade_stop_pct": 2.0,
+        "max_position_usd": 300.0
+    },
+    "strategies": {
+        "dir": "./strategies",
+        "reload_interval_sec": 5,
+        "active": [
+            { "file": "scalp_eth.lua", "role": "primary" }
+        ]
+    },
+    "ai_advisory": {
+        "model": "claude-haiku-4-5-20251001",
+        "morning_hour_utc": 8,
+        "evening_hour_utc": 20
+    },
+    "database": {
+        "path": "./data/trading_bot.db"
+    },
+    "logging": {
+        "dir": "./logs",
+        "level": 0
+    },
+    "mode": {
+        "paper_trading": true
+    }
+}

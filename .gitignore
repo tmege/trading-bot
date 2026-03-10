@@ -1,0 +1,39 @@
+# Build
+build/
+cmake-build-*/
+
+# Data & logs
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.pid
+logs/
+reports/
+
+# Secrets
+.env
+*.pem
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Clangd cache
+.cache/
+
+# Compile commands (if symlinked to root)
+compile_commands.json
+
+# Object files
+*.o
+
+# Dependencies (fetched by CMake)
+_deps/
