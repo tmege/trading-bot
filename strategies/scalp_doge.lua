@@ -231,16 +231,20 @@ function on_timer()
 end
 
 function on_advisory(json_str)
-    local pause = json_str:match('"pause"%s*:%s*(true)')
-    local resume = json_str:match('"pause"%s*:%s*(false)')
+    local section = json_str:match('"scalp_doge"%s*:%s*(%b{})')
+    if not section then return end
+    local pause = section:match('"pause"%s*:%s*(true)')
+    local resume = section:match('"pause"%s*:%s*(false)')
     if pause then
         config.enabled = false
         bot.save_state("enabled", "false")
         if in_position then close_position("advisory pause") end
+        bot.log("warn", "scalp_doge: PAUSED by advisory")
     end
     if resume and not config.enabled then
         config.enabled = true
         bot.save_state("enabled", "true")
+        bot.log("info", "scalp_doge: RESUMED by advisory")
     end
 end
 

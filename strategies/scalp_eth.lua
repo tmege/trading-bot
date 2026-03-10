@@ -208,17 +208,26 @@ function on_tick(coin, mid_price)
 
     -- Get indicators
     local ind = bot.get_indicators(config.coin, "15m", 30)
-    if not ind then return end
+    if not ind then
+        bot.log("warn", "scalp: get_indicators returned nil")
+        return
+    end
 
     local rsi = ind.rsi
     local bb_upper = ind.bb_upper
     local bb_lower = ind.bb_lower
     local bb_mid = ind.bb_middle
 
-    if not rsi or not bb_upper or not bb_lower or not bb_mid then return end
+    if not rsi or not bb_upper or not bb_lower or not bb_mid then
+        bot.log("warn", string.format("scalp: missing fields — rsi=%s bb_upper=%s bb_lower=%s bb_mid=%s valid=%s",
+            tostring(rsi), tostring(bb_upper), tostring(bb_lower), tostring(bb_mid), tostring(ind.valid)))
+        return
+    end
 
     -- Check BB width filter
     local width = bb_width_pct(bb_upper, bb_lower, bb_mid)
+    bot.log("debug", string.format("scalp: ETH=$%.2f BB=[%.2f / %.2f / %.2f] w=%.1f%% RSI=%.1f",
+        mid_price, bb_lower, bb_mid, bb_upper, width, rsi))
     if width < config.min_bb_width then
         bot.log("debug", string.format("scalp: BB too tight (%.1f%%), skipping", width))
         return
@@ -314,20 +323,24 @@ end
 function on_advisory(json_str)
     bot.log("info", "scalp_eth: advisory: " .. json_str)
 
-    local pause = json_str:match('"pause"%s*:%s*(true)')
-    local resume = json_str:match('"pause"%s*:%s*(false)')
+    -- Only parse our own section ("scalp_eth": { ... })
+    local section = json_str:match('"scalp_eth"%s*:%s*(%b{})')
+    if not section then return end
+
+    local pause = section:match('"pause"%s*:%s*(true)')
+    local resume = section:match('"pause"%s*:%s*(false)')
 
     if pause then
         config.enabled = false
         bot.save_state("enabled", "false")
         if in_position then close_position("advisory pause") end
-        bot.log("warn", "scalp: PAUSED by advisory")
+        bot.log("warn", "scalp_eth: PAUSED by advisory")
     end
 
     if resume and not config.enabled then
         config.enabled = true
         bot.save_state("enabled", "true")
-        bot.log("info", "scalp: RESUMED by advisory")
+        bot.log("info", "scalp_eth: RESUMED by advisory")
     end
 end
 
