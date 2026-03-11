@@ -1,8 +1,58 @@
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+
+const HISTORY_FILE = 'data/backtest_history.json';
+
+function loadHistory(projectRoot) {
+  const fp = path.join(projectRoot, HISTORY_FILE);
+  try {
+    return JSON.parse(fs.readFileSync(fp, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(projectRoot, history) {
+  const fp = path.join(projectRoot, HISTORY_FILE);
+  fs.mkdirSync(path.dirname(fp), { recursive: true });
+  fs.writeFileSync(fp, JSON.stringify(history, null, 2));
+}
+
+function appendToHistory(projectRoot, result, params) {
+  const history = loadHistory(projectRoot);
+  const entry = {
+    id: Date.now(),
+    date: new Date().toISOString(),
+    strategy: params.strategy,
+    coin: result.coin || params.coins?.[0] || '?',
+    interval: params.interval,
+    n_days: params.nDays,
+    return_pct: result.stats?.return_pct || 0,
+    sharpe: result.stats?.sharpe_ratio || 0,
+    max_dd: result.stats?.max_drawdown_pct || 0,
+    profit_factor: result.stats?.profit_factor || 0,
+    win_rate: result.stats?.win_rate || 0,
+    trades: result.stats?.total_trades || 0,
+    verdict: result.verdict || 'N/A',
+  };
+  history.push(entry);
+  // Keep last 500 entries
+  if (history.length > 500) history.splice(0, history.length - 500);
+  saveHistory(projectRoot, history);
+}
 
 module.exports = function registerBacktestIPC(ipcMain, projectRoot) {
   const binary = path.join(projectRoot, 'build', 'backtest_json');
+
+  ipcMain.handle('backtest:history', async () => {
+    return loadHistory(projectRoot);
+  });
+
+  ipcMain.handle('backtest:clearHistory', async () => {
+    saveHistory(projectRoot, []);
+    return { ok: true };
+  });
 
   ipcMain.handle('backtest:run', async (event, params) => {
     const {
@@ -34,6 +84,8 @@ module.exports = function registerBacktestIPC(ipcMain, projectRoot) {
           projectRoot, event
         );
         results.push({ coin, ...result });
+        // Save to history
+        try { appendToHistory(projectRoot, { coin, ...result }, params); } catch (_) {}
       } catch (err) {
         results.push({ coin, error: err.message });
       }

@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import BacktestForm from '../components/BacktestForm';
 import StatsTable from '../components/StatsTable';
 import EquityCurve from '../components/EquityCurve';
 import TradeLog from '../components/TradeLog';
 import CoinComparison from '../components/CoinComparison';
 import useBacktest from '../hooks/useBacktest';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Trophy, Trash2 } from 'lucide-react';
 
 const VERDICT_COLORS = {
   DEPLOYABLE:   'text-profit border-profit/30 bg-profit/10',
@@ -15,8 +15,25 @@ const VERDICT_COLORS = {
   ABANDON:      'text-loss border-loss/30 bg-loss/10',
 };
 
+function formatReturn(pct) {
+  if (pct >= 10000) return `${(pct / 1000).toFixed(0)}K%`;
+  if (pct >= 1000) return `${(pct / 1000).toFixed(1)}K%`;
+  return `${pct.toFixed(1)}%`;
+}
+
 export default function Backtest() {
   const { results, progress, running, error, run } = useBacktest();
+  const [history, setHistory] = useState([]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const h = await window.api.backtest.history();
+      setHistory(h.sort((a, b) => b.return_pct - a.return_pct));
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+  useEffect(() => { if (results && !running) loadHistory(); }, [results, running, loadHistory]);
 
   // Show first result details (or the one selected)
   const firstResult = results?.[0];
@@ -88,6 +105,84 @@ export default function Backtest() {
           {r.coin}: {r.error}
         </div>
       ))}
+
+      {/* ── Backtest History Leaderboard ──────────────────────────────── */}
+      {history.length > 0 && (
+        <div className="bg-surface-card border border-surface-border rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-2">
+              <Trophy size={12} />
+              Backtest History ({history.length})
+            </h3>
+            <button
+              className="text-[10px] text-gray-600 hover:text-loss flex items-center gap-1"
+              onClick={async () => {
+                await window.api.backtest.clearHistory();
+                setHistory([]);
+              }}
+            >
+              <Trash2 size={10} /> Clear
+            </button>
+          </div>
+
+          <div className="overflow-auto max-h-[400px]">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-surface-card">
+                <tr className="text-gray-500 text-left">
+                  <th className="py-1.5 px-2">#</th>
+                  <th className="py-1.5 px-2">Strategy</th>
+                  <th className="py-1.5 px-2">Coin</th>
+                  <th className="py-1.5 px-2">TF</th>
+                  <th className="py-1.5 px-2 text-right">Return</th>
+                  <th className="py-1.5 px-2 text-right">Sharpe</th>
+                  <th className="py-1.5 px-2 text-right">Max DD</th>
+                  <th className="py-1.5 px-2 text-right">WR</th>
+                  <th className="py-1.5 px-2 text-right">Trades</th>
+                  <th className="py-1.5 px-2 text-center">Verdict</th>
+                  <th className="py-1.5 px-2 text-right">Days</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h, i) => (
+                  <tr key={h.id} className="border-t border-surface-border/50 hover:bg-surface-bg/50">
+                    <td className="py-1.5 px-2 text-gray-600">{i + 1}</td>
+                    <td className="py-1.5 px-2 font-mono text-gray-300">
+                      {h.strategy.replace('.lua', '')}
+                    </td>
+                    <td className="py-1.5 px-2 text-white font-semibold">{h.coin}</td>
+                    <td className="py-1.5 px-2 text-gray-400">{h.interval}</td>
+                    <td className={`py-1.5 px-2 text-right font-mono font-bold ${
+                      h.return_pct > 0 ? 'text-profit' : h.return_pct < 0 ? 'text-loss' : 'text-gray-400'
+                    }`}>
+                      {h.return_pct > 0 ? '+' : ''}{formatReturn(h.return_pct)}
+                    </td>
+                    <td className="py-1.5 px-2 text-right font-mono text-gray-300">
+                      {h.sharpe?.toFixed(1)}
+                    </td>
+                    <td className="py-1.5 px-2 text-right font-mono text-gray-400">
+                      {h.max_dd?.toFixed(2)}%
+                    </td>
+                    <td className="py-1.5 px-2 text-right font-mono text-gray-400">
+                      {h.win_rate?.toFixed(0)}%
+                    </td>
+                    <td className="py-1.5 px-2 text-right font-mono text-gray-400">
+                      {h.trades}
+                    </td>
+                    <td className="py-1.5 px-2 text-center">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                        VERDICT_COLORS[h.verdict] || 'text-gray-500'
+                      }`}>
+                        {h.verdict}
+                      </span>
+                    </td>
+                    <td className="py-1.5 px-2 text-right text-gray-600">{h.n_days}d</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

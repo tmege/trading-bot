@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('api', {
   // Backtest
   backtest: {
     run: (params) => ipcRenderer.invoke('backtest:run', params),
+    history: () => ipcRenderer.invoke('backtest:history'),
+    clearHistory: () => ipcRenderer.invoke('backtest:clearHistory'),
     onProgress: (cb) => {
       const listener = (_e, data) => cb(data);
       ipcRenderer.on('backtest:progress', listener);

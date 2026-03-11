@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Globe, Landmark, BarChart3, Coins, DollarSign } from 'lucide-react';
+import { Globe, Landmark, BarChart3, Coins, DollarSign, Activity } from 'lucide-react';
 import usePrices from '../hooks/usePrices';
 
 /* ── Formatters ──────────────────────────────────────────────────────────── */
@@ -75,6 +75,61 @@ function Section({ icon: Icon, title, children, className = '' }) {
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+/* ── Market phase detection ─────────────────────────────────────────────── */
+const PHASES = {
+  BULL:     { label: 'Bull / Trend',      color: 'text-profit',     bg: 'bg-profit/15',      border: 'border-profit/30',      icon: '▲' },
+  BEAR:     { label: 'Bear / Downtrend',  color: 'text-loss',       bg: 'bg-loss/15',         border: 'border-loss/30',        icon: '▼' },
+  RANGE:    { label: 'Range / Sideways',  color: 'text-yellow-400', bg: 'bg-yellow-400/15',   border: 'border-yellow-400/30',  icon: '◆' },
+  HIGH_VOL: { label: 'High Volatility',   color: 'text-orange-400', bg: 'bg-orange-400/15',   border: 'border-orange-400/30',  icon: '⚡' },
+};
+
+const PHASE_STRATEGIES = {
+  BULL:     ['regime_adaptive_1h', 'ichimoku_trend_4h', 'ema_adx_trend_4h'],
+  BEAR:     ['regime_adaptive_1h', 'macd_momentum_1h', 'bb_scalp_15m'],
+  RANGE:    ['bb_scalp_15m', 'stochrsi_scalp_5m', 'vwap_reversion_15m'],
+  HIGH_VOL: ['regime_adaptive_1h', 'ichimoku_trend_4h', 'triple_confirm_15m'],
+};
+
+function detectMarketPhase(macro) {
+  if (!macro) return null;
+  const fg = macro.fear_greed || 50;
+
+  if (fg <= 20 || fg >= 80) return 'HIGH_VOL';
+  if (fg <= 40) return 'BEAR';
+  if (fg >= 60) return 'BULL';
+  return 'RANGE';
+}
+
+function MarketPhaseWidget({ macro }) {
+  const phaseKey = detectMarketPhase(macro);
+  if (!phaseKey) return null;
+  const phase = PHASES[phaseKey];
+  const strats = PHASE_STRATEGIES[phaseKey];
+
+  return (
+    <div className={`${phase.bg} border ${phase.border} rounded-lg px-4 py-3`}>
+      <div className="flex items-center gap-2 mb-2">
+        <Activity size={14} className={phase.color} />
+        <span className={`text-xs font-semibold uppercase tracking-wider ${phase.color}`}>
+          Market Phase
+        </span>
+      </div>
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`text-lg font-bold ${phase.color}`}>{phase.icon}</span>
+        <span className={`text-sm font-bold ${phase.color}`}>{phase.label}</span>
+      </div>
+      <div className="text-[10px] text-gray-500 mb-1.5">Best strategies for this phase:</div>
+      <div className="flex flex-wrap gap-1.5">
+        {strats.map((s) => (
+          <span key={s} className="text-[10px] font-mono bg-surface-bg px-2 py-0.5 rounded text-gray-300">
+            {s}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -170,6 +225,9 @@ export default function MarketPanel({ marketData }) {
           </div>
         )}
       </Section>
+
+      {/* ── Market Phase ──────────────────────────────────────────────────── */}
+      <MarketPhaseWidget macro={macro} />
 
       {/* ── Indices & ETFs ──────────────────────────────────────────────── */}
       {macro?.indices?.length > 0 && (

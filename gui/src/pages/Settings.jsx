@@ -234,10 +234,20 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                     </div>
                   )}
 
-                  {/* Legacy mode (no coins array) */}
+                  {/* Legacy mode — offer to enable multi-coin */}
                   {!entry.coins && (
-                    <div className="p-4 text-xs text-gray-600">
-                      This strategy uses legacy mode (single file per coin). Add a <code className="text-gray-400">"coins"</code> array to enable multi-coin.
+                    <div className="p-4 flex items-center gap-3">
+                      <span className="text-xs text-gray-600">Legacy mode (single instance)</span>
+                      <button
+                        className="px-3 py-1 text-xs bg-accent/20 text-accent border border-accent/30 rounded hover:bg-accent/30"
+                        onClick={() => {
+                          const updated = JSON.parse(JSON.stringify(config));
+                          updated.strategies.active[stratIdx].coins = ["ETH", "BTC"];
+                          saveConfig(updated);
+                        }}
+                      >
+                        Enable multi-coin
+                      </button>
                     </div>
                   )}
                 </div>
@@ -252,18 +262,45 @@ export default function Settings({ paperMode, onPaperModeChange }) {
           <SyncPanel />
         </section>
 
-        {/* Risk overview (read-only) */}
+        {/* Risk Parameters (editable, %-based) */}
         <section className="mb-8">
-          <h2 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Risk Parameters</h2>
+          <h2 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Risk Parameters (% of account)</h2>
           <div className="bg-surface-card border border-surface-border rounded-lg p-4">
-            <div className="grid grid-cols-2 gap-3">
-              {config.risk && Object.entries(config.risk).map(([key, val]) => (
-                <div key={key} className="flex justify-between items-center">
-                  <span className="text-xs text-gray-500">{key.replace(/_/g, ' ')}</span>
-                  <span className="text-xs text-white font-mono">{val}</span>
+            <div className="grid grid-cols-2 gap-4">
+              {[
+                { key: 'daily_loss_pct',      label: 'Max daily loss',      unit: '%', step: 1, min: 1, max: 50 },
+                { key: 'emergency_close_pct',  label: 'Emergency close',     unit: '%', step: 1, min: 1, max: 40 },
+                { key: 'max_position_pct',     label: 'Max position size',   unit: '%', step: 10, min: 10, max: 500 },
+                { key: 'max_leverage',         label: 'Max leverage',        unit: 'x', step: 1, min: 1, max: 10 },
+                { key: 'per_trade_stop_pct',   label: 'Per-trade stop loss', unit: '%', step: 0.5, min: 0.5, max: 10 },
+              ].map(({ key, label, unit, step, min, max }) => (
+                <div key={key}>
+                  <label className="text-[10px] text-gray-500 uppercase block mb-1">{label}</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      className="w-20 bg-surface-bg border border-surface-border rounded px-2 py-1 text-xs text-white font-mono text-right"
+                      value={config.risk?.[key] ?? ''}
+                      step={step}
+                      min={min}
+                      max={max}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (isNaN(val)) return;
+                        const updated = JSON.parse(JSON.stringify(config));
+                        if (!updated.risk) updated.risk = {};
+                        updated.risk[key] = val;
+                        saveConfig(updated);
+                      }}
+                    />
+                    <span className="text-xs text-gray-500">{unit}</span>
+                  </div>
                 </div>
               ))}
             </div>
+            <p className="text-[10px] text-gray-600 mt-3">
+              All limits scale automatically with your account balance.
+            </p>
           </div>
         </section>
 

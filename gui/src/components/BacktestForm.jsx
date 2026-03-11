@@ -31,7 +31,14 @@ export default function BacktestForm({ onRun, running }) {
         if (res.ok) {
           setStrategies(res.strategies);
           if (res.strategies.length > 0 && !strategy) {
-            setStrategy(res.strategies[0].file);
+            const first = res.strategies[0].file;
+            setStrategy(first);
+            // Auto-detect interval from first strategy
+            const base = first.replace(/\.lua$/, '');
+            const lastSeg = base.split('_').pop();
+            if (INTERVALS.includes(lastSeg)) {
+              setInterval(lastSeg);
+            }
           }
         }
       } catch (_) {}
@@ -54,6 +61,12 @@ export default function BacktestForm({ onRun, running }) {
   function handleStrategyChange(file) {
     setStrategy(file);
     setMultiCoin(false);
+    // Auto-detect interval from strategy filename (e.g. bb_scalp_15m.lua → 15m)
+    const base = file.replace(/\.lua$/, '');
+    const lastSeg = base.split('_').pop();
+    if (INTERVALS.includes(lastSeg)) {
+      setInterval(lastSeg);
+    }
   }
 
   function handleSubmit(e) {
@@ -88,11 +101,11 @@ export default function BacktestForm({ onRun, running }) {
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Interval</label>
+          <label className="text-xs text-gray-400 block mb-1">Interval (auto)</label>
           <select
             value={interval}
-            onChange={e => setInterval(e.target.value)}
-            className="w-full bg-surface-bg border border-surface-border rounded px-3 py-2 text-sm text-white focus:border-accent outline-none"
+            disabled
+            className="w-full bg-surface-bg border border-surface-border rounded px-3 py-2 text-sm text-white/60 outline-none cursor-not-allowed"
           >
             {INTERVALS.map(i => (
               <option key={i} value={i}>{i}</option>
