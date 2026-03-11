@@ -3,7 +3,6 @@
  */
 
 #include "strategy/lua_engine.h"
-#include "strategy/strategy_api.h"
 #include "core/logging.h"
 #include "core/config.h"
 #include <stdio.h>
@@ -24,6 +23,18 @@ static int tests_failed = 0;
         tests_passed++; \
     } \
 } while(0)
+
+/* ── Helper: check strategy survived (loaded + enabled) ─────────────────── */
+static bool strategy_is_ok(tb_lua_engine_t *engine, const char *name) {
+    tb_strategy_info_t infos[TB_MAX_STRATEGIES];
+    int count = TB_MAX_STRATEGIES;
+    tb_lua_engine_get_strategies(engine, infos, &count);
+    for (int i = 0; i < count; i++) {
+        if (strcmp(infos[i].name, name) == 0)
+            return infos[i].loaded && infos[i].enabled;
+    }
+    return false;
+}
 
 /* ── Helper: write a Lua file ───────────────────────────────────────────── */
 static void write_lua_file(const char *path, const char *content) {
@@ -90,9 +101,15 @@ static void test_sandbox(void) {
     int loaded = tb_lua_engine_load_strategies(engine);
     ASSERT(loaded >= 1, "sandbox test strategy loaded");
 
-    /* on_init should NOT error — sandbox is in effect */
+    /* on_init should NOT error — sandbox is in effect.
+     * The Lua strategy calls error() if any forbidden global exists.
+     * If we reach here without crash, sandbox is working. */
     tb_lua_engine_on_init(engine);
-    ASSERT(1, "sandbox blocks io, require, loadfile, debug, package");
+
+    tb_strategy_info_t info[4];
+    int info_count = 4;
+    tb_lua_engine_get_strategies(engine, info, &info_count);
+    ASSERT(info_count >= 1 && info[0].loaded, "sandbox strategy loaded and on_init succeeded");
 
     tb_lua_engine_destroy(engine);
     unlink("./test_strategies/sandbox_test.lua");
@@ -152,13 +169,13 @@ static void test_callbacks(void) {
 
     /* on_init */
     tb_lua_engine_on_init(engine);
-    ASSERT(1, "on_init called without error");
+    ASSERT(strategy_is_ok(engine, "callback_test"), "on_init: strategy still loaded");
 
     /* on_tick */
     tb_lua_engine_on_tick(engine, "ETH", 2050.0);
     tb_lua_engine_on_tick(engine, "ETH", 2051.0);
     tb_lua_engine_on_tick(engine, "ETH", 2049.0);
-    ASSERT(1, "on_tick called 3 times");
+    ASSERT(strategy_is_ok(engine, "callback_test"), "on_tick x3: strategy still loaded");
 
     /* on_fill */
     tb_fill_t fill;
@@ -172,19 +189,19 @@ static void test_callbacks(void) {
     fill.fee = tb_decimal_from_double(0.1, 4);
 
     tb_lua_engine_on_fill(engine, &fill, "callback_test");
-    ASSERT(1, "on_fill dispatched");
+    ASSERT(strategy_is_ok(engine, "callback_test"), "on_fill: strategy still loaded");
 
     /* on_timer */
     tb_lua_engine_on_timer(engine);
-    ASSERT(1, "on_timer called");
+    ASSERT(strategy_is_ok(engine, "callback_test"), "on_timer: strategy still loaded");
 
     /* on_advisory */
     tb_lua_engine_on_advisory(engine, "{\"action\":\"adjust_grid\"}");
-    ASSERT(1, "on_advisory called");
+    ASSERT(strategy_is_ok(engine, "callback_test"), "on_advisory: strategy still loaded");
 
     /* on_shutdown */
     tb_lua_engine_on_shutdown(engine);
-    ASSERT(1, "on_shutdown called");
+    ASSERT(strategy_is_ok(engine, "callback_test"), "on_shutdown: strategy still loaded");
 
     tb_lua_engine_destroy(engine);
     unlink("./test_strategies/callback_test.lua");
@@ -218,7 +235,7 @@ static void test_bot_time(void) {
     tb_lua_engine_load_strategies(engine);
     tb_lua_engine_on_init(engine);
 
-    ASSERT(1, "bot.time() returns valid epoch");
+    ASSERT(strategy_is_ok(engine, "time_test"), "bot.time() on_init succeeded");
 
     tb_lua_engine_destroy(engine);
     unlink("./test_strategies/time_test.lua");
@@ -346,9 +363,9 @@ static void test_error_handling(void) {
     tb_lua_engine_load_strategies(engine);
     tb_lua_engine_on_init(engine);
 
-    /* on_tick should error but not crash */
+    /* on_tick should error but not crash or unload the strategy */
     tb_lua_engine_on_tick(engine, "ETH", 2000.0);
-    ASSERT(1, "Lua error in callback does not crash");
+    ASSERT(strategy_is_ok(engine, "error_test"), "Lua error in callback does not unload strategy");
 
     tb_lua_engine_destroy(engine);
     unlink("./test_strategies/error_test.lua");

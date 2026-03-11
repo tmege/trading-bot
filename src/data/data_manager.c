@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <time.h>
@@ -26,9 +27,9 @@ struct tb_data_mgr {
     tb_twitter_sentiment_t   *sentiment;
     tb_fear_greed_fetcher_t  *fear_greed;
 
-    pthread_t   thread;
-    bool        running;
-    bool        started;
+    pthread_t    thread;
+    _Atomic bool running;
+    bool         started;
 
     /* Last refresh timestamps */
     int64_t     last_macro_ts;

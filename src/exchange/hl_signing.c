@@ -18,11 +18,12 @@
 #include <strings.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <sys/mman.h>
 
-/* Secure memory wipe that won't be optimized away */
+/* Secure memory wipe — explicit_bzero is guaranteed by the platform ABI
+ * to never be optimized away, unlike volatile pointer loops under LTO. */
 static void secure_wipe(void *ptr, size_t len) {
-    volatile unsigned char *p = (volatile unsigned char *)ptr;
-    while (len--) *p++ = 0;
+    explicit_bzero(ptr, len);
 }
 
 struct hl_signer {
@@ -51,9 +52,10 @@ static int hex_decode(const char *hex, uint8_t *out, size_t out_len) {
     return 0;
 }
 
-static void hex_encode(const uint8_t *data, size_t len, char *out) {
+static void hex_encode(const uint8_t *data, size_t len, char *out, size_t out_len) {
+    if (out_len < len * 2 + 1) { out[0] = '\0'; return; }
     for (size_t i = 0; i < len; i++) {
-        sprintf(out + i * 2, "%02x", data[i]);
+        snprintf(out + i * 2, 3, "%02x", data[i]);
     }
     out[len * 2] = '\0';
 }
@@ -174,6 +176,9 @@ hl_signer_t *hl_signer_create(const char *private_key_hex) {
     keccak256(s->pubkey_uncompressed + 1, 64, pub_hash);
     memcpy(s->address, pub_hash + 12, 20);
 
+    /* Lock private key in memory to prevent swapping to disk */
+    mlock(s->privkey, sizeof(s->privkey));
+
     return s;
 }
 
@@ -191,7 +196,7 @@ int hl_signer_get_address(const hl_signer_t *signer, char *out, size_t out_len) 
     if (out_len < 43) return -1; /* "0x" + 40 hex + null */
     out[0] = '0';
     out[1] = 'x';
-    hex_encode(signer->address, 20, out + 2);
+    hex_encode(signer->address, 20, out + 2, out_len - 2);
     return 0;
 }
 
@@ -308,8 +313,8 @@ int hl_signature_to_hex(const hl_signature_t *sig, char *buf, size_t buf_len) {
 
     buf[0] = '0';
     buf[1] = 'x';
-    hex_encode(sig->r, 32, buf + 2);
-    hex_encode(sig->s, 32, buf + 66);
-    sprintf(buf + 130, "%02x", sig->v);
+    hex_encode(sig->r, 32, buf + 2, buf_len - 2);
+    hex_encode(sig->s, 32, buf + 66, buf_len - 66);
+    snprintf(buf + 130, buf_len - 130, "%02x", sig->v);
     return 0;
 }

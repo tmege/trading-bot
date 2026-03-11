@@ -66,7 +66,12 @@ module.exports = function registerBacktestIPC(ipcMain, projectRoot) {
     const strategyPath = path.join(projectRoot, 'strategies', strategy);
     const results = [];
 
+    const VALID_COIN = /^[A-Z]{2,10}$/;
     for (const coin of coins) {
+      if (!VALID_COIN.test(coin)) {
+        results.push({ coin, ok: false, error: 'Invalid coin symbol' });
+        continue;
+      }
       const win = event.sender;
       if (!win.isDestroyed()) {
         win.send('backtest:progress', {

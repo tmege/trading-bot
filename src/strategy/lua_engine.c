@@ -57,8 +57,11 @@ static void lua_instruction_hook(lua_State *L, lua_Debug *ar) {
 static void *lua_mem_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     lua_mem_tracker_t *tracker = (lua_mem_tracker_t *)ud;
     if (nsize == 0) {
-        /* Free */
-        tracker->used -= osize;
+        /* Free — guard against size_t underflow */
+        if (osize <= tracker->used)
+            tracker->used -= osize;
+        else
+            tracker->used = 0;
         free(ptr);
         return NULL;
     }
@@ -140,6 +143,16 @@ static void sandbox_lua_state(lua_State *L) {
     /* Remove collectgarbage (info leak + DoS) */
     lua_pushnil(L);
     lua_setglobal(L, "collectgarbage");
+
+    /* Remove coroutine library (instruction limit bypass via yield/resume) */
+    lua_pushnil(L);
+    lua_setglobal(L, "coroutine");
+
+    /* Remove rawequal/rawlen (defense in depth) */
+    lua_pushnil(L);
+    lua_setglobal(L, "rawequal");
+    lua_pushnil(L);
+    lua_setglobal(L, "rawlen");
 
     /* Remove string.dump (bytecode serialization — sandbox escape vector) */
     lua_getglobal(L, "string");

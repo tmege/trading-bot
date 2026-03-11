@@ -94,10 +94,9 @@ tb_engine_t *tb_engine_create(const tb_config_t *cfg) {
     return engine;
 }
 
-/* Secure wipe that won't be optimized away */
+/* Secure wipe — explicit_bzero guaranteed not optimized away */
 static void engine_secure_wipe(volatile void *ptr, size_t len) {
-    volatile unsigned char *p = (volatile unsigned char *)ptr;
-    while (len--) *p++ = 0;
+    explicit_bzero((void *)ptr, len);
 }
 
 void tb_engine_destroy(tb_engine_t *engine) {
@@ -436,7 +435,7 @@ void tb_engine_stop(tb_engine_t *engine) {
 
 static void engine_on_mids(const tb_mid_t *mids, int n_mids, void *userdata) {
     tb_engine_t *engine = (tb_engine_t *)userdata;
-    if (!engine->running) return;
+    if (!engine || !engine->running) return;
 
     for (int i = 0; i < n_mids; i++) {
         double mid = tb_decimal_to_double(mids[i].mid);
@@ -462,14 +461,14 @@ static void engine_on_mids(const tb_mid_t *mids, int n_mids, void *userdata) {
 
 static void engine_on_ws_fill(const tb_fill_t *fills, int n_fills, void *userdata) {
     tb_engine_t *engine = (tb_engine_t *)userdata;
-    if (!engine->running || !engine->order_mgr) return;
+    if (!engine || !engine->running || !engine->order_mgr) return;
     tb_order_mgr_handle_ws_fills(engine->order_mgr, fills, n_fills);
 }
 
 static void engine_on_ws_order_update(const tb_order_t *orders, int n_orders,
                                        void *userdata) {
     tb_engine_t *engine = (tb_engine_t *)userdata;
-    if (!engine->running || !engine->order_mgr) return;
+    if (!engine || !engine->running || !engine->order_mgr) return;
     tb_order_mgr_handle_ws_orders(engine->order_mgr, orders, n_orders);
 }
 
@@ -477,7 +476,7 @@ static void engine_on_ws_order_update(const tb_order_t *orders, int n_orders,
 
 static void engine_on_paper_fill(const tb_fill_t *fill, void *userdata) {
     tb_engine_t *engine = (tb_engine_t *)userdata;
-    if (!engine->running) return;
+    if (!engine || !engine->running) return;
 
     /* Update position tracker */
     tb_pos_tracker_on_fill(&engine->pos_tracker, fill);

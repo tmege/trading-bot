@@ -18,13 +18,13 @@
 
 local config = {
     coin          = COIN or "ETH",
-    leverage      = 5,
+    -- leverage is set at engine/exchange level (config max_leverage)
 
     -- Removed RSI/ADX filters — Ichimoku is a self-sufficient trend system
 
     -- Position sizing
     entry_size    = 40.0,
-    equity_pct    = 0.10,        -- compound: 10% of account per trade
+    equity_pct    = 0.05,        -- compound: 5% of account per trade (Kelly-aligned at ~40% WR)
     max_size      = 60.0,
 
     -- Exit targets (fixed backup)
@@ -102,6 +102,17 @@ end
 -- ── Helpers ────────────────────────────────────────────────────────────────
 
 local function place_entry(side, mid)
+    -- Skip if opposing position exists on this coin (from another strategy)
+    local existing = bot.get_position(config.coin)
+    if existing and existing.size ~= 0 then
+        local ex_side = existing.size > 0 and "long" or "short"
+        if ex_side ~= side then
+            bot.log("info", string.format("%s: SKIP — opposing %s position on %s",
+                instance_name, ex_side, config.coin))
+            return nil
+        end
+    end
+
     -- Cancel any existing pending entry first
     if entry_oid then
         bot.cancel(config.coin, entry_oid)

@@ -48,11 +48,11 @@ int tb_order_mgr_cancel_by_coin(tb_order_mgr_t *mgr, const char *coin,
 int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin);
 
 /* Query open orders for a coin (thread-safe) */
-int tb_order_mgr_get_open_orders(const tb_order_mgr_t *mgr, const char *coin,
+int tb_order_mgr_get_open_orders(tb_order_mgr_t *mgr, const char *coin,
                                   tb_order_t *out, int *count);
 
 /* Get total number of open orders */
-int tb_order_mgr_open_order_count(const tb_order_mgr_t *mgr);
+int tb_order_mgr_open_order_count(tb_order_mgr_t *mgr);
 
 /* Set paper exchange (routes orders through paper instead of REST) */
 void tb_order_mgr_set_paper(tb_order_mgr_t *mgr, tb_paper_exchange_t *paper);

@@ -28,12 +28,14 @@ static bool json_bool(yyjson_val *obj, const char *key, bool fallback) {
     return yyjson_is_bool(val) ? yyjson_get_bool(val) : fallback;
 }
 
-/* Load a secret from environment variable. Returns 0 on success. */
+/* Load a secret from environment variable and clear it from env. Returns 0 on success. */
 static int load_env_secret(const char *env_name, char *dst, size_t dst_len,
                            bool required) {
     const char *val = getenv(env_name);
     if (val && val[0]) {
         snprintf(dst, dst_len, "%s", val);
+        /* Clear from environment to reduce exposure to child processes */
+        unsetenv(env_name);
         return 0;
     }
     dst[0] = '\0';
@@ -85,6 +87,28 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
         cfg->max_leverage        = 5.0;
         cfg->max_position_pct    = 200.0;
         cfg->emergency_close_pct = 12.0;
+    }
+
+    /* Validate risk parameters — prevent misconfigured safety bypass */
+    if (cfg->daily_loss_pct <= 0 || cfg->daily_loss_pct > 50.0) {
+        fprintf(stderr, "WARN: daily_loss_pct=%.1f out of range (0,50], clamping to 15\n",
+                cfg->daily_loss_pct);
+        cfg->daily_loss_pct = 15.0;
+    }
+    if (cfg->emergency_close_pct <= 0 || cfg->emergency_close_pct > cfg->daily_loss_pct) {
+        fprintf(stderr, "WARN: emergency_close_pct=%.1f invalid (must be in (0,daily_loss_pct]), clamping to %.1f\n",
+                cfg->emergency_close_pct, cfg->daily_loss_pct * 0.8);
+        cfg->emergency_close_pct = cfg->daily_loss_pct * 0.8;
+    }
+    if (cfg->max_leverage <= 0 || cfg->max_leverage > 50.0) {
+        fprintf(stderr, "WARN: max_leverage=%.1f out of range (0,50], clamping to 5\n",
+                cfg->max_leverage);
+        cfg->max_leverage = 5.0;
+    }
+    if (cfg->max_position_pct <= 0 || cfg->max_position_pct > 1000.0) {
+        fprintf(stderr, "WARN: max_position_pct=%.0f out of range (0,1000], clamping to 200\n",
+                cfg->max_position_pct);
+        cfg->max_position_pct = 200.0;
     }
 
     /* Strategies section */
@@ -164,7 +188,8 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
     yyjson_val *logging = yyjson_obj_get(root, "logging");
     if (logging) {
         json_str(logging, "dir", cfg->log_dir, sizeof(cfg->log_dir), "./logs");
-        cfg->log_level = json_int(logging, "level", 0);
+        int lvl = json_int(logging, "level", 0);
+        cfg->log_level = (lvl >= 0 && lvl <= 4) ? lvl : 0;
     } else {
         snprintf(cfg->log_dir, sizeof(cfg->log_dir), "./logs");
         cfg->log_level = 0;

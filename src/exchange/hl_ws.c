@@ -256,6 +256,10 @@ static int lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
         char msg[WS_MSG_MAX];
         if (ws_queue_pop(&ws->send_queue, msg, sizeof(msg))) {
             size_t msg_len = strlen(msg);
+            if (msg_len >= WS_MSG_MAX) {
+                tb_log_error("ws: message too long (%zu), dropping", msg_len);
+                break;
+            }
             /* LWS requires LWS_PRE bytes before the message */
             unsigned char buf[LWS_PRE + WS_MSG_MAX];
             memcpy(buf + LWS_PRE, msg, msg_len);

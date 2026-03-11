@@ -299,6 +299,8 @@ static int call_claude(tb_ai_advisor_t *adv) {
 
     CURLcode res = curl_easy_perform(adv->curl);
     curl_slist_free_all(headers);
+    /* Wipe API key from stack buffer */
+    explicit_bzero(auth_header, sizeof(auth_header));
 
     if (res != CURLE_OK) {
         tb_log_error("advisory: API call failed: %s", curl_easy_strerror(res));
@@ -327,8 +329,9 @@ static int call_claude(tb_ai_advisor_t *adv) {
 
     /* Strip markdown code fences (```json ... ```) if present */
     char *json_start = ai_response;
+    size_t ai_len = strlen(ai_response);
     char *fence = strstr(ai_response, "```");
-    if (fence) {
+    if (fence && (size_t)(fence - ai_response) + 3 < ai_len) {
         /* Skip opening fence + optional language tag + newline */
         json_start = fence + 3;
         while (*json_start && *json_start != '\n') json_start++;

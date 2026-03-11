@@ -141,8 +141,10 @@ static void test_risk_dynamic_params(void) {
     tb_risk_set_max_leverage(risk, 5.0);
     ASSERT(tb_risk_get_max_leverage(risk) == 5.0, "max leverage adjusted");
 
-    tb_risk_set_daily_limit(risk, -10.0);
-    ASSERT(tb_risk_get_daily_limit(risk) == -10.0, "daily limit adjusted");
+    /* tb_risk_set_daily_limit clamps to [1.0, 50.0] */
+    tb_risk_set_daily_limit(risk, 10.0);
+    tb_risk_update_account_value(risk, 1000.0);
+    ASSERT(tb_risk_get_daily_limit(risk) == -100.0, "daily limit adjusted");
 
     tb_risk_mgr_destroy(risk);
 }

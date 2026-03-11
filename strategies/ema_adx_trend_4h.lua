@@ -209,8 +209,8 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Get 4h indicators (always need them for exit checks too)
-    local ind = bot.get_indicators(config.coin, "4h", 210, mid_price)
+    -- Get 4h indicators (55 candles ~9 days, SMA200 uses fallback if unavailable)
+    local ind = bot.get_indicators(config.coin, "4h", 55, mid_price)
     if not ind then
         bot.log("warn", instance_name .. ": get_indicators returned nil")
         return

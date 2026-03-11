@@ -252,6 +252,8 @@ tb_macro_fetcher_t *tb_macro_fetcher_create(const char *api_key) {
 void tb_macro_fetcher_destroy(tb_macro_fetcher_t *f) {
     if (!f) return;
     if (f->curl) curl_easy_cleanup(f->curl);
+    /* Wipe API key before freeing */
+    explicit_bzero(f->api_key, sizeof(f->api_key));
     pthread_mutex_destroy(&f->lock);
     free(f);
 }

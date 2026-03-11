@@ -5,6 +5,13 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Enable platform extensions (explicit_bzero, clock_gettime, etc.)
+if(APPLE)
+    add_compile_definitions(_DARWIN_C_SOURCE)
+else()
+    add_compile_definitions(_GNU_SOURCE)
+endif()
+
 # ── Compiler hardening ──────────────────────────────────────────────────────
 add_compile_options(
     -Wall -Wextra -Wformat -Wformat-security
@@ -14,6 +21,13 @@ add_compile_options(
 add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
 if(NOT APPLE)
     add_link_options(-pie -Wl,-z,relro,-z,now)
+endif()
+
+# ── Sanitizers (Debug builds only) ───────────────────────────────────────────
+option(TB_SANITIZERS "Enable ASan + UBSan in Debug builds" OFF)
+if(TB_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
 endif()
 
 # ── Options ──────────────────────────────────────────────────────────────────

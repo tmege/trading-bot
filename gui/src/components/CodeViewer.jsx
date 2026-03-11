@@ -5,12 +5,13 @@ export default function CodeViewer({ code, filename }) {
 
   useEffect(() => {
     if (!code || !codeRef.current) return;
+    let mounted = true;
 
     // Highlight with Prism if available
     import('prismjs').then((Prism) => {
       // Load Lua grammar
       import('prismjs/components/prism-lua').then(() => {
-        if (codeRef.current) {
+        if (mounted && codeRef.current) {
           codeRef.current.innerHTML = Prism.default.highlight(
             code, Prism.default.languages.lua, 'lua'
           );
@@ -18,10 +19,12 @@ export default function CodeViewer({ code, filename }) {
       });
     }).catch(() => {
       // Fallback: plain text
-      if (codeRef.current) {
+      if (mounted && codeRef.current) {
         codeRef.current.textContent = code;
       }
     });
+
+    return () => { mounted = false; };
   }, [code]);
 
   if (!code) {

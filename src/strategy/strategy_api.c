@@ -589,14 +589,26 @@ static int api_log(lua_State *L) {
     const char *msg = luaL_checkstring(L, 2);
     const char *strat = ctx ? ctx->strategy_name : "lua";
 
+    /* Sanitize: strip control characters (newlines, ANSI escapes, etc.)
+     * to prevent log injection and terminal manipulation. */
+    char safe_msg[2048];
+    size_t j = 0;
+    for (size_t i = 0; msg[i] && j < sizeof(safe_msg) - 1; i++) {
+        unsigned char c = (unsigned char)msg[i];
+        if (c >= 0x20 && c != 0x7F) {  /* printable ASCII only */
+            safe_msg[j++] = (char)c;
+        }
+    }
+    safe_msg[j] = '\0';
+
     if (strcmp(level, "debug") == 0) {
-        tb_log_debug("[%s] %s", strat, msg);
+        tb_log_debug("[%s] %s", strat, safe_msg);
     } else if (strcmp(level, "warn") == 0) {
-        tb_log_warn("[%s] %s", strat, msg);
+        tb_log_warn("[%s] %s", strat, safe_msg);
     } else if (strcmp(level, "error") == 0) {
-        tb_log_error("[%s] %s", strat, msg);
+        tb_log_error("[%s] %s", strat, safe_msg);
     } else {
-        tb_log_info("[%s] %s", strat, msg);
+        tb_log_info("[%s] %s", strat, safe_msg);
     }
 
     return 0;

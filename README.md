@@ -10,7 +10,7 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 - **Compound position sizing** — trade size = 10% of account value, SL/TP on actual fill size, auto-adapts to deposits/withdrawals
 - **ALO entries** — Add Liquidity Only (post-only) orders for maker fees (0.02%), trigger exits for taker fees (0.05%), slippage guard (10%) on trigger limit price
 - **Entry order tracking** — prevents ALO order spam: single pending entry per instance, automatic timeout (60s), cancel-before-place
-- **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit (8%), emergency close (6%), leverage and position size control, circuit breaker (5% crash detection), velocity guard, losing streak pause (3 consecutive losses)
+- **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit (8%), emergency close (6%), leverage and position size control, circuit breaker (15% flash crash detection), velocity guard, losing streak pause (3 consecutive losses)
 - **Market data** — crypto prices via Hyperliquid WebSocket, macro (Gold, Silver, indices, mega-caps, forex), Fear & Greed Index, crypto news sentiment
 - **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP, ADX, Keltner Channels, Donchian, Stochastic RSI, CCI, Williams %R, OBV, Ichimoku
 - **AI advisory** — Claude Haiku called on startup + twice daily (8h/20h UTC) to analyze positions and suggest adjustments
@@ -153,6 +153,15 @@ gui/                            Electron + React desktop app
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
+
+### Debug Build with Sanitizers
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DTB_SANITIZERS=ON
+cmake --build build -j$(nproc)
+```
+
+Enables AddressSanitizer (ASan) and UndefinedBehaviorSanitizer (UBSan) for detecting memory errors and undefined behavior at runtime.
 
 ## Tests
 
@@ -444,7 +453,7 @@ Backtest config: $100 balance, 5x leverage, maker 2bps, taker 5bps, slippage 1bp
 - **Compound sizing**: each trade uses 10% of account value (`equity_pct = 0.10`), auto-scales with balance
 - **SL/TP sizing**: exit orders match actual fill size (not recalculated), placed as trigger orders on exchange immediately after entry fill, independent grouping (TB_GROUP_NA) so SL and TP coexist
 - **Trigger slippage guard**: trigger orders use 10% limit price margin (same as Hyperliquid Python SDK) to ensure fills even with slippage
-- **Circuit breaker**: detects >5% price crash in recent history, pauses entries
+- **Circuit breaker**: detects >15% price movement in <60 seconds, blocks all entries for 5 minutes (SL/TP exits still allowed)
 - **Velocity guard**: monitors recent price movement amplitude, blocks entries during abnormal moves
 - **Losing streak pause**: pauses entries after 3 consecutive losses (5-minute cooldown)
 - **BB regime filter**: skips trades when Bollinger Bands too tight (< 1%) or too wide (> 8%)
@@ -508,11 +517,21 @@ Article titles are scored using keyword-based analysis (bullish/bearish word lis
 - Double-buffer pattern for thread-safe data refresh (macro fetcher writes to working copy, commits atomically under lock)
 - WebSocket thread safety: cross-thread wakeup via `lws_cancel_service` (not `lws_callback_on_writable`)
 - CURL handle hygiene: `curl_easy_reset` before each request to prevent option leakage between calls
-- Emergency close: positions force-closed with 5% slippage tolerance (IOC limit), atomic flag prevents re-entry
+- Emergency close: positions force-closed with 2% slippage tolerance (IOC limit), atomic flag prevents re-entry
 - Engine startup: cleanup on partial failure (goto-based resource release)
 - Restrictive file permissions: database `0600`, logs `0600`, directories `0700`
 - Path traversal protection on strategy file loading
 - Rate limiting on Hyperliquid REST API calls (1200 requests/minute)
+- Locale-safe numeric parsing: `strtod` instead of `atof` for exchange fill prices (immune to locale-dependent decimal separator)
+- WebSocket message length validation: messages exceeding buffer capacity are dropped before `memcpy`
+- Division-by-zero guard on paper exchange entry price averaging (near-zero total size)
+- NULL engine guard in all WebSocket callbacks (prevents crash during startup/shutdown race)
+- Thread-safe log level: `_Atomic int` for cross-thread log level access, `_Atomic bool` for data manager shutdown flag
+- Bounds-checked hex encoding: `hex_encode` validates output buffer capacity, all callers use `snprintf`
+- AI response fence stripping: bounds validation before walking past markdown code fence markers
+- MACD indicator early return when candle count is insufficient (prevents silent zero output)
+- Bollinger Bands width `isfinite` guard (prevents NaN/Inf propagation from near-zero SMA)
+- GUI: risk parameter input validation (min/max clamping), coin name regex validation before backtest process spawn, async import mounted guard, `Promise.allSettled` for resilient parallel market data fetching
 
 ## Desktop GUI
 

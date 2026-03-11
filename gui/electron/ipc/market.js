@@ -134,7 +134,10 @@ async function fetchMarketData(projectRoot) {
     fetchJSON('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF'),
   ];
 
-  const [globalData, fngData, freshFmpQuotes, forexData] = await Promise.all(promises);
+  const settled = await Promise.allSettled(promises);
+  const [globalData, fngData, freshFmpQuotes, forexData] = settled.map(
+    (r) => r.status === 'fulfilled' ? r.value : null
+  );
 
   if (freshFmpQuotes && Object.keys(freshFmpQuotes).length > 0) {
     fmpCached = freshFmpQuotes;

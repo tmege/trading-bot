@@ -28,7 +28,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false, // needed for better-sqlite3 in preload
+      sandbox: true,
+      webviewTag: false,
+      allowRunningInsecureContent: false,
     },
   });
 

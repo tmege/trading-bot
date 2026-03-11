@@ -166,18 +166,29 @@ typedef struct {
 /* Create decimal from double (for config/display only, not for trading math) */
 static inline tb_decimal_t tb_decimal_from_double(double val, uint8_t scale) {
     tb_decimal_t d;
+    if (scale > 18) scale = 18; /* safety clamp */
     d.scale = scale;
-    double mult = 1.0;
-    for (uint8_t i = 0; i < scale; i++) mult *= 10.0;
-    d.mantissa = (int64_t)(val * mult + (val >= 0 ? 0.5 : -0.5));
+    static const double pow10_d[] = {
+        1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
+        1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
+    };
+    double mult = pow10_d[scale];
+    double scaled = val * mult + (val >= 0 ? 0.5 : -0.5);
+    /* Clamp to int64 range to prevent undefined behavior */
+    if (scaled > 9.2e18) d.mantissa = INT64_MAX;
+    else if (scaled < -9.2e18) d.mantissa = INT64_MIN;
+    else d.mantissa = (int64_t)scaled;
     return d;
 }
 
 /* Convert decimal to double (for display/logging) */
 static inline double tb_decimal_to_double(tb_decimal_t d) {
-    double div = 1.0;
-    for (uint8_t i = 0; i < d.scale; i++) div *= 10.0;
-    return (double)d.mantissa / div;
+    static const double pow10_d[] = {
+        1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
+        1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
+    };
+    uint8_t s = d.scale > 18 ? 18 : d.scale;
+    return (double)d.mantissa / pow10_d[s];
 }
 
 /* Convert decimal to string (for API calls) */

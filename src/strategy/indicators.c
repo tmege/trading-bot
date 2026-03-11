@@ -111,6 +111,9 @@ int tb_macd(const tb_candle_input_t *candles, int n,
 
     memset(out, 0, sizeof(tb_macd_val_t) * (size_t)n);
 
+    /* Need at least slow + signal_period - 1 candles for valid MACD */
+    if (n < slow + signal_period - 1) return 0; /* zeros already set */
+
     double *fast_ema = calloc((size_t)n, sizeof(double));
     double *slow_ema = calloc((size_t)n, sizeof(double));
     double *macd_line = calloc((size_t)n, sizeof(double));
@@ -169,8 +172,9 @@ int tb_bollinger(const tb_candle_input_t *candles, int n,
         out[i].middle = sma[i];
         out[i].upper = sma[i] + std_dev_mult * stddev;
         out[i].lower = sma[i] - std_dev_mult * stddev;
-        out[i].width = sma[i] > 0 ?
+        double w = sma[i] > 1e-9 ?
             (out[i].upper - out[i].lower) / sma[i] : 0;
+        out[i].width = isfinite(w) ? w : 0;
     }
 
     free(sma);

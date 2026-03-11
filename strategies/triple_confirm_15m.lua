@@ -17,7 +17,7 @@
 
 local config = {
     coin          = COIN or "ETH",
-    leverage      = 10,
+    -- leverage is set at engine/exchange level (config max_leverage)
 
     -- Entry conditions (loosened from 30/70 to increase signal frequency)
     rsi_oversold  = 38,
@@ -71,7 +71,12 @@ local entry_placed_at = 0
 local ENTRY_TIMEOUT   = 60        -- cancel unfilled ALO after 60s
 local trade_count    = 0
 local win_count      = 0
-local prev_histogram = nil       -- track MACD histogram for direction
+
+-- MACD histogram candle-boundary tracking (compare candle N vs N-1, not tick vs tick)
+local CANDLE_PERIOD      = 900       -- 15 minutes in seconds
+local closed_histogram   = nil       -- histogram from last CLOSED candle
+local running_histogram  = nil       -- latest histogram (becomes closed on candle roll)
+local last_candle_id     = 0
 
 -- ── Crash protection ──────────────────────────────────────────────────────
 local price_history     = {}      -- {price, time} ring buffer
@@ -109,6 +114,17 @@ local function bb_width_pct(upper, lower, mid)
 end
 
 local function place_entry(side, mid)
+    -- Skip if opposing position exists on this coin (from another strategy)
+    local existing = bot.get_position(config.coin)
+    if existing and existing.size ~= 0 then
+        local ex_side = existing.size > 0 and "long" or "short"
+        if ex_side ~= side then
+            bot.log("info", string.format("%s: SKIP — opposing %s position on %s",
+                instance_name, ex_side, config.coin))
+            return nil
+        end
+    end
+
     -- Cancel any existing pending entry first
     if entry_oid then
         bot.cancel(config.coin, entry_oid)
@@ -193,8 +209,12 @@ function on_init()
     local saved_wins = bot.load_state("win_count")
     if saved_wins then win_count = tonumber(saved_wins) or 0 end
 
-    local saved_histo = bot.load_state("prev_histogram")
-    if saved_histo then prev_histogram = tonumber(saved_histo) end
+    local saved_closed = bot.load_state("closed_histogram")
+    if saved_closed then closed_histogram = tonumber(saved_closed) end
+    local saved_running = bot.load_state("running_histogram")
+    if saved_running then running_histogram = tonumber(saved_running) end
+    local saved_candle = bot.load_state("last_candle_id")
+    if saved_candle then last_candle_id = tonumber(saved_candle) or 0 end
 
     -- Check existing position
     local pos = bot.get_position(config.coin)
@@ -278,15 +298,18 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Track histogram direction
-    local histo_rising = false
-    local histo_falling = false
-    if prev_histogram then
-        histo_rising = macd_histo > prev_histogram
-        histo_falling = macd_histo < prev_histogram
+    -- Track histogram direction (candle-boundary, not tick-by-tick)
+    local candle_id = math.floor(now / CANDLE_PERIOD)
+    if last_candle_id > 0 and candle_id > last_candle_id then
+        -- Candle rolled: running_histogram becomes the closed candle's final value
+        closed_histogram = running_histogram
+        bot.save_state("closed_histogram", tostring(closed_histogram or 0))
     end
-    prev_histogram = macd_histo
-    bot.save_state("prev_histogram", tostring(macd_histo))
+    last_candle_id = candle_id
+    running_histogram = macd_histo
+
+    local histo_rising = closed_histogram and macd_histo > closed_histogram
+    local histo_falling = closed_histogram and macd_histo < closed_histogram
 
     -- BB width filter
     local width = bb_width_pct(bb_upper, bb_lower, bb_mid)
@@ -440,7 +463,9 @@ function on_shutdown()
     bot.save_state("enabled", tostring(config.enabled))
     bot.save_state("trade_count", tostring(trade_count))
     bot.save_state("win_count", tostring(win_count))
-    bot.save_state("prev_histogram", tostring(prev_histogram or 0))
+    bot.save_state("closed_histogram", tostring(closed_histogram or 0))
+    bot.save_state("running_histogram", tostring(running_histogram or 0))
+    bot.save_state("last_candle_id", tostring(last_candle_id))
 
     if in_position then
         bot.log("info", instance_name .. ": position open, SL/TP on exchange")

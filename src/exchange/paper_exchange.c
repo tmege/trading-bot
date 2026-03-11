@@ -139,7 +139,8 @@ static void execute_paper_fill(tb_paper_exchange_t *pe, paper_order_t *o,
         double old_notional = fabs(pos->size) * pos->entry_px;
         double new_notional = o->size * fill_px;
         double total = fabs(pos->size) + o->size;
-        pos->entry_px = (old_notional + new_notional) / total;
+        pos->entry_px = (total > 1e-9) ?
+            (old_notional + new_notional) / total : fill_px;
         pos->size += signed_size;
     }
 

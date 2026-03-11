@@ -43,21 +43,21 @@ const char *tb_risk_result_str(tb_risk_result_t r);
 void tb_risk_update_pnl(tb_risk_mgr_t *mgr, double realized_pnl, double fee);
 
 /* Query daily P&L */
-double tb_risk_get_daily_pnl(const tb_risk_mgr_t *mgr);
+double tb_risk_get_daily_pnl(tb_risk_mgr_t *mgr);
 
 /* Pause/resume trading */
 void tb_risk_pause(tb_risk_mgr_t *mgr, const char *reason);
 void tb_risk_resume(tb_risk_mgr_t *mgr);
-bool tb_risk_is_paused(const tb_risk_mgr_t *mgr);
-void tb_risk_pause_reason(const tb_risk_mgr_t *mgr, char *buf, size_t buf_len);
+bool tb_risk_is_paused(tb_risk_mgr_t *mgr);
+void tb_risk_pause_reason(tb_risk_mgr_t *mgr, char *buf, size_t buf_len);
 
 /* Dynamic parameter adjustment (from AI advisory) */
 void tb_risk_set_daily_limit(tb_risk_mgr_t *mgr, double limit);
 void tb_risk_set_max_leverage(tb_risk_mgr_t *mgr, double max_lev);
 void tb_risk_set_max_position_usd(tb_risk_mgr_t *mgr, double max_usd);
 
-/* Check if emergency close is needed */
-bool tb_risk_should_emergency_close(const tb_risk_mgr_t *mgr);
+/* Check if emergency close is needed (mutates internal flag — non-const) */
+bool tb_risk_should_emergency_close(tb_risk_mgr_t *mgr);
 
 /* Reset daily counters (midnight UTC) */
 void tb_risk_reset_daily(tb_risk_mgr_t *mgr);
@@ -67,8 +67,8 @@ void tb_risk_reset_daily(tb_risk_mgr_t *mgr);
 void tb_risk_update_account_value(tb_risk_mgr_t *mgr, double value);
 
 /* Get current parameters (for dashboard/reports) */
-double tb_risk_get_daily_limit(const tb_risk_mgr_t *mgr);
-double tb_risk_get_max_leverage(const tb_risk_mgr_t *mgr);
+double tb_risk_get_daily_limit(tb_risk_mgr_t *mgr);
+double tb_risk_get_max_leverage(tb_risk_mgr_t *mgr);
 
 /* ── Circuit Breaker ─────────────────────────────────────────────────────── */
 /* Feed price updates; returns true if circuit breaker tripped (new entries blocked).
@@ -76,6 +76,6 @@ double tb_risk_get_max_leverage(const tb_risk_mgr_t *mgr);
 bool tb_risk_circuit_breaker_check(tb_risk_mgr_t *mgr, const char *coin, double price);
 
 /* Query circuit breaker state */
-bool tb_risk_circuit_breaker_active(const tb_risk_mgr_t *mgr);
+bool tb_risk_circuit_breaker_active(tb_risk_mgr_t *mgr);
 
 #endif /* TB_RISK_MANAGER_H */

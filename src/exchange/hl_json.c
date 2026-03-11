@@ -411,8 +411,8 @@ int hl_json_parse_exchange_response_ex(yyjson_val *root,
                 fill_infos[idx].oid = (uint64_t)get_int(fld, "oid");
                 const char *avg = get_str(fld, "avgPx");
                 const char *tsz = get_str(fld, "totalSz");
-                if (avg) fill_infos[idx].avg_px = atof(avg);
-                if (tsz) fill_infos[idx].total_sz = atof(tsz);
+                if (avg) fill_infos[idx].avg_px = strtod(avg, NULL);
+                if (tsz) fill_infos[idx].total_sz = strtod(tsz, NULL);
                 fill_infos[idx].filled = true;
             }
             filled++;

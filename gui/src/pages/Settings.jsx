@@ -285,7 +285,7 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                       max={max}
                       onChange={(e) => {
                         const val = parseFloat(e.target.value);
-                        if (isNaN(val)) return;
+                        if (isNaN(val) || val < min || val > max) return;
                         const updated = JSON.parse(JSON.stringify(config));
                         if (!updated.risk) updated.risk = {};
                         updated.risk[key] = val;

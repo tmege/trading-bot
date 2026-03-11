@@ -26,11 +26,12 @@
 
 local config = {
     coin          = COIN or "ETH",
-    leverage      = 7,
+    -- leverage is set at engine/exchange level (config max_leverage)
 
-    -- Regime detection (simplified: ADX-based, no dead zone)
-    -- ADX < 25 = mean reversion, ADX >= 25 = trend
-    adx_regime_threshold = 25,  -- single threshold, no transition gap
+    -- Regime detection with hysteresis (dead zone avoids oscillation)
+    adx_mr_threshold  = 22,     -- below this → mean reversion
+    adx_tr_threshold  = 28,     -- above this → trend
+    -- Between 22-28: keep current regime (no whipsaw)
 
     -- Mean reversion params (low vol regime)
     mr_rsi_oversold   = 40,
@@ -116,15 +117,32 @@ end
 -- ── Helpers ────────────────────────────────────────────────────────────────
 
 local function detect_regime(bb_width, adx)
-    -- Simple ADX-based regime detection (no dead zone)
-    if adx < config.adx_regime_threshold then
+    -- ADX-based regime with hysteresis to prevent oscillation at boundary
+    if adx < config.adx_mr_threshold then
         return "mean_reversion"
-    else
+    elseif adx > config.adx_tr_threshold then
         return "trend"
+    else
+        -- Dead zone (22-28): keep current regime to avoid whipsaw
+        if current_regime == "unknown" then
+            return "mean_reversion"  -- default for first detection
+        end
+        return current_regime
     end
 end
 
 local function place_entry(side, mid)
+    -- Skip if opposing position exists on this coin (from another strategy)
+    local existing = bot.get_position(config.coin)
+    if existing and existing.size ~= 0 then
+        local ex_side = existing.size > 0 and "long" or "short"
+        if ex_side ~= side then
+            bot.log("info", string.format("%s: SKIP — opposing %s position on %s",
+                instance_name, ex_side, config.coin))
+            return nil
+        end
+    end
+
     -- Cancel any existing pending entry first
     if entry_oid then
         bot.cancel(config.coin, entry_oid)
@@ -240,8 +258,8 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Get indicators (1h timeframe, 30 candles)
-    local ind = bot.get_indicators(config.coin, "1h", 30, mid_price)
+    -- Get indicators (1h timeframe, 50 candles — MACD needs slow+signal-1=34 minimum)
+    local ind = bot.get_indicators(config.coin, "1h", 50, mid_price)
     if not ind then
         bot.log("warn", instance_name .. ": get_indicators returned nil")
         return

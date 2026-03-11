@@ -1,6 +1,7 @@
 #include "core/logging.h"
 #include <stdarg.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -8,7 +9,7 @@
 #include <errno.h>
 
 static FILE          *g_log_file   = NULL;
-static int            g_min_level  = TB_LOG_LVL_DEBUG;
+static _Atomic int    g_min_level  = TB_LOG_LVL_DEBUG;
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *level_names[] = {

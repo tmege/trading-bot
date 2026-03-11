@@ -126,6 +126,26 @@ static void remove_tracked_order(tb_order_mgr_t *mgr, uint64_t oid) {
     pthread_rwlock_unlock(&mgr->orders_lock);
 }
 
+/* ── Fill deduplication (prevents double-counting synth + WS fills) ────────── */
+#define SEEN_FILL_SIZE 128
+
+static uint64_t g_seen_tids[SEEN_FILL_SIZE];
+static int      g_seen_idx = 0;
+
+static bool fill_already_seen(uint64_t tid) {
+    if (tid == 0) return false;  /* tid=0 means unknown, don't dedup */
+    for (int i = 0; i < SEEN_FILL_SIZE; i++) {
+        if (g_seen_tids[i] == tid) return true;
+    }
+    return false;
+}
+
+static void fill_mark_seen(uint64_t tid) {
+    if (tid == 0) return;
+    g_seen_tids[g_seen_idx % SEEN_FILL_SIZE] = tid;
+    g_seen_idx++;
+}
+
 /* ── WebSocket callbacks (called from WS thread) ──────────────────────────── */
 
 void tb_order_mgr_handle_ws_fills(tb_order_mgr_t *mgr,
@@ -133,6 +153,14 @@ void tb_order_mgr_handle_ws_fills(tb_order_mgr_t *mgr,
 
     for (int i = 0; i < n_fills; i++) {
         const tb_fill_t *fill = &fills[i];
+
+        /* Deduplicate: skip if this fill was already processed (synth or prior WS) */
+        if (fill_already_seen(fill->tid)) {
+            tb_log_debug("fill dedup: skipping tid=%llu (already processed)",
+                         (unsigned long long)fill->tid);
+            continue;
+        }
+        fill_mark_seen(fill->tid);
         char strategy[64] = "unknown";
         find_strategy_for_oid(mgr, fill->oid, strategy, sizeof(strategy));
 
@@ -460,6 +488,10 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
         synth_fill.oid = oid;
         synth_fill.time_ms = (int64_t)time(NULL) * 1000;
         synth_fill.crossed = true;  /* IOC = taker */
+        /* Estimate fee for synthetic fill (taker 0.05%, maker 0.02%) */
+        double fee_rate = (submit->order.tif == TB_TIF_ALO) ? 0.0002 : 0.0005;
+        synth_fill.fee = tb_decimal_from_double(
+            fill_info.total_sz * fill_info.avg_px * fee_rate, 8);
 
         tb_log_info("immediate fill: %s %s %.6f @ %.2f (oid=%llu)",
                     submit->order.side == TB_SIDE_BUY ? "BUY" : "SELL",
@@ -476,6 +508,9 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
 
         /* Log to database */
         log_trade_to_db(mgr, &synth_fill, submit->strategy_name);
+
+        /* Mark this fill as seen for dedup against later WS fill */
+        fill_mark_seen(synth_fill.tid);
 
         /* Notify strategy (triggers on_fill → place_sl_tp) */
         mgr->fill_cb(&synth_fill, submit->strategy_name, mgr->fill_cb_userdata);
@@ -543,9 +578,9 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
     return rc;
 }
 
-int tb_order_mgr_get_open_orders(const tb_order_mgr_t *mgr, const char *coin,
+int tb_order_mgr_get_open_orders(tb_order_mgr_t *mgr, const char *coin,
                                   tb_order_t *out, int *count) {
-    pthread_rwlock_rdlock((pthread_rwlock_t *)&mgr->orders_lock);
+    pthread_rwlock_rdlock(&mgr->orders_lock);
     int n = 0;
     for (int i = 0; i < mgr->n_orders; i++) {
         bool match = (coin == NULL || coin[0] == '\0' ||
@@ -556,14 +591,14 @@ int tb_order_mgr_get_open_orders(const tb_order_mgr_t *mgr, const char *coin,
         if (match) n++;
     }
     *count = n;
-    pthread_rwlock_unlock((pthread_rwlock_t *)&mgr->orders_lock);
+    pthread_rwlock_unlock(&mgr->orders_lock);
     return 0;
 }
 
-int tb_order_mgr_open_order_count(const tb_order_mgr_t *mgr) {
-    pthread_rwlock_rdlock((pthread_rwlock_t *)&mgr->orders_lock);
+int tb_order_mgr_open_order_count(tb_order_mgr_t *mgr) {
+    pthread_rwlock_rdlock(&mgr->orders_lock);
     int n = mgr->n_orders;
-    pthread_rwlock_unlock((pthread_rwlock_t *)&mgr->orders_lock);
+    pthread_rwlock_unlock(&mgr->orders_lock);
     return n;
 }
 
@@ -631,6 +666,13 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
         tb_log_warn("EMERGENCY: daily loss limit hit, closing all positions");
         tb_order_mgr_cancel_all_coin(mgr, "");
 
+        /* Fetch current mid prices for accurate emergency close pricing */
+        tb_mid_t mids[TB_MAX_ASSETS];
+        int n_mids = 0;
+        if (mgr->rest) {
+            hl_rest_get_all_mids(mgr->rest, mids, &n_mids);
+        }
+
         /* Close all open positions with market orders */
         tb_position_t positions[TB_MAX_POSITIONS];
         int n_pos = TB_MAX_POSITIONS;
@@ -647,14 +689,24 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
                      "%s", positions[p].coin);
             close_order.order.side = sz > 0 ? TB_SIDE_SELL : TB_SIDE_BUY;
             close_order.order.size = tb_decimal_abs(positions[p].size);
-            /* Use entry price ± 2% slippage for IOC.  Tight enough to avoid
-             * catastrophic fills in flash crashes.  If this doesn't fill,
-             * a second attempt will be made on the next reconciliation cycle. */
-            double entry = tb_decimal_to_double(positions[p].entry_px);
-            if (entry < 1e-9) entry = 1.0; /* fallback if no entry price */
+            /* Use current mid price ± 2% slippage for IOC.
+             * Mid price tracks market reality; entry price may be far off
+             * after a large move, causing IOC orders to never fill. */
+            double ref_price = 0;
+            for (int m = 0; m < n_mids; m++) {
+                if (strcmp(mids[m].coin, positions[p].coin) == 0) {
+                    ref_price = tb_decimal_to_double(mids[m].mid);
+                    break;
+                }
+            }
+            if (ref_price < 1e-9) {
+                /* Fallback to entry price if mid unavailable */
+                ref_price = tb_decimal_to_double(positions[p].entry_px);
+            }
+            if (ref_price < 1e-9) ref_price = 1.0;
             close_order.order.price = (sz > 0)
-                ? tb_decimal_from_double(entry * 0.98, 6)
-                : tb_decimal_from_double(entry * 1.02, 6);
+                ? tb_decimal_from_double(ref_price * 0.98, 6)
+                : tb_decimal_from_double(ref_price * 1.02, 6);
             close_order.order.type = TB_ORDER_LIMIT;
             close_order.order.tif = TB_TIF_IOC;
             close_order.order.reduce_only = true;
@@ -665,8 +717,8 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
                 hl_rest_place_order(mgr->rest, &close_order.order,
                                     TB_GROUP_NA, &close_oid);
             }
-            tb_log_warn("EMERGENCY: closing %s position sz=%.4f",
-                        positions[p].coin, sz);
+            tb_log_warn("EMERGENCY: closing %s position sz=%.4f @ ref=%.2f",
+                        positions[p].coin, sz, ref_price);
         }
     }
 

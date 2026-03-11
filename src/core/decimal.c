@@ -3,14 +3,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Helper: compute 10^n */
+/* Helper: compute 10^n (bounded, overflow-safe) */
 static int64_t pow10(uint8_t n) {
-    int64_t result = 1;
-    for (uint8_t i = 0; i < n; i++) result *= 10;
-    return result;
+    static const int64_t table[] = {
+        1LL, 10LL, 100LL, 1000LL, 10000LL, 100000LL,
+        1000000LL, 10000000LL, 100000000LL, 1000000000LL,
+        10000000000LL, 100000000000LL, 1000000000000LL,
+        10000000000000LL, 100000000000000LL, 1000000000000000LL,
+        10000000000000000LL, 100000000000000000LL, 1000000000000000000LL,
+    };
+    if (n > 18) n = 18;
+    return table[n];
 }
 
 int tb_decimal_to_str(tb_decimal_t d, char *buf, size_t buf_len) {
+    if (d.scale > 18) d.scale = 18; /* safety clamp */
+    if (d.mantissa == 0) {
+        return snprintf(buf, buf_len, "0");
+    }
     if (d.scale == 0) {
         return snprintf(buf, buf_len, "%lld", (long long)d.mantissa);
     }
@@ -119,13 +129,33 @@ static void normalize_scales(tb_decimal_t *a, tb_decimal_t *b) {
 
 tb_decimal_t tb_decimal_add(tb_decimal_t a, tb_decimal_t b) {
     normalize_scales(&a, &b);
-    tb_decimal_t r = { a.mantissa + b.mantissa, a.scale };
+    int64_t result;
+    if (__builtin_add_overflow(a.mantissa, b.mantissa, &result)) {
+        /* Overflow: reduce precision on both operands */
+        while (a.scale > 0 && b.scale > 0) {
+            a.mantissa /= 10; a.scale--;
+            b.mantissa /= 10; b.scale--;
+            if (!__builtin_add_overflow(a.mantissa, b.mantissa, &result))
+                break;
+        }
+    }
+    tb_decimal_t r = { result, a.scale };
     return r;
 }
 
 tb_decimal_t tb_decimal_sub(tb_decimal_t a, tb_decimal_t b) {
     normalize_scales(&a, &b);
-    tb_decimal_t r = { a.mantissa - b.mantissa, a.scale };
+    int64_t result;
+    if (__builtin_sub_overflow(a.mantissa, b.mantissa, &result)) {
+        /* Overflow: reduce precision on both operands */
+        while (a.scale > 0 && b.scale > 0) {
+            a.mantissa /= 10; a.scale--;
+            b.mantissa /= 10; b.scale--;
+            if (!__builtin_sub_overflow(a.mantissa, b.mantissa, &result))
+                break;
+        }
+    }
+    tb_decimal_t r = { result, a.scale };
     return r;
 }
 
@@ -159,11 +189,12 @@ tb_decimal_t tb_decimal_mul(tb_decimal_t a, tb_decimal_t b) {
     } else {
         r.mantissa = 0;
     }
-    /* Reduce scale if too large */
-    while (r.scale > 8 && r.mantissa % 10 == 0) {
+    /* Reduce scale if too large (guard mantissa==0) */
+    while (r.scale > 8 && r.mantissa != 0 && r.mantissa % 10 == 0) {
         r.mantissa /= 10;
         r.scale--;
     }
+    if (r.mantissa == 0) r.scale = 0;
     return r;
 }
 

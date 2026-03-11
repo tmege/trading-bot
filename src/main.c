@@ -3,7 +3,9 @@
 #include "core/logging.h"
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
+#include <sys/resource.h>
 
 static volatile sig_atomic_t g_shutdown = 0;
 
@@ -43,6 +45,10 @@ int main(int argc, char *argv[]) {
     if (argc > 1) {
         config_path = argv[1];
     }
+
+    /* Disable core dumps to protect private key material in memory */
+    struct rlimit core_limit = {0, 0};
+    setrlimit(RLIMIT_CORE, &core_limit);
 
     /* Load config */
     tb_config_t cfg;
@@ -95,8 +101,7 @@ int main(int argc, char *argv[]) {
     tb_engine_destroy(engine);
 
     /* Secure wipe of stack config (contains secrets) */
-    volatile unsigned char *p = (volatile unsigned char *)&cfg;
-    for (size_t i = 0; i < sizeof(cfg); i++) p[i] = 0;
+    explicit_bzero(&cfg, sizeof(cfg));
 
     tb_log_shutdown();
 
