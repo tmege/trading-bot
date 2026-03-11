@@ -7,18 +7,15 @@ export default function CodeViewer({ code, filename }) {
     if (!code || !codeRef.current) return;
     let mounted = true;
 
-    // Highlight with Prism if available
+    // Highlight with Prism if available (safe: textContent + highlightElement, no innerHTML)
     import('prismjs').then((Prism) => {
-      // Load Lua grammar
       import('prismjs/components/prism-lua').then(() => {
         if (mounted && codeRef.current) {
-          codeRef.current.innerHTML = Prism.default.highlight(
-            code, Prism.default.languages.lua, 'lua'
-          );
+          codeRef.current.textContent = code;
+          Prism.default.highlightElement(codeRef.current);
         }
       });
     }).catch(() => {
-      // Fallback: plain text
       if (mounted && codeRef.current) {
         codeRef.current.textContent = code;
       }

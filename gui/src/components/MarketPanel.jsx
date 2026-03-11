@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Globe, Landmark, BarChart3, Coins, DollarSign, Activity } from 'lucide-react';
+import { Globe, Coins, DollarSign, Activity } from 'lucide-react';
 import usePrices from '../hooks/usePrices';
 
 /* ── Formatters ──────────────────────────────────────────────────────────── */
@@ -43,25 +43,6 @@ function DataCard({ label, value, sub, valueClass = 'text-white', subClass }) {
       <div className="text-[10px] text-gray-500 uppercase mb-1">{label}</div>
       <div className={`text-sm font-bold font-mono ${valueClass}`}>{value}</div>
       {sub && <div className={`text-[10px] font-mono mt-0.5 ${subClass || 'text-gray-500'}`}>{sub}</div>}
-    </div>
-  );
-}
-
-function QuoteRow({ symbol, name, price, change_pct }) {
-  return (
-    <div className="flex items-center justify-between py-2 px-3 bg-surface-bg rounded-lg">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="text-sm font-semibold text-white truncate">{symbol}</span>
-        {name && <span className="text-[10px] text-gray-500 truncate">{name}</span>}
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="text-sm font-mono text-gray-300">${formatPrice(price)}</span>
-        {change_pct !== undefined && change_pct !== 0 && (
-          <span className={`text-xs font-mono min-w-[52px] text-right ${pctClass(change_pct)}`}>
-            {formatPct(change_pct)}
-          </span>
-        )}
-      </div>
     </div>
   );
 }
@@ -229,28 +210,6 @@ export default function MarketPanel({ marketData }) {
       {/* ── Market Phase ──────────────────────────────────────────────────── */}
       <MarketPhaseWidget macro={macro} />
 
-      {/* ── Indices & ETFs ──────────────────────────────────────────────── */}
-      {macro?.indices?.length > 0 && (
-        <Section icon={Landmark} title="Indices">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-            {macro.indices.map((idx) => (
-              <QuoteRow key={idx.symbol} symbol={idx.symbol} price={idx.price} change_pct={idx.change_pct} />
-            ))}
-          </div>
-        </Section>
-      )}
-
-      {/* ── Mega-Caps ───────────────────────────────────────────────────── */}
-      {macro?.stocks?.length > 0 && (
-        <Section icon={BarChart3} title="Mega-Caps">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-            {macro.stocks.map((s) => (
-              <QuoteRow key={s.symbol} symbol={s.symbol} name={s.name} price={s.price} change_pct={s.change_pct} />
-            ))}
-          </div>
-        </Section>
-      )}
-
       {/* ── Commodities ─────────────────────────────────────────────────── */}
       {(macro?.gold > 0 || macro?.silver > 0) && (
         <Section icon={Coins} title="Commodities">
@@ -292,7 +251,6 @@ export default function MarketPanel({ marketData }) {
       {macro?.last_update > 0 && (
         <div className="text-[10px] text-gray-600 text-right">
           Updated {new Date(macro.last_update).toLocaleTimeString()}
-          {!macro.has_fmp && ' — Stocks/commodities require TB_MACRO_API_KEY in .env'}
         </div>
       )}
     </div>

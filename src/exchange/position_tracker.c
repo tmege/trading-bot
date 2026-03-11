@@ -1,5 +1,6 @@
 #include "exchange/position_tracker.h"
 #include "core/logging.h"
+#include <sqlite3.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
@@ -40,9 +41,15 @@ void tb_pos_tracker_on_fill(tb_position_tracker_t *pt, const tb_fill_t *fill) {
     }
 
     /* Update daily stats */
-    pt->daily_realized_pnl += tb_decimal_to_double(fill->closed_pnl);
-    pt->daily_fees += fabs(tb_decimal_to_double(fill->fee));
+    double fill_pnl = tb_decimal_to_double(fill->closed_pnl);
+    double fill_fee = fabs(tb_decimal_to_double(fill->fee));
+    pt->daily_realized_pnl += fill_pnl;
+    pt->daily_fees += fill_fee;
     pt->daily_trade_count++;
+
+    /* Update cumulative stats (never resets) */
+    pt->cumulative_pnl += fill_pnl;
+    pt->cumulative_fees += fill_fee;
 
     /* Update or add position */
     int found = -1;
@@ -184,6 +191,42 @@ double tb_pos_tracker_account_value(const tb_position_tracker_t *pt) {
     double v = pt->account_value;
     pthread_rwlock_unlock((pthread_rwlock_t *)&pt->lock);
     return v;
+}
+
+double tb_pos_tracker_cumulative_pnl(const tb_position_tracker_t *pt) {
+    pthread_rwlock_rdlock((pthread_rwlock_t *)&pt->lock);
+    double v = pt->cumulative_pnl;
+    pthread_rwlock_unlock((pthread_rwlock_t *)&pt->lock);
+    return v;
+}
+
+double tb_pos_tracker_cumulative_fees(const tb_position_tracker_t *pt) {
+    pthread_rwlock_rdlock((pthread_rwlock_t *)&pt->lock);
+    double v = pt->cumulative_fees;
+    pthread_rwlock_unlock((pthread_rwlock_t *)&pt->lock);
+    return v;
+}
+
+void tb_pos_tracker_load_cumulative(tb_position_tracker_t *pt, sqlite3 *db) {
+    if (!db) return;
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT COALESCE(SUM(CAST(pnl AS REAL)),0),"
+                      "COALESCE(SUM(ABS(CAST(fee AS REAL))),0) FROM trades";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        tb_log_warn("cumulative pnl: failed to prepare query");
+        return;
+    }
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        pthread_rwlock_wrlock(&pt->lock);
+        pt->cumulative_pnl  = sqlite3_column_double(stmt, 0);
+        pt->cumulative_fees = sqlite3_column_double(stmt, 1);
+        pthread_rwlock_unlock(&pt->lock);
+        tb_log_info("cumulative pnl loaded: pnl=%.2f fees=%.2f",
+                    pt->cumulative_pnl, pt->cumulative_fees);
+    }
+    sqlite3_finalize(stmt);
 }
 
 void tb_pos_tracker_reset_daily(tb_position_tracker_t *pt) {

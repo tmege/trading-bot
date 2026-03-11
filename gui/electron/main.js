@@ -40,6 +40,21 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 
+  /* Prevent navigation to external URLs (XSS escalation protection) */
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowed = isDev
+      ? 'http://localhost:5173'
+      : `file://${path.join(__dirname, '..', 'dist')}`;
+    if (!url.startsWith(allowed)) {
+      event.preventDefault();
+    }
+  });
+
+  /* Block new window creation */
+  mainWindow.webContents.setWindowOpenHandler(() => {
+    return { action: 'deny' };
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });

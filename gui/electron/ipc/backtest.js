@@ -63,7 +63,11 @@ module.exports = function registerBacktestIPC(ipcMain, projectRoot) {
       interval = '1h',
     } = params;
 
-    const strategyPath = path.join(projectRoot, 'strategies', strategy);
+    const strategiesDir = path.join(projectRoot, 'strategies');
+    const strategyPath = path.resolve(strategiesDir, strategy);
+    if (!strategyPath.startsWith(strategiesDir + path.sep)) {
+      return { ok: false, error: 'Invalid strategy path' };
+    }
     const results = [];
 
     const VALID_COIN = /^[A-Z]{2,10}$/;

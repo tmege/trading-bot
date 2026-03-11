@@ -7,7 +7,7 @@
     "risk": {
         "daily_loss_pct": 8,
         "emergency_close_pct": 6,
-        "max_leverage": 5,
+        "max_leverage": 10,
         "max_position_pct": 200
     },
     "strategies": {
@@ -23,20 +23,14 @@
                 "role": "primary"
             },
             {
-                "file": "ichimoku_trend_4h.lua",
-                "role": "secondary",
+                "file": "bb_scalp_15m.lua",
                 "coins": [
-                    "ETH",
-                    "BTC"
-                ]
-            },
-            {
-                "file": "triple_confirm_15m.lua",
-                "role": "secondary",
-                "coins": [
-                    "ETH",
-                    "BTC"
-                ]
+                    "DOGE",
+                    "SOL",
+                    "HYPE",
+                    "PUMP"
+                ],
+                "role": "secondary"
             }
         ]
     },

@@ -94,9 +94,10 @@ tb_engine_t *tb_engine_create(const tb_config_t *cfg) {
     return engine;
 }
 
-/* Secure wipe — explicit_bzero guaranteed not optimized away */
+/* Secure wipe — volatile function pointer prevents dead-store elimination */
 static void engine_secure_wipe(volatile void *ptr, size_t len) {
-    explicit_bzero((void *)ptr, len);
+    static void *(*const volatile memset_fn)(void *, int, size_t) = memset;
+    (memset_fn)((void *)ptr, 0, len);
 }
 
 void tb_engine_destroy(tb_engine_t *engine) {
@@ -216,6 +217,7 @@ int tb_engine_start(tb_engine_t *engine) {
         tb_log_error("failed to init position tracker");
         goto fail;
     }
+    tb_pos_tracker_load_cumulative(&engine->pos_tracker, engine->db);
     tb_log_info("position tracker initialized");
 
     /* 6. Risk manager */
@@ -533,8 +535,10 @@ static void engine_update_dashboard(tb_engine_t *engine) {
     if (engine->risk_mgr && data.account_value > 0) {
         tb_risk_update_account_value(engine->risk_mgr, data.account_value);
     }
-    data.daily_fees   = tb_pos_tracker_daily_fees(&engine->pos_tracker);
-    data.daily_trades = tb_pos_tracker_daily_trades(&engine->pos_tracker);
+    data.daily_fees      = tb_pos_tracker_daily_fees(&engine->pos_tracker);
+    data.daily_trades    = tb_pos_tracker_daily_trades(&engine->pos_tracker);
+    data.cumulative_pnl  = tb_pos_tracker_cumulative_pnl(&engine->pos_tracker);
+    data.cumulative_fees = tb_pos_tracker_cumulative_fees(&engine->pos_tracker);
 
     /* Positions */
     tb_pos_tracker_get_all(&engine->pos_tracker,
@@ -603,10 +607,10 @@ static void engine_update_advisory_context(tb_engine_t *engine) {
 
     /* Strategies — copy from tb_strategy_info_t to advisory struct */
     if (engine->lua_engine) {
-        tb_strategy_info_t strats[8];
-        int n_strats = 0;
+        tb_strategy_info_t strats[TB_MAX_STRATEGIES];
+        int n_strats = TB_MAX_STRATEGIES;
         tb_lua_engine_get_strategies(engine->lua_engine, strats, &n_strats);
-        ctx.n_strategies = n_strats > 8 ? 8 : n_strats;
+        ctx.n_strategies = n_strats;
         for (int i = 0; i < ctx.n_strategies; i++) {
             snprintf(ctx.strategies[i].name, sizeof(ctx.strategies[i].name),
                      "%s", strats[i].name);

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 /* Helper: compute 10^n (bounded, overflow-safe) */
 static int64_t pow10(uint8_t n) {
@@ -105,7 +106,13 @@ static void normalize_scales(tb_decimal_t *a, tb_decimal_t *b) {
             while (diff > 0 && b->mantissa % 10 == 0) {
                 b->mantissa /= 10; b->scale--; diff--;
             }
-            a->mantissa *= pow10(diff);
+            int64_t fallback;
+            if (diff > 0 && __builtin_mul_overflow(a->mantissa, pow10(diff), &fallback)) {
+                /* Still overflows — truncate both to match */
+                while (diff > 0) { a->mantissa /= 10; b->mantissa /= 10; a->scale--; b->scale--; diff--; }
+                fallback = a->mantissa;
+            }
+            a->mantissa = (diff > 0) ? fallback : a->mantissa;
         } else {
             a->mantissa = result;
         }
@@ -119,7 +126,12 @@ static void normalize_scales(tb_decimal_t *a, tb_decimal_t *b) {
             while (diff > 0 && a->mantissa % 10 == 0) {
                 a->mantissa /= 10; a->scale--; diff--;
             }
-            b->mantissa *= pow10(diff);
+            int64_t fallback;
+            if (diff > 0 && __builtin_mul_overflow(b->mantissa, pow10(diff), &fallback)) {
+                while (diff > 0) { a->mantissa /= 10; b->mantissa /= 10; a->scale--; b->scale--; diff--; }
+                fallback = b->mantissa;
+            }
+            b->mantissa = (diff > 0) ? fallback : b->mantissa;
         } else {
             b->mantissa = result;
         }
@@ -247,11 +259,13 @@ bool tb_decimal_is_zero(tb_decimal_t d) {
 }
 
 tb_decimal_t tb_decimal_abs(tb_decimal_t d) {
-    if (d.mantissa < 0) d.mantissa = -d.mantissa;
+    if (d.mantissa == INT64_MIN) d.mantissa = INT64_MAX; /* avoid -INT64_MIN UB */
+    else if (d.mantissa < 0) d.mantissa = -d.mantissa;
     return d;
 }
 
 tb_decimal_t tb_decimal_neg(tb_decimal_t d) {
-    d.mantissa = -d.mantissa;
+    if (d.mantissa == INT64_MIN) d.mantissa = INT64_MAX; /* avoid -INT64_MIN UB */
+    else d.mantissa = -d.mantissa;
     return d;
 }

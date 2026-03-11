@@ -57,8 +57,9 @@ int tb_log_init(const char *log_dir, int min_level) {
         return -1;
     }
 
-    tb_log_info("logging initialized: dir=%s level=%s",
-                log_dir, level_names[min_level]);
+    const char *lvl_name = (min_level >= 0 && min_level <= TB_LOG_LVL_FATAL)
+                            ? level_names[min_level] : "???";
+    tb_log_info("logging initialized: dir=%s level=%s", log_dir, lvl_name);
     return 0;
 }
 
@@ -73,6 +74,7 @@ void tb_log_shutdown(void) {
 void tb_log_write(tb_log_level_t level, const char *file, int line,
                   const char *fmt, ...) {
     if ((int)level < g_min_level) return;
+    if ((int)level < 0 || (int)level > TB_LOG_LVL_FATAL) return;
 
     /* Timestamp */
     struct timespec ts;

@@ -5,13 +5,6 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Enable platform extensions (explicit_bzero, clock_gettime, etc.)
-if(APPLE)
-    add_compile_definitions(_DARWIN_C_SOURCE)
-else()
-    add_compile_definitions(_GNU_SOURCE)
-endif()
-
 # ── Compiler hardening ──────────────────────────────────────────────────────
 add_compile_options(
     -Wall -Wextra -Wformat -Wformat-security

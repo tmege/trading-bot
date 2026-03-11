@@ -20,6 +20,8 @@ typedef struct {
     double           daily_pnl;
     double           daily_fees;
     int              daily_trades;
+    double           cumulative_pnl;
+    double           cumulative_fees;
 
     /* Positions */
     tb_position_t    positions[TB_MAX_POSITIONS];

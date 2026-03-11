@@ -49,9 +49,14 @@ function readWalletAddress(projectRoot) {
 }
 
 // Fetch account data from Hyperliquid API
-let cachedAccount = { balance: 0, dailyPnl: 0, dailyFees: 0, positions: [] };
+let cachedAccount = { balance: 0, dailyPnl: 0, dailyFees: 0, cumulativePnl: 0, positions: [] };
 let accountFetchedAt = 0;
 const ACCOUNT_CACHE_MS = 5000; // 5s cache
+
+// Cumulative P&L from Hyperliquid (all-time fills, cached 60s)
+let cachedCumulativePnl = 0;
+let cumulativeFetchedAt = 0;
+const CUMULATIVE_CACHE_MS = 60_000;
 
 async function fetchHyperliquid(projectRoot) {
   const now = Date.now();
@@ -63,8 +68,9 @@ async function fetchHyperliquid(projectRoot) {
   try {
     const todayMs = new Date().setHours(0, 0, 0, 0);
 
-    // Fetch balance + daily fills in parallel
-    const [stateRes, fillsRes] = await Promise.all([
+    // Fetch balance + daily fills + cumulative fills in parallel
+    const needCumulative = (now - cumulativeFetchedAt >= CUMULATIVE_CACHE_MS);
+    const [stateRes, fillsRes, cumRes] = await Promise.all([
       fetch('https://api.hyperliquid.xyz/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -79,6 +85,13 @@ async function fetchHyperliquid(projectRoot) {
           startTime: todayMs,
         }),
       }),
+      needCumulative
+        ? fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'userFillsByTime', user: addr, startTime: 0 }),
+          })
+        : Promise.resolve(null),
     ]);
 
     if (stateRes.ok) {
@@ -124,6 +137,21 @@ async function fetchHyperliquid(projectRoot) {
         cachedAccount.dailyFees = fees;
       }
     }
+
+    // Cumulative P&L from all-time fills (cached 60s)
+    if (cumRes && cumRes.ok) {
+      const allFills = await cumRes.json();
+      if (Array.isArray(allFills)) {
+        let cumPnl = 0, cumFees = 0;
+        for (const f of allFills) {
+          cumPnl += parseFloat(f.closedPnl || '0');
+          cumFees += Math.abs(parseFloat(f.fee || '0'));
+        }
+        cachedCumulativePnl = cumPnl - cumFees;
+        cumulativeFetchedAt = now;
+      }
+    }
+    cachedAccount.cumulativePnl = cachedCumulativePnl;
 
     accountFetchedAt = now;
   } catch (_) {}
@@ -195,6 +223,7 @@ module.exports = function registerDbIPC(ipcMain, projectRoot) {
           dailyTrades: daily.n_trades,
           nPositions: (hl.positions || []).length,
           balance: hl.balance,
+          cumulativePnl: hl.cumulativePnl || 0,
         },
       };
     } catch (_) {

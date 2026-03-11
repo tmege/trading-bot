@@ -16,6 +16,10 @@ typedef struct {
     int              daily_trade_count;
     char             current_date[12]; /* YYYY-MM-DD */
 
+    /* Cumulative P&L (never resets, loaded from DB on startup) */
+    double           cumulative_pnl;
+    double           cumulative_fees;
+
     /* Total account value (updated from REST sync) */
     double           account_value;
 } tb_position_tracker_t;
@@ -42,6 +46,14 @@ double tb_pos_tracker_daily_pnl(const tb_position_tracker_t *pt);
 double tb_pos_tracker_daily_fees(const tb_position_tracker_t *pt);
 int    tb_pos_tracker_daily_trades(const tb_position_tracker_t *pt);
 double tb_pos_tracker_account_value(const tb_position_tracker_t *pt);
+
+/* Cumulative P&L (all-time, loaded from DB) */
+double tb_pos_tracker_cumulative_pnl(const tb_position_tracker_t *pt);
+double tb_pos_tracker_cumulative_fees(const tb_position_tracker_t *pt);
+
+/* Load cumulative totals from DB on startup */
+struct sqlite3;
+void tb_pos_tracker_load_cumulative(tb_position_tracker_t *pt, struct sqlite3 *db);
 
 /* Reset daily counters (call at midnight UTC) */
 void tb_pos_tracker_reset_daily(tb_position_tracker_t *pt);

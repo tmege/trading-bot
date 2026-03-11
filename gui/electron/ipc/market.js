@@ -30,28 +30,9 @@ function readMacroApiKey(projectRoot) {
   return null;
 }
 
-/* ── FMP symbols (stable API, individual calls on free tier) ──────────── */
-const FMP_INDICES = [
-  { sym: '^GSPC',     label: 'S&P 500' },
-  { sym: '^IXIC',     label: 'NASDAQ' },
-  { sym: '^DJI',      label: 'Dow Jones' },
-  { sym: '^HSI',      label: 'Hang Seng' },
-  { sym: '^N225',     label: 'Nikkei 225' },
-  { sym: '^STOXX50E', label: 'Euro Stoxx 50' },
-  { sym: '^FTSE',     label: 'FTSE 100' },
-];
-const FMP_STOCKS  = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'GOOG', 'AMZN', 'META'];
+/* ── FMP symbols (commodities only — indices/stocks removed) ──────────── */
 const FMP_COMMODITIES = { GCUSD: 'gold', SIUSD: 'silver' };
-const ALL_FMP_SYMBOLS = [
-  ...FMP_INDICES.map(i => i.sym),
-  ...FMP_STOCKS,
-  ...Object.keys(FMP_COMMODITIES),
-];
-
-const STOCK_NAMES = {
-  AAPL: 'Apple',   MSFT: 'Microsoft', NVDA: 'Nvidia',
-  TSLA: 'Tesla',   GOOG: 'Alphabet',  AMZN: 'Amazon', META: 'Meta',
-};
+const ALL_FMP_SYMBOLS = Object.keys(FMP_COMMODITIES);
 
 /* ── Fetch helpers ───────────────────────────────────────────────────────── */
 async function fetchJSON(url, timeoutMs = 8000) {
@@ -104,8 +85,6 @@ async function fetchMarketData(projectRoot) {
     total3_mcap: 0,
     fear_greed: 0,
     fear_greed_label: '',
-    indices: [],
-    stocks: [],
     gold: 0,
     gold_pct: 0,
     silver: 0,
@@ -169,28 +148,6 @@ async function fetchMarketData(projectRoot) {
   if (fmpQuotes && Object.keys(fmpQuotes).length > 0) {
     data.has_fmp = true;
     const q = fmpQuotes;
-
-    // Rebuild arrays from scratch to avoid duplicates
-    data.indices = [];
-    data.stocks = [];
-
-    for (const idx of FMP_INDICES) {
-      if (q[idx.sym]) data.indices.push({
-        symbol: idx.label,
-        price: q[idx.sym].price,
-        change_pct: q[idx.sym].change_pct,
-      });
-    }
-
-    for (const sym of FMP_STOCKS) {
-      if (q[sym]) data.stocks.push({
-        symbol: sym,
-        name: STOCK_NAMES[sym] || q[sym].name,
-        price: q[sym].price,
-        change_pct: q[sym].change_pct,
-      });
-    }
-
     if (q.GCUSD) { data.gold = q.GCUSD.price; data.gold_pct = q.GCUSD.change_pct; }
     if (q.SIUSD) { data.silver = q.SIUSD.price; data.silver_pct = q.SIUSD.change_pct; }
   }

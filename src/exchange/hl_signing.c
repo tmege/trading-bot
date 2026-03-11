@@ -20,10 +20,11 @@
 #include <pthread.h>
 #include <sys/mman.h>
 
-/* Secure memory wipe — explicit_bzero is guaranteed by the platform ABI
- * to never be optimized away, unlike volatile pointer loops under LTO. */
+/* Secure memory wipe — volatile function pointer prevents the compiler
+ * from proving this is a dead memset call, even under LTO. */
 static void secure_wipe(void *ptr, size_t len) {
-    explicit_bzero(ptr, len);
+    static void *(*const volatile memset_fn)(void *, int, size_t) = memset;
+    (memset_fn)(ptr, 0, len);
 }
 
 struct hl_signer {

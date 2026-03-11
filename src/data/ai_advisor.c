@@ -300,7 +300,10 @@ static int call_claude(tb_ai_advisor_t *adv) {
     CURLcode res = curl_easy_perform(adv->curl);
     curl_slist_free_all(headers);
     /* Wipe API key from stack buffer */
-    explicit_bzero(auth_header, sizeof(auth_header));
+    {
+        static void *(*const volatile memset_fn)(void *, int, size_t) = memset;
+        (memset_fn)(auth_header, 0, sizeof(auth_header));
+    }
 
     if (res != CURLE_OK) {
         tb_log_error("advisory: API call failed: %s", curl_easy_strerror(res));

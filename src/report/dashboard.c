@@ -82,16 +82,13 @@ void tb_dashboard_render(const tb_dashboard_data_t *d) {
 
     /* ── Account ──────────────────────────────────────────────────────── */
     print_header("ACCOUNT");
-    printf("  Value:  " C_BOLD "$%.2f" C_RESET, d->account_value);
-    printf("    Daily P&L: %s%.2f USDC" C_RESET, pnl_color(d->daily_pnl), d->daily_pnl);
-    printf("    Fees: " C_RED "-%.4f USDC" C_RESET, d->daily_fees);
-    printf("    Trades: %d\n", d->daily_trades);
+    printf("  Balance: " C_BOLD "$%.2f" C_RESET "\n", d->account_value);
 
     /* ── Positions ────────────────────────────────────────────────────── */
     if (d->n_positions > 0) {
         print_header("POSITIONS");
-        printf(C_DIM "  %-6s %8s %10s %10s %6s %10s" C_RESET "\n",
-               "COIN", "SIZE", "ENTRY", "MARK", "LEV", "uPnL");
+        printf(C_DIM "  %-6s %10s %10s %5s %10s" C_RESET "\n",
+               "COIN", "SIZE", "ENTRY", "LEV", "uPnL");
         for (int i = 0; i < d->n_positions; i++) {
             const tb_position_t *p = &d->positions[i];
             double sz = tb_decimal_to_double(p->size);
@@ -99,12 +96,14 @@ void tb_dashboard_render(const tb_dashboard_data_t *d) {
             double entry = tb_decimal_to_double(p->entry_px);
             double upnl = tb_decimal_to_double(p->unrealized_pnl);
 
-            printf("  %-6s %s%8.4f" C_RESET " %10.2f %10s %4dx  %s%+.4f" C_RESET "\n",
+            char lev_buf[8];
+            snprintf(lev_buf, sizeof(lev_buf), "%dx", p->leverage);
+
+            printf("  %-6s %s%10.4f" C_RESET " %10.2f %5s %s%+10.4f" C_RESET "\n",
                    p->coin,
                    sz > 0 ? C_GREEN : C_RED, sz,
                    entry,
-                   "—",
-                   p->leverage,
+                   lev_buf,
                    pnl_color(upnl), upnl);
         }
     }

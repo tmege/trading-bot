@@ -186,10 +186,15 @@ static void dispatch_message(hl_ws_t *ws, const char *data, size_t len) {
         }
     }
     else if (strcmp(channel, "userFills") == 0 && ws->cbs.on_fill) {
-        if (yyjson_is_arr(data_val)) {
+        /* Hyperliquid wraps fills: {"isSnapshot":bool,"user":"...","fills":[...]} */
+        yyjson_val *fills_arr = data_val;
+        if (!yyjson_is_arr(fills_arr)) {
+            fills_arr = yyjson_obj_get(data_val, "fills");
+        }
+        if (fills_arr && yyjson_is_arr(fills_arr)) {
             tb_fill_t fills[100];
             int n = 0;
-            hl_json_parse_fills(data_val, fills, &n, 100);
+            hl_json_parse_fills(fills_arr, fills, &n, 100);
             if (n > 0) ws->cbs.on_fill(fills, n, ws->cbs.userdata);
         }
     }

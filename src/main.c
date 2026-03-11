@@ -100,8 +100,12 @@ int main(int argc, char *argv[]) {
     tb_engine_stop(engine);
     tb_engine_destroy(engine);
 
-    /* Secure wipe of stack config (contains secrets) */
-    explicit_bzero(&cfg, sizeof(cfg));
+    /* Secure wipe of stack config (contains secrets) —
+     * volatile function pointer prevents dead-store elimination */
+    {
+        static void *(*const volatile memset_fn)(void *, int, size_t) = memset;
+        (memset_fn)(&cfg, 0, sizeof(cfg));
+    }
 
     tb_log_shutdown();
 
