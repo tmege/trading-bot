@@ -4,14 +4,32 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <time.h>
+
+/* ── Circuit breaker config ─────────────────────────────────────────────── */
+#define CB_MAX_COINS        16
+#define CB_HISTORY_SIZE     60      /* track last 60 price snapshots */
+#define CB_SAMPLE_INTERVAL  1       /* 1 second between samples */
+#define CB_MOVE_THRESHOLD   15.0    /* trip if >15% move in window */
+#define CB_COOLDOWN_SEC     300     /* block new entries for 5 min after trip */
+
+typedef struct {
+    char    coin[16];
+    double  prices[CB_HISTORY_SIZE];
+    time_t  timestamps[CB_HISTORY_SIZE];
+    int     head;                   /* circular buffer head */
+    int     count;
+} cb_coin_history_t;
 
 struct tb_risk_mgr {
-    /* Limits */
-    double          daily_loss_limit;     /* e.g. -15.0 (negative) — hard stop */
+    /* Percentage-based limits (scale with account) */
+    double          daily_loss_pct;       /* e.g. 15.0 → lose max 15% of account/day */
+    double          emergency_close_pct;  /* e.g. 12.0 → emergency at 12% loss */
     double          max_leverage;         /* e.g. 5.0 */
-    double          per_trade_stop_pct;   /* e.g. 2.0 */
-    double          max_position_usd;     /* e.g. 300.0 */
-    double          emergency_close_usd;  /* e.g. -12.0 — close all before limit */
+    double          max_position_pct;     /* e.g. 200.0 → max 200% of account */
+
+    /* Dynamic account reference (updated periodically by engine) */
+    double          account_value;        /* current account equity */
 
     /* Daily state */
     double          daily_realized_pnl;
@@ -22,6 +40,14 @@ struct tb_risk_mgr {
     bool            emergency_triggered;
     char            pause_reason[256];
 
+    /* Circuit breaker */
+    cb_coin_history_t cb_coins[CB_MAX_COINS];
+    int               cb_n_coins;
+    bool              cb_tripped;
+    time_t            cb_trip_time;
+    char              cb_trip_coin[16];
+    double            cb_trip_pct;
+
     /* Thread safety */
     pthread_mutex_t lock;
 };
@@ -30,19 +56,20 @@ tb_risk_mgr_t *tb_risk_mgr_create(const tb_config_t *cfg) {
     tb_risk_mgr_t *mgr = calloc(1, sizeof(tb_risk_mgr_t));
     if (!mgr) return NULL;
 
-    mgr->daily_loss_limit   = cfg->daily_loss_limit;
+    mgr->daily_loss_pct     = cfg->daily_loss_pct;
+    mgr->emergency_close_pct = cfg->emergency_close_pct;
     mgr->max_leverage       = cfg->max_leverage;
-    mgr->per_trade_stop_pct = cfg->per_trade_stop_pct;
-    mgr->max_position_usd   = cfg->max_position_usd;
-    mgr->emergency_close_usd = cfg->emergency_close_usd;
+    mgr->max_position_pct   = cfg->max_position_pct;
+    mgr->account_value      = 100.0;  /* default until engine updates */
     mgr->paused             = false;
     mgr->emergency_triggered = false;
 
     pthread_mutex_init(&mgr->lock, NULL);
 
-    tb_log_info("risk manager: daily_limit=%.2f, emergency=%.2f, max_lev=%.1fx, stop_pct=%.1f%%, max_pos=$%.0f",
-                mgr->daily_loss_limit, mgr->emergency_close_usd,
-                mgr->max_leverage, mgr->per_trade_stop_pct, mgr->max_position_usd);
+    tb_log_info("risk manager: daily_loss=%.0f%%, emergency=%.0f%%, max_lev=%.1fx, "
+                "max_pos=%.0f%% (all %%-based, scales with account)",
+                mgr->daily_loss_pct, mgr->emergency_close_pct,
+                mgr->max_leverage, mgr->max_position_pct);
     return mgr;
 }
 
@@ -66,12 +93,25 @@ tb_risk_result_t tb_risk_check_order(
         return TB_RISK_REJECT_PAUSED;
     }
 
-    /* 2. Daily loss limit */
+    /* 1b. Circuit breaker — block new entries, allow reduce_only */
+    if (mgr->cb_tripped && !order->reduce_only) {
+        time_t now = time(NULL);
+        if (now - mgr->cb_trip_time < CB_COOLDOWN_SEC) {
+            pthread_mutex_unlock(&mgr->lock);
+            return TB_RISK_REJECT_CIRCUIT_BREAKER;
+        }
+        /* Cooldown expired, auto-reset */
+        mgr->cb_tripped = false;
+        tb_log_info("CIRCUIT BREAKER: auto-reset after %ds cooldown", CB_COOLDOWN_SEC);
+    }
+
+    /* 2. Daily loss limit (% of account) */
     double net_daily = mgr->daily_realized_pnl - mgr->daily_fees;
-    if (net_daily <= mgr->daily_loss_limit) {
+    double daily_limit_usd = -(mgr->account_value * mgr->daily_loss_pct / 100.0);
+    if (net_daily <= daily_limit_usd) {
         pthread_mutex_unlock(&mgr->lock);
-        tb_log_warn("risk: daily loss limit breached (%.2f <= %.2f)",
-                    net_daily, mgr->daily_loss_limit);
+        tb_log_warn("risk: daily loss limit breached (%.2f <= %.2f = -%.0f%% of $%.0f)",
+                    net_daily, daily_limit_usd, mgr->daily_loss_pct, mgr->account_value);
         return TB_RISK_REJECT_DAILY_LOSS;
     }
 
@@ -113,14 +153,15 @@ tb_risk_result_t tb_risk_check_order(
         }
     }
 
-    /* 4. Position size check */
+    /* 4. Position size check (% of account) */
     {
         double order_value = tb_decimal_to_double(order->price) *
                              tb_decimal_to_double(order->size);
-        if (order_value > mgr->max_position_usd && !order->reduce_only) {
+        double max_pos_usd = mgr->account_value * mgr->max_position_pct / 100.0;
+        if (order_value > max_pos_usd && !order->reduce_only) {
             pthread_mutex_unlock(&mgr->lock);
-            tb_log_warn("risk: order value $%.2f > max $%.2f",
-                        order_value, mgr->max_position_usd);
+            tb_log_warn("risk: order value $%.2f > max $%.2f (%.0f%% of $%.0f)",
+                        order_value, max_pos_usd, mgr->max_position_pct, mgr->account_value);
             return TB_RISK_REJECT_POSITION_SIZE;
         }
     }
@@ -137,6 +178,7 @@ const char *tb_risk_result_str(tb_risk_result_t r) {
         case TB_RISK_REJECT_POSITION_SIZE:  return "position size exceeded";
         case TB_RISK_REJECT_PAUSED:         return "trading paused";
         case TB_RISK_REJECT_MAX_ORDERS:     return "max orders reached";
+        case TB_RISK_REJECT_CIRCUIT_BREAKER: return "circuit breaker active";
         default:                            return "unknown";
     }
 }
@@ -147,20 +189,24 @@ void tb_risk_update_pnl(tb_risk_mgr_t *mgr, double realized_pnl, double fee) {
     mgr->daily_fees += fabs(fee);
     double net = mgr->daily_realized_pnl - mgr->daily_fees;
 
+    /* Compute dynamic thresholds from percentages */
+    double emergency_usd = -(mgr->account_value * mgr->emergency_close_pct / 100.0);
+    double daily_limit_usd = -(mgr->account_value * mgr->daily_loss_pct / 100.0);
+
     /* Check thresholds under lock to prevent TOCTOU race */
-    bool do_emergency = (net <= mgr->emergency_close_usd && !mgr->emergency_triggered);
-    bool do_pause = (!do_emergency && net <= mgr->daily_loss_limit && !mgr->paused);
+    bool do_emergency = (net <= emergency_usd && !mgr->emergency_triggered);
+    bool do_pause = (!do_emergency && net <= daily_limit_usd && !mgr->paused);
     if (do_emergency) mgr->emergency_triggered = true;
     pthread_mutex_unlock(&mgr->lock);
 
     /* Actions outside lock to avoid deadlock with tb_risk_pause */
     if (do_emergency) {
-        tb_log_warn("RISK: EMERGENCY CLOSE triggered! net=%.2f <= threshold=%.2f",
-                    net, mgr->emergency_close_usd);
+        tb_log_warn("RISK: EMERGENCY CLOSE triggered! net=$%.2f <= -%.0f%% of $%.0f ($%.2f)",
+                    net, mgr->emergency_close_pct, mgr->account_value, emergency_usd);
         tb_risk_pause(mgr, "emergency close threshold");
     } else if (do_pause) {
-        tb_log_warn("RISK: daily loss limit hit! net=%.2f, limit=%.2f",
-                    net, mgr->daily_loss_limit);
+        tb_log_warn("RISK: daily loss limit hit! net=$%.2f <= -%.0f%% of $%.0f ($%.2f)",
+                    net, mgr->daily_loss_pct, mgr->account_value, daily_limit_usd);
         tb_risk_pause(mgr, "daily loss limit hit");
     }
 }
@@ -201,14 +247,14 @@ void tb_risk_pause_reason(const tb_risk_mgr_t *mgr, char *buf, size_t buf_len) {
     pthread_mutex_unlock((pthread_mutex_t *)&mgr->lock);
 }
 
-void tb_risk_set_daily_limit(tb_risk_mgr_t *mgr, double limit) {
-    /* Hard bounds: must be negative, floor at -100 */
-    if (limit > 0.0) limit = 0.0;
-    if (limit < -100.0) limit = -100.0;
+void tb_risk_set_daily_limit(tb_risk_mgr_t *mgr, double limit_pct) {
+    /* Hard bounds: 1% to 50% */
+    if (limit_pct < 1.0) limit_pct = 1.0;
+    if (limit_pct > 50.0) limit_pct = 50.0;
     pthread_mutex_lock(&mgr->lock);
-    mgr->daily_loss_limit = limit;
+    mgr->daily_loss_pct = limit_pct;
     pthread_mutex_unlock(&mgr->lock);
-    tb_log_info("risk: daily limit adjusted to %.2f", limit);
+    tb_log_info("risk: daily limit adjusted to %.0f%% of account", limit_pct);
 }
 
 void tb_risk_set_max_leverage(tb_risk_mgr_t *mgr, double max_lev) {
@@ -221,32 +267,28 @@ void tb_risk_set_max_leverage(tb_risk_mgr_t *mgr, double max_lev) {
     tb_log_info("risk: max leverage adjusted to %.1fx", max_lev);
 }
 
-void tb_risk_set_max_position_usd(tb_risk_mgr_t *mgr, double max_usd) {
-    /* Hard bounds: $10 to $10000 */
-    if (max_usd < 10.0) max_usd = 10.0;
-    if (max_usd > 10000.0) max_usd = 10000.0;
+void tb_risk_set_max_position_usd(tb_risk_mgr_t *mgr, double max_pct) {
+    /* Hard bounds: 10% to 500% */
+    if (max_pct < 10.0) max_pct = 10.0;
+    if (max_pct > 500.0) max_pct = 500.0;
     pthread_mutex_lock(&mgr->lock);
-    mgr->max_position_usd = max_usd;
+    mgr->max_position_pct = max_pct;
     pthread_mutex_unlock(&mgr->lock);
-    tb_log_info("risk: max position adjusted to $%.0f", max_usd);
+    tb_log_info("risk: max position adjusted to %.0f%% of account", max_pct);
 }
 
-double tb_risk_compute_stop_price(const tb_risk_mgr_t *mgr,
-                                   tb_side_t side, double entry_price) {
-    double pct = mgr->per_trade_stop_pct / 100.0;
-    if (side == TB_SIDE_BUY) {
-        /* Long: stop below entry */
-        return entry_price * (1.0 - pct);
-    } else {
-        /* Short: stop above entry */
-        return entry_price * (1.0 + pct);
-    }
+void tb_risk_update_account_value(tb_risk_mgr_t *mgr, double value) {
+    if (value <= 0) return;
+    pthread_mutex_lock(&mgr->lock);
+    mgr->account_value = value;
+    pthread_mutex_unlock(&mgr->lock);
 }
 
 bool tb_risk_should_emergency_close(const tb_risk_mgr_t *mgr) {
     pthread_mutex_lock((pthread_mutex_t *)&mgr->lock);
     double net = mgr->daily_realized_pnl - mgr->daily_fees;
-    bool result = (net <= mgr->emergency_close_usd && !mgr->emergency_triggered);
+    double emergency_usd = -(mgr->account_value * mgr->emergency_close_pct / 100.0);
+    bool result = (net <= emergency_usd && !mgr->emergency_triggered);
     if (result) ((tb_risk_mgr_t *)mgr)->emergency_triggered = true;
     pthread_mutex_unlock((pthread_mutex_t *)&mgr->lock);
     return result;
@@ -270,7 +312,7 @@ void tb_risk_reset_daily(tb_risk_mgr_t *mgr) {
 
 double tb_risk_get_daily_limit(const tb_risk_mgr_t *mgr) {
     pthread_mutex_lock((pthread_mutex_t *)&mgr->lock);
-    double v = mgr->daily_loss_limit;
+    double v = -(mgr->account_value * mgr->daily_loss_pct / 100.0);
     pthread_mutex_unlock((pthread_mutex_t *)&mgr->lock);
     return v;
 }
@@ -280,4 +322,93 @@ double tb_risk_get_max_leverage(const tb_risk_mgr_t *mgr) {
     double v = mgr->max_leverage;
     pthread_mutex_unlock((pthread_mutex_t *)&mgr->lock);
     return v;
+}
+
+/* ── Circuit Breaker Implementation ──────────────────────────────────────── */
+
+static cb_coin_history_t *cb_find_or_add(tb_risk_mgr_t *mgr, const char *coin) {
+    for (int i = 0; i < mgr->cb_n_coins; i++) {
+        if (strcmp(mgr->cb_coins[i].coin, coin) == 0)
+            return &mgr->cb_coins[i];
+    }
+    if (mgr->cb_n_coins >= CB_MAX_COINS) return NULL;
+    cb_coin_history_t *h = &mgr->cb_coins[mgr->cb_n_coins++];
+    memset(h, 0, sizeof(*h));
+    snprintf(h->coin, sizeof(h->coin), "%s", coin);
+    return h;
+}
+
+bool tb_risk_circuit_breaker_check(tb_risk_mgr_t *mgr, const char *coin, double price) {
+    if (price <= 0) return false;
+    time_t now = time(NULL);
+
+    pthread_mutex_lock(&mgr->lock);
+
+    /* Auto-reset expired trip */
+    if (mgr->cb_tripped && (now - mgr->cb_trip_time >= CB_COOLDOWN_SEC)) {
+        mgr->cb_tripped = false;
+        tb_log_info("CIRCUIT BREAKER: auto-reset after %ds cooldown", CB_COOLDOWN_SEC);
+    }
+
+    cb_coin_history_t *h = cb_find_or_add(mgr, coin);
+    if (!h) {
+        pthread_mutex_unlock(&mgr->lock);
+        return mgr->cb_tripped;
+    }
+
+    /* Rate-limit samples to 1/sec to avoid flooding the buffer */
+    if (h->count > 0) {
+        int last = (h->head - 1 + CB_HISTORY_SIZE) % CB_HISTORY_SIZE;
+        if (now - h->timestamps[last] < CB_SAMPLE_INTERVAL) {
+            pthread_mutex_unlock(&mgr->lock);
+            return mgr->cb_tripped;
+        }
+    }
+
+    /* Add price sample */
+    h->prices[h->head] = price;
+    h->timestamps[h->head] = now;
+    h->head = (h->head + 1) % CB_HISTORY_SIZE;
+    if (h->count < CB_HISTORY_SIZE) h->count++;
+
+    /* Check max move in the window against oldest available sample */
+    if (h->count >= 5) {  /* need at least 5 samples */
+        double min_p = price, max_p = price;
+        for (int i = 0; i < h->count; i++) {
+            int idx = (h->head - 1 - i + CB_HISTORY_SIZE) % CB_HISTORY_SIZE;
+            /* Only look at samples within the last 60 seconds */
+            if (now - h->timestamps[idx] > CB_HISTORY_SIZE) break;
+            if (h->prices[idx] < min_p) min_p = h->prices[idx];
+            if (h->prices[idx] > max_p) max_p = h->prices[idx];
+        }
+        double move_pct = ((max_p - min_p) / min_p) * 100.0;
+        if (move_pct >= CB_MOVE_THRESHOLD && !mgr->cb_tripped) {
+            mgr->cb_tripped = true;
+            mgr->cb_trip_time = now;
+            mgr->cb_trip_pct = move_pct;
+            snprintf(mgr->cb_trip_coin, sizeof(mgr->cb_trip_coin), "%s", coin);
+            pthread_mutex_unlock(&mgr->lock);
+            tb_log_warn("CIRCUIT BREAKER TRIPPED: %s moved %.1f%% in <%ds — "
+                        "new entries blocked for %ds",
+                        coin, move_pct, CB_HISTORY_SIZE, CB_COOLDOWN_SEC);
+            return true;
+        }
+    }
+
+    bool tripped = mgr->cb_tripped;
+    pthread_mutex_unlock(&mgr->lock);
+    return tripped;
+}
+
+bool tb_risk_circuit_breaker_active(const tb_risk_mgr_t *mgr) {
+    pthread_mutex_lock((pthread_mutex_t *)&mgr->lock);
+    bool active = mgr->cb_tripped;
+    if (active) {
+        time_t now = time(NULL);
+        if (now - mgr->cb_trip_time >= CB_COOLDOWN_SEC) {
+            active = false;
+        }
+    }
+    pthread_mutex_unlock((pthread_mutex_t *)&mgr->lock);
+    return active;
 }

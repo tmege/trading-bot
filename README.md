@@ -6,10 +6,13 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 
 - **Full Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders, automatic asset metadata resolution
 - **Lua strategies** — sandboxed environment, automatic hot-reload (5s), comprehensive `bot.*` API, multi-coin per file (COIN injection)
-- **Active strategies** — BB Scalping 15m on 6 coins (ETH, BTC, SOL, DOGE, HYPE, PUMP) — single `bb_scalp_15m.lua` file, coins configured in JSON, Bollinger Bands mean reversion
-- **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit, leverage and position size control
+- **12 strategies available** — Scalping (bb_scalp, stochrsi, vwap_reversion), Momentum (macd_momentum, triple_confirm), Trend (ema_adx, ichimoku, regime_adaptive), Swing (williams_obv, rsi_divergence, bb_kc_squeeze, elder_mtf). 3 active in production: regime_adaptive_1h (primary), ichimoku_trend_4h, triple_confirm_15m — on 4 coins (BTC, DOGE, SOL, ETH)
+- **Compound position sizing** — trade size = 10% of account value, SL/TP on actual fill size, auto-adapts to deposits/withdrawals
+- **ALO entries** — Add Liquidity Only (post-only) orders for maker fees (0.02%), trigger exits for taker fees (0.05%), slippage guard (10%) on trigger limit price
+- **Entry order tracking** — prevents ALO order spam: single pending entry per instance, automatic timeout (60s), cancel-before-place
+- **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit (8%), emergency close (6%), leverage and position size control, circuit breaker (5% crash detection), velocity guard, losing streak pause (3 consecutive losses)
 - **Market data** — crypto prices via Hyperliquid WebSocket, macro (Gold, Silver, indices, mega-caps, forex), Fear & Greed Index, crypto news sentiment
-- **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP + derived signals
+- **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP, ADX, Keltner Channels, Donchian, Stochastic RSI, CCI, Williams %R, OBV, Ichimoku
 - **AI advisory** — Claude Haiku called on startup + twice daily (8h/20h UTC) to analyze positions and suggest adjustments
 - **Backtesting** — synthetic + real data (Hyperliquid REST), walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Paper trading** — real market data, locally simulated order execution
@@ -44,7 +47,7 @@ src/
 ├── strategy/                   Lua engine + technical indicators
 │   ├── lua_engine.c            Lua sandbox, hot-reload, multi-coin COIN injection, callbacks
 │   ├── strategy_api.c          18 bot.* functions exposed to Lua
-│   └── indicators.c            SMA, EMA, RSI, MACD, BB, ATR, VWAP
+│   └── indicators.c            SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Donchian, StochRSI, CCI, Williams %R, OBV, Ichimoku
 ├── data/                       External data sources
 │   ├── macro_fetcher.c         Crypto (Hyperliquid), TradFi (FMP), Gold
 │   ├── twitter_sentiment.c     Crypto news RSS sentiment (CryptoPanic, CoinDesk, Cointelegraph)
@@ -59,9 +62,24 @@ src/
 └── backtest/                   Backtesting
     └── backtest_engine.c       Simulation on historical candles + metrics
 
-strategies/                     Lua strategies
-├── bb_scalp_15m.lua                   BB Scalping generic (COIN injected by engine, BB 20/2, SL=1.5%, TP=3.0%, $40/trade)
+strategies/                     Lua strategies (12 available, 3 active, compound 10% equity/trade)
+├── regime_adaptive_1h.lua  *   ADX regime detection: mean reversion vs trend (primary)
+├── ichimoku_trend_4h.lua   *   Ichimoku cloud trend following (secondary)
+├── triple_confirm_15m.lua  *   BB + RSI + MACD triple filter (secondary)
+├── bb_scalp_15m.lua            BB mean reversion scalping
+├── macd_momentum_1h.lua        MACD histogram momentum
+├── rsi_divergence_1h.lua       RSI divergence detection
+├── ema_adx_trend_4h.lua        EMA cross + ADX trend following
+├── bb_kc_squeeze_1h.lua        BB/Keltner squeeze breakout
+├── vwap_reversion_15m.lua      VWAP mean reversion
+├── stochrsi_scalp_5m.lua       StochRSI + CCI scalping
+├── williams_obv_4h.lua         Williams %R + OBV swing
+├── elder_mtf_15m.lua           Elder triple screen multi-TF
 └── strategy_template.lua       Template with all documented callbacks
+
+tools/                          Utilities
+├── candle_fetcher.c            Pre-download historical candles to SQLite cache
+└── backtest_multi_period.sh    Multi-period batch backtester (4 periods x 12 strats x 2 coins)
 
 scripts/                        Deployment scripts
 ├── start.sh                    Startup (foreground or background)
@@ -240,17 +258,18 @@ The `.env` file is excluded from version control via `.gitignore` and restricted
         "is_testnet": false
     },
     "risk": {
-        "daily_loss_limit_usdc": -15.0,
-        "emergency_close_usdc": -12.0,
+        "daily_loss_pct": 8,
+        "emergency_close_pct": 6,
         "max_leverage": 5,
-        "per_trade_stop_pct": 1.5,
-        "max_position_usd": 200.0
+        "max_position_pct": 200
     },
     "strategies": {
         "dir": "./strategies",
         "reload_interval_sec": 5,
         "active": [
-            { "file": "bb_scalp_15m.lua", "coins": ["ETH","BTC","SOL","DOGE","HYPE","PUMP"], "role": "primary" }
+            { "file": "regime_adaptive_1h.lua", "coins": ["BTC","DOGE","SOL","ETH"], "role": "primary" },
+            { "file": "ichimoku_trend_4h.lua", "coins": ["BTC","DOGE","SOL","ETH"], "role": "secondary" },
+            { "file": "triple_confirm_15m.lua", "coins": ["BTC","DOGE","SOL","ETH"], "role": "secondary" }
         ]
     },
     "ai_advisory": {
@@ -331,7 +350,7 @@ function on_shutdown()       -- Graceful shutdown
 | Function | Description |
 |---|---|
 | `bot.place_limit(coin, side, price, size, opts)` | Place a limit order |
-| `bot.place_trigger(coin, side, trigger_px, size, opts)` | Place a trigger (stop) order |
+| `bot.place_trigger(coin, side, price, size, trigger_px, tpsl)` | Place a trigger order (SL/TP) |
 | `bot.cancel(coin, oid)` | Cancel an order |
 | `bot.cancel_all(coin)` | Cancel all orders for a coin |
 | `bot.get_position(coin)` | Current position |
@@ -417,15 +436,20 @@ Backtest config: $100 balance, 5x leverage, maker 2bps, taker 5bps, slippage 1bp
 
 ## Risk Management
 
-- **Emergency close**: all positions closed at -12 USDC (before the daily limit), fires once per session (atomic flag prevents re-entry loops)
-- **Daily loss limit**: -15 USDC (hard stop, automatic pause)
+- **Emergency close**: all positions closed at -6% of account value (before the daily limit), fires once per session (atomic flag prevents re-entry loops)
+- **Daily loss limit**: -8% of account value (hard stop, automatic pause)
 - **Maximum leverage**: 5x
-- **Maximum position size**: 200 USD
-- **Automatic stop loss**: computed pre-trade
-- **Capital allocation**: 6 coins x $40/trade = $240 notional max, $48 margin at 5x (leaves buffer on $100 account)
-- **BB Scalping stops**: tight 1.5% SL + 3% TP per scalp, 2h max hold time — SL/TP placed as trigger orders on exchange immediately after entry fill
+- **Maximum position size**: 200% of account value
+- **Automatic stop loss**: per-trade stop 1.5%, computed pre-trade
+- **Compound sizing**: each trade uses 10% of account value (`equity_pct = 0.10`), auto-scales with balance
+- **SL/TP sizing**: exit orders match actual fill size (not recalculated), placed as trigger orders on exchange immediately after entry fill, independent grouping (TB_GROUP_NA) so SL and TP coexist
+- **Trigger slippage guard**: trigger orders use 10% limit price margin (same as Hyperliquid Python SDK) to ensure fills even with slippage
+- **Circuit breaker**: detects >5% price crash in recent history, pauses entries
+- **Velocity guard**: monitors recent price movement amplitude, blocks entries during abnormal moves
+- **Losing streak pause**: pauses entries after 3 consecutive losses (5-minute cooldown)
 - **BB regime filter**: skips trades when Bollinger Bands too tight (< 1%) or too wide (> 8%)
 - **Position reconciliation**: REST sync every 15 seconds to detect external fills and position changes
+- **Entry order tracking**: single pending ALO entry per strategy instance, automatic 60s timeout, cancel-before-place prevents order spam
 
 ## AI Advisory
 

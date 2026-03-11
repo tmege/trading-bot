@@ -11,12 +11,11 @@ typedef struct {
     char     private_key_hex[70];     /* from env TB_PRIVATE_KEY (with optional 0x prefix) */
     char     wallet_address[44];      /* from env TB_WALLET_ADDRESS */
 
-    /* Risk */
-    double   daily_loss_limit;        /* e.g. -5.0 (USDC) */
-    double   max_leverage;            /* e.g. 3.0 */
-    double   per_trade_stop_pct;      /* e.g. 2.0 */
-    double   max_position_usd;        /* e.g. 300.0 */
-    double   emergency_close_usd;    /* e.g. -12.0 — close all before daily limit */
+    /* Risk (percentage-based — scales with account value) */
+    double   daily_loss_pct;          /* e.g. 15.0 → max 15% daily loss */
+    double   emergency_close_pct;     /* e.g. 12.0 → emergency close at 12% loss */
+    double   max_leverage;            /* e.g. 5.0 */
+    double   max_position_pct;        /* e.g. 200.0 → max 200% of account per pos */
 
     /* Strategy */
     char     strategies_dir[512];

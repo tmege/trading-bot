@@ -73,20 +73,18 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
                  "wss://api.hyperliquid.xyz/ws");
     }
 
-    /* Risk section */
+    /* Risk section (percentage-based) */
     yyjson_val *risk = yyjson_obj_get(root, "risk");
     if (risk) {
-        cfg->daily_loss_limit    = json_num(risk, "daily_loss_limit_usdc", -15.0);
+        cfg->daily_loss_pct      = json_num(risk, "daily_loss_pct", 15.0);
         cfg->max_leverage        = json_num(risk, "max_leverage", 5.0);
-        cfg->per_trade_stop_pct  = json_num(risk, "per_trade_stop_pct", 2.0);
-        cfg->max_position_usd    = json_num(risk, "max_position_usd", 300.0);
-        cfg->emergency_close_usd = json_num(risk, "emergency_close_usdc", -12.0);
+        cfg->max_position_pct    = json_num(risk, "max_position_pct", 200.0);
+        cfg->emergency_close_pct = json_num(risk, "emergency_close_pct", 12.0);
     } else {
-        cfg->daily_loss_limit    = -15.0;
+        cfg->daily_loss_pct      = 15.0;
         cfg->max_leverage        = 5.0;
-        cfg->per_trade_stop_pct  = 2.0;
-        cfg->max_position_usd    = 300.0;
-        cfg->emergency_close_usd = -12.0;
+        cfg->max_position_pct    = 200.0;
+        cfg->emergency_close_pct = 12.0;
     }
 
     /* Strategies section */
@@ -211,8 +209,9 @@ void tb_config_dump(const tb_config_t *cfg) {
     } else {
         tb_log_info("CONFIG: wallet=(not set)");
     }
-    tb_log_info("CONFIG: daily_loss_limit=%.2f USDC", cfg->daily_loss_limit);
-    tb_log_info("CONFIG: emergency_close=%.2f USDC", cfg->emergency_close_usd);
+    tb_log_info("CONFIG: daily_loss_pct=%.1f%%", cfg->daily_loss_pct);
+    tb_log_info("CONFIG: emergency_close_pct=%.1f%%", cfg->emergency_close_pct);
+    tb_log_info("CONFIG: max_position_pct=%.0f%%", cfg->max_position_pct);
     tb_log_info("CONFIG: max_leverage=%.1fx", cfg->max_leverage);
     tb_log_info("CONFIG: strategies_dir=%s", cfg->strategies_dir);
     for (int i = 0; i < cfg->n_active_strategies; i++) {

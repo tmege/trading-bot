@@ -1,5 +1,6 @@
 import React from 'react';
 import { LayoutDashboard, BarChart3, Code2, FlaskConical, Settings } from 'lucide-react';
+import logoSrc from '../assets/logo.png';
 
 const NAV = [
   { id: 'dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
@@ -36,8 +37,8 @@ export default function Sidebar({ currentPage, onNavigate, botStatus }) {
         ))}
       </nav>
 
-      <div className="p-4 border-t border-surface-border text-xs text-gray-600">
-        v1.0.0
+      <div className="px-2 py-3 border-t border-surface-border flex items-center justify-center">
+        <img src={logoSrc} alt="Logo" className="w-full opacity-40" />
       </div>
     </aside>
   );

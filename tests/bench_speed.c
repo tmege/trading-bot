@@ -96,10 +96,9 @@ static void bench_risk_check(void) {
     printf("\n== RISK CHECK ==\n");
 
     tb_config_t cfg = {0};
-    cfg.daily_loss_limit = -5.0;
+    cfg.daily_loss_pct = 5.0;
     cfg.max_leverage = 3;
-    cfg.per_trade_stop_pct = 2.0;
-    cfg.max_position_usd = 200.0;
+    cfg.max_position_pct = 200.0;
     tb_risk_mgr_t *risk = tb_risk_mgr_create(&cfg);
 
     tb_order_request_t order = {

@@ -272,7 +272,6 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                 { key: 'emergency_close_pct',  label: 'Emergency close',     unit: '%', step: 1, min: 1, max: 40 },
                 { key: 'max_position_pct',     label: 'Max position size',   unit: '%', step: 10, min: 10, max: 500 },
                 { key: 'max_leverage',         label: 'Max leverage',        unit: 'x', step: 1, min: 1, max: 10 },
-                { key: 'per_trade_stop_pct',   label: 'Per-trade stop loss', unit: '%', step: 0.5, min: 0.5, max: 10 },
               ].map(({ key, label, unit, step, min, max }) => (
                 <div key={key}>
                   <label className="text-[10px] text-gray-500 uppercase block mb-1">{label}</label>

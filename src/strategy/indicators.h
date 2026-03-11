@@ -72,6 +72,70 @@ int tb_atr(const tb_candle_input_t *candles, int n_candles,
    out[] has n_candles values. */
 int tb_vwap(const tb_candle_input_t *candles, int n_candles, double *out);
 
+/* ── ADX (Average Directional Index) ───────────────────────────────────── */
+typedef struct {
+    double adx;
+    double plus_di;
+    double minus_di;
+} tb_adx_val_t;
+
+int tb_adx(const tb_candle_input_t *candles, int n_candles,
+           int period, tb_adx_val_t *out);
+
+/* ── Keltner Channels ──────────────────────────────────────────────────── */
+typedef struct {
+    double upper;
+    double middle;  /* EMA */
+    double lower;
+} tb_keltner_val_t;
+
+int tb_keltner(const tb_candle_input_t *candles, int n_candles,
+               int ema_period, int atr_period, double mult,
+               tb_keltner_val_t *out);
+
+/* ── Donchian Channels ─────────────────────────────────────────────────── */
+typedef struct {
+    double upper;   /* highest high */
+    double lower;   /* lowest low */
+    double middle;
+} tb_donchian_val_t;
+
+int tb_donchian(const tb_candle_input_t *candles, int n_candles,
+                int period, tb_donchian_val_t *out);
+
+/* ── Stochastic RSI ────────────────────────────────────────────────────── */
+typedef struct {
+    double k;
+    double d;
+} tb_stoch_rsi_val_t;
+
+int tb_stoch_rsi(const tb_candle_input_t *candles, int n_candles,
+                 int rsi_period, int stoch_period, int k_smooth, int d_smooth,
+                 tb_stoch_rsi_val_t *out);
+
+/* ── CCI (Commodity Channel Index) ─────────────────────────────────────── */
+int tb_cci(const tb_candle_input_t *candles, int n_candles,
+           int period, double *out);
+
+/* ── Williams %R ───────────────────────────────────────────────────────── */
+int tb_williams_r(const tb_candle_input_t *candles, int n_candles,
+                  int period, double *out);
+
+/* ── OBV (On-Balance Volume) ───────────────────────────────────────────── */
+int tb_obv(const tb_candle_input_t *candles, int n_candles, double *out);
+
+/* ── Ichimoku Cloud ────────────────────────────────────────────────────── */
+typedef struct {
+    double tenkan;     /* (9H+9L)/2 */
+    double kijun;      /* (26H+26L)/2 */
+    double senkou_a;   /* (tenkan+kijun)/2, shifted 26 forward */
+    double senkou_b;   /* (52H+52L)/2, shifted 26 forward */
+    double chikou;     /* close shifted 26 back */
+} tb_ichimoku_val_t;
+
+int tb_ichimoku(const tb_candle_input_t *candles, int n_candles,
+                tb_ichimoku_val_t *out);
+
 /* ── Convenience: latest values snapshot ────────────────────────────────── */
 typedef struct {
     /* Moving averages */
@@ -101,6 +165,42 @@ typedef struct {
     /* VWAP */
     double vwap;
 
+    /* ADX */
+    double adx_14;
+    double plus_di;
+    double minus_di;
+
+    /* Keltner Channels */
+    double kc_upper;
+    double kc_middle;
+    double kc_lower;
+
+    /* Donchian Channels */
+    double dc_upper;
+    double dc_lower;
+    double dc_middle;
+
+    /* Stochastic RSI */
+    double stoch_rsi_k;
+    double stoch_rsi_d;
+
+    /* CCI */
+    double cci_20;
+
+    /* Williams %R */
+    double williams_r;
+
+    /* OBV */
+    double obv;
+    double obv_sma;
+
+    /* Ichimoku */
+    double ichi_tenkan;
+    double ichi_kijun;
+    double ichi_senkou_a;
+    double ichi_senkou_b;
+    double ichi_chikou;
+
     /* Derived signals */
     bool   above_sma_200;       /* price > SMA200 (bullish) */
     bool   golden_cross;        /* SMA50 > SMA200 */
@@ -108,6 +208,9 @@ typedef struct {
     bool   rsi_overbought;      /* RSI > 70 */
     bool   bb_squeeze;          /* BB width < 0.03 (low volatility) */
     bool   macd_bullish_cross;  /* MACD line > signal & histogram > 0 */
+    bool   adx_trending;        /* ADX > 25 */
+    bool   kc_squeeze;          /* BB inside KC */
+    bool   ichi_bullish;        /* price > cloud + tenkan > kijun */
 
     bool   valid;
 } tb_indicators_snapshot_t;

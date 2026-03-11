@@ -449,8 +449,8 @@ static int bt_lua_place_limit(lua_State *L) {
         lua_getfield(L, 5, "tif");
         if (lua_isstring(L, -1)) {
             const char *t = lua_tostring(L, -1);
-            if (strcmp(t, "IOC") == 0) tif = TB_TIF_IOC;
-            else if (strcmp(t, "ALO") == 0) tif = TB_TIF_ALO;
+            if (strcmp(t, "ioc") == 0 || strcmp(t, "IOC") == 0) tif = TB_TIF_IOC;
+            else if (strcmp(t, "alo") == 0 || strcmp(t, "ALO") == 0) tif = TB_TIF_ALO;
         }
         lua_pop(L, 1);
         lua_getfield(L, 5, "reduce_only");
@@ -682,6 +682,42 @@ static int bt_lua_get_indicators(lua_State *L) {
     lua_pushnumber(L, snap.atr_14);    lua_setfield(L, -2, "atr_14");
     lua_pushnumber(L, snap.vwap);      lua_setfield(L, -2, "vwap");
 
+    /* ADX */
+    lua_pushnumber(L, snap.adx_14);    lua_setfield(L, -2, "adx");
+    lua_pushnumber(L, snap.plus_di);   lua_setfield(L, -2, "plus_di");
+    lua_pushnumber(L, snap.minus_di);  lua_setfield(L, -2, "minus_di");
+
+    /* Keltner Channels */
+    lua_pushnumber(L, snap.kc_upper);  lua_setfield(L, -2, "kc_upper");
+    lua_pushnumber(L, snap.kc_middle); lua_setfield(L, -2, "kc_middle");
+    lua_pushnumber(L, snap.kc_lower);  lua_setfield(L, -2, "kc_lower");
+
+    /* Donchian Channels */
+    lua_pushnumber(L, snap.dc_upper);  lua_setfield(L, -2, "dc_upper");
+    lua_pushnumber(L, snap.dc_lower);  lua_setfield(L, -2, "dc_lower");
+    lua_pushnumber(L, snap.dc_middle); lua_setfield(L, -2, "dc_middle");
+
+    /* Stochastic RSI */
+    lua_pushnumber(L, snap.stoch_rsi_k); lua_setfield(L, -2, "stoch_rsi_k");
+    lua_pushnumber(L, snap.stoch_rsi_d); lua_setfield(L, -2, "stoch_rsi_d");
+
+    /* CCI */
+    lua_pushnumber(L, snap.cci_20);    lua_setfield(L, -2, "cci");
+
+    /* Williams %R */
+    lua_pushnumber(L, snap.williams_r);lua_setfield(L, -2, "williams_r");
+
+    /* OBV */
+    lua_pushnumber(L, snap.obv);       lua_setfield(L, -2, "obv");
+    lua_pushnumber(L, snap.obv_sma);   lua_setfield(L, -2, "obv_sma");
+
+    /* Ichimoku */
+    lua_pushnumber(L, snap.ichi_tenkan);   lua_setfield(L, -2, "ichi_tenkan");
+    lua_pushnumber(L, snap.ichi_kijun);    lua_setfield(L, -2, "ichi_kijun");
+    lua_pushnumber(L, snap.ichi_senkou_a); lua_setfield(L, -2, "ichi_senkou_a");
+    lua_pushnumber(L, snap.ichi_senkou_b); lua_setfield(L, -2, "ichi_senkou_b");
+    lua_pushnumber(L, snap.ichi_chikou);   lua_setfield(L, -2, "ichi_chikou");
+
     /* Aliases for strategy compatibility */
     lua_pushnumber(L, snap.sma_20);    lua_setfield(L, -2, "sma");
     lua_pushnumber(L, snap.ema_12);    lua_setfield(L, -2, "ema");
@@ -697,6 +733,9 @@ static int bt_lua_get_indicators(lua_State *L) {
     lua_pushboolean(L, snap.rsi_overbought);    lua_setfield(L, -2, "rsi_overbought");
     lua_pushboolean(L, snap.bb_squeeze);        lua_setfield(L, -2, "bb_squeeze");
     lua_pushboolean(L, snap.macd_bullish_cross);lua_setfield(L, -2, "macd_bullish_cross");
+    lua_pushboolean(L, snap.adx_trending);      lua_setfield(L, -2, "adx_trending");
+    lua_pushboolean(L, snap.kc_squeeze);        lua_setfield(L, -2, "kc_squeeze");
+    lua_pushboolean(L, snap.ichi_bullish);      lua_setfield(L, -2, "ichi_bullish");
 
     return 1;
 }

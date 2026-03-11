@@ -26,10 +26,9 @@ static void test_risk_basic(void) {
 
     tb_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.daily_loss_limit = -5.0;
+    cfg.daily_loss_pct = 5.0;
     cfg.max_leverage = 3.0;
-    cfg.per_trade_stop_pct = 2.0;
-    cfg.max_position_usd = 200.0;
+    cfg.max_position_pct = 200.0;
 
     tb_risk_mgr_t *risk = tb_risk_mgr_create(&cfg);
     ASSERT(risk != NULL, "risk manager created");
@@ -62,11 +61,10 @@ static void test_risk_daily_loss(void) {
 
     tb_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.daily_loss_limit = -5.0;
-    cfg.emergency_close_usd = -4.0;   /* emergency before daily limit */
+    cfg.daily_loss_pct = 5.0;
+    cfg.emergency_close_pct = 4.0;   /* emergency before daily limit */
     cfg.max_leverage = 3.0;
-    cfg.per_trade_stop_pct = 2.0;
-    cfg.max_position_usd = 200.0;
+    cfg.max_position_pct = 200.0;
 
     tb_risk_mgr_t *risk = tb_risk_mgr_create(&cfg);
 
@@ -106,10 +104,9 @@ static void test_risk_pause_resume(void) {
 
     tb_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.daily_loss_limit = -5.0;
+    cfg.daily_loss_pct = 5.0;
     cfg.max_leverage = 3.0;
-    cfg.per_trade_stop_pct = 2.0;
-    cfg.max_position_usd = 200.0;
+    cfg.max_position_pct = 200.0;
 
     tb_risk_mgr_t *risk = tb_risk_mgr_create(&cfg);
 
@@ -129,25 +126,16 @@ static void test_risk_pause_resume(void) {
     tb_risk_mgr_destroy(risk);
 }
 
-static void test_risk_stop_price(void) {
-    printf("\n== Risk Manager Stop Price ==\n");
+static void test_risk_dynamic_params(void) {
+    printf("\n== Risk Manager Dynamic Params ==\n");
 
     tb_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.daily_loss_limit = -5.0;
+    cfg.daily_loss_pct = 5.0;
     cfg.max_leverage = 3.0;
-    cfg.per_trade_stop_pct = 2.0;
-    cfg.max_position_usd = 200.0;
+    cfg.max_position_pct = 200.0;
 
     tb_risk_mgr_t *risk = tb_risk_mgr_create(&cfg);
-
-    /* Long stop: entry $2000, 2% stop → $1960 */
-    double stop = tb_risk_compute_stop_price(risk, TB_SIDE_BUY, 2000.0);
-    ASSERT(stop > 1959.9 && stop < 1960.1, "long stop at -2%");
-
-    /* Short stop: entry $2000, 2% stop → $2040 */
-    stop = tb_risk_compute_stop_price(risk, TB_SIDE_SELL, 2000.0);
-    ASSERT(stop > 2039.9 && stop < 2040.1, "short stop at +2%");
 
     /* Dynamic adjustment */
     tb_risk_set_max_leverage(risk, 5.0);
@@ -165,7 +153,7 @@ int main(void) {
     test_risk_basic();
     test_risk_daily_loss();
     test_risk_pause_resume();
-    test_risk_stop_price();
+    test_risk_dynamic_params();
 
     printf("\n========================================\n");
     printf("Results: %d passed, %d failed\n", tests_passed, tests_failed);

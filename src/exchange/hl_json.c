@@ -18,7 +18,10 @@ static double get_num(yyjson_val *obj, const char *key) {
 
 static int64_t get_int(yyjson_val *obj, const char *key) {
     yyjson_val *v = yyjson_obj_get(obj, key);
-    return yyjson_is_int(v) ? yyjson_get_sint(v) : 0;
+    if (yyjson_is_sint(v)) return yyjson_get_sint(v);
+    if (yyjson_is_uint(v)) return (int64_t)yyjson_get_uint(v);
+    if (yyjson_is_real(v)) return (int64_t)yyjson_get_real(v);
+    return 0;
 }
 
 static bool get_bool(yyjson_val *obj, const char *key) {

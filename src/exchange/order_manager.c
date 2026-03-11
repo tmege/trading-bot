@@ -647,13 +647,14 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
                      "%s", positions[p].coin);
             close_order.order.side = sz > 0 ? TB_SIDE_SELL : TB_SIDE_BUY;
             close_order.order.size = tb_decimal_abs(positions[p].size);
-            /* Use entry price ± 5% slippage for IOC.  Wide enough to fill
-             * in volatile conditions, tight enough to avoid catastrophic fills. */
+            /* Use entry price ± 2% slippage for IOC.  Tight enough to avoid
+             * catastrophic fills in flash crashes.  If this doesn't fill,
+             * a second attempt will be made on the next reconciliation cycle. */
             double entry = tb_decimal_to_double(positions[p].entry_px);
             if (entry < 1e-9) entry = 1.0; /* fallback if no entry price */
             close_order.order.price = (sz > 0)
-                ? tb_decimal_from_double(entry * 0.95, 6)
-                : tb_decimal_from_double(entry * 1.05, 6);
+                ? tb_decimal_from_double(entry * 0.98, 6)
+                : tb_decimal_from_double(entry * 1.02, 6);
             close_order.order.type = TB_ORDER_LIMIT;
             close_order.order.tif = TB_TIF_IOC;
             close_order.order.reduce_only = true;

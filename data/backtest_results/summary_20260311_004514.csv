@@ -1,0 +1,13 @@
+strategy,coin,interval,return_pct,sharpe_oos,sortino_oos,dd_pct,pf,win_rate,trades,alpha,verdict
+macd_momentum_1h,ETH,1h,0.00,0.00,0.00,0.0,0.00,0.0,0,0.19,INSUFFISANT
+macd_momentum_1h,BTC,1h,0.00,0.00,0.00,0.0,0.00,0.0,0,-31.82,INSUFFISANT
+rsi_divergence_1h,ETH,1h,3.51,11.74,9999.00,0.0,99.99,71.4,7,3.69,INSUFFISANT
+rsi_divergence_1h,BTC,1h,12.87,24.91,174801.00,0.0,99.99,78.3,23,-18.95,INSUFFISANT
+ema_adx_trend_4h,ETH,4h,428.21,38.96,242.18,1.0,27.98,50.4,407,0.59,DEPLOYABLE
+ema_adx_trend_4h,BTC,4h,408.95,45.16,547.04,0.6,99.99,72.7,355,361.49,DEPLOYABLE
+bb_kc_squeeze_1h,ETH,1h,0.00,0.00,0.00,0.0,0.00,0.0,0,0.19,INSUFFISANT
+bb_kc_squeeze_1h,BTC,1h,0.00,0.00,0.00,0.0,0.00,0.0,0,-31.82,INSUFFISANT
+donchian_breakout_1d,ETH,1d,3.08,2.59,557.21,4.1,98.92,25.0,32,-393.37,MARGINAL
+donchian_breakout_1d,BTC,1d,-0.25,1.49,6.20,0.8,2.82,15.6,32,-38.67,ABANDON
+williams_obv_4h,ETH,4h,40.45,11.34,48.19,1.5,9.79,66.1,59,-387.17,MARGINAL
+regime_adaptive_1h,ETH,1h,181.26,86.00,1136.27,0.4,99.99,74.1,251,181.45,DEPLOYABLE

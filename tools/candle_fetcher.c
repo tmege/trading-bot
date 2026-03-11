@@ -266,8 +266,11 @@ static int fetch_and_store(sqlite3 *db, hl_rest_t *rest,
 
 /* ── Parse comma-separated list ────────────────────────────────────────── */
 static int parse_list(const char *input, const char **out, int max) {
-    static char buf[512];
-    strncpy(buf, input, sizeof(buf) - 1);
+    static char bufs[2][512];
+    static int buf_idx = 0;
+    char *buf = bufs[buf_idx++ % 2];
+    strncpy(buf, input, 511);
+    buf[511] = '\0';
     int n = 0;
     char *tok = strtok(buf, ",");
     while (tok && n < max) {

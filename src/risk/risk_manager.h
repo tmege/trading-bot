@@ -14,6 +14,7 @@ typedef enum {
     TB_RISK_REJECT_POSITION_SIZE,
     TB_RISK_REJECT_PAUSED,
     TB_RISK_REJECT_MAX_ORDERS,
+    TB_RISK_REJECT_CIRCUIT_BREAKER,
 } tb_risk_result_t;
 
 tb_risk_mgr_t *tb_risk_mgr_create(const tb_config_t *cfg);
@@ -55,18 +56,26 @@ void tb_risk_set_daily_limit(tb_risk_mgr_t *mgr, double limit);
 void tb_risk_set_max_leverage(tb_risk_mgr_t *mgr, double max_lev);
 void tb_risk_set_max_position_usd(tb_risk_mgr_t *mgr, double max_usd);
 
-/* Compute stop loss price for a new entry */
-double tb_risk_compute_stop_price(const tb_risk_mgr_t *mgr,
-                                   tb_side_t side, double entry_price);
-
 /* Check if emergency close is needed */
 bool tb_risk_should_emergency_close(const tb_risk_mgr_t *mgr);
 
 /* Reset daily counters (midnight UTC) */
 void tb_risk_reset_daily(tb_risk_mgr_t *mgr);
 
+/* Update account value for %-based limit calculations.
+ * Call this periodically (e.g. every dashboard refresh). */
+void tb_risk_update_account_value(tb_risk_mgr_t *mgr, double value);
+
 /* Get current parameters (for dashboard/reports) */
 double tb_risk_get_daily_limit(const tb_risk_mgr_t *mgr);
 double tb_risk_get_max_leverage(const tb_risk_mgr_t *mgr);
+
+/* ── Circuit Breaker ─────────────────────────────────────────────────────── */
+/* Feed price updates; returns true if circuit breaker tripped (new entries blocked).
+ * Existing position management (SL/TP/close) still allowed when tripped. */
+bool tb_risk_circuit_breaker_check(tb_risk_mgr_t *mgr, const char *coin, double price);
+
+/* Query circuit breaker state */
+bool tb_risk_circuit_breaker_active(const tb_risk_mgr_t *mgr);
 
 #endif /* TB_RISK_MANAGER_H */

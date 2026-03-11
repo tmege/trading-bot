@@ -261,14 +261,27 @@ static int api_place_trigger(lua_State *L) {
     tb_order_request_t *order = &submit.order;
     snprintf(order->coin, sizeof(order->coin), "%s", coin);
     order->side = (strcmp(side_str, "sell") == 0) ? TB_SIDE_SELL : TB_SIDE_BUY;
-    order->price = tb_decimal_from_double(price, 6);
+
+    /* Slippage guard: isMarket=true still needs a limit price guardrail.
+       Without slack, any slippage past triggerPx prevents the fill.
+       Use 10% margin (same as Hyperliquid Python SDK). */
+    double limit_px = price;
+    if (order->side == TB_SIDE_SELL) {
+        limit_px = trigger_px * 0.90;
+    } else {
+        limit_px = trigger_px * 1.10;
+    }
+    order->price = tb_decimal_from_double(limit_px, 6);
     order->size = tb_decimal_from_double(size, 6);
     order->type = TB_ORDER_TRIGGER;
     order->is_market = true;
     order->trigger_px = tb_decimal_from_double(trigger_px, 6);
     order->tpsl = (strcmp(tpsl_str, "tp") == 0) ? TB_TPSL_TP : TB_TPSL_SL;
     order->reduce_only = true;
-    order->grouping = TB_GROUP_POS_TPSL;
+    /* Use TB_GROUP_NA: positionTpsl requires SL+TP in a single batch call,
+       but we send them separately — the 2nd overwrites the 1st.
+       With NA, each trigger is independent and both coexist. */
+    order->grouping = TB_GROUP_NA;
 
     uint64_t oid = 0;
     int rc = tb_order_mgr_submit(ctx->order_mgr, &submit, &oid);
@@ -768,7 +781,7 @@ static int api_get_indicators(lua_State *L) {
     free(input);
 
     /* Build Lua table */
-    lua_createtable(L, 0, 24);
+    lua_createtable(L, 0, 50);
 
     lua_pushboolean(L, snap.valid);        lua_setfield(L, -2, "valid");
 
@@ -799,6 +812,42 @@ static int api_get_indicators(lua_State *L) {
     /* VWAP */
     lua_pushnumber(L, snap.vwap);          lua_setfield(L, -2, "vwap");
 
+    /* ADX */
+    lua_pushnumber(L, snap.adx_14);        lua_setfield(L, -2, "adx");
+    lua_pushnumber(L, snap.plus_di);       lua_setfield(L, -2, "plus_di");
+    lua_pushnumber(L, snap.minus_di);      lua_setfield(L, -2, "minus_di");
+
+    /* Keltner Channels */
+    lua_pushnumber(L, snap.kc_upper);      lua_setfield(L, -2, "kc_upper");
+    lua_pushnumber(L, snap.kc_middle);     lua_setfield(L, -2, "kc_middle");
+    lua_pushnumber(L, snap.kc_lower);      lua_setfield(L, -2, "kc_lower");
+
+    /* Donchian Channels */
+    lua_pushnumber(L, snap.dc_upper);      lua_setfield(L, -2, "dc_upper");
+    lua_pushnumber(L, snap.dc_lower);      lua_setfield(L, -2, "dc_lower");
+    lua_pushnumber(L, snap.dc_middle);     lua_setfield(L, -2, "dc_middle");
+
+    /* Stochastic RSI */
+    lua_pushnumber(L, snap.stoch_rsi_k);   lua_setfield(L, -2, "stoch_rsi_k");
+    lua_pushnumber(L, snap.stoch_rsi_d);   lua_setfield(L, -2, "stoch_rsi_d");
+
+    /* CCI */
+    lua_pushnumber(L, snap.cci_20);        lua_setfield(L, -2, "cci");
+
+    /* Williams %R */
+    lua_pushnumber(L, snap.williams_r);    lua_setfield(L, -2, "williams_r");
+
+    /* OBV */
+    lua_pushnumber(L, snap.obv);           lua_setfield(L, -2, "obv");
+    lua_pushnumber(L, snap.obv_sma);       lua_setfield(L, -2, "obv_sma");
+
+    /* Ichimoku */
+    lua_pushnumber(L, snap.ichi_tenkan);   lua_setfield(L, -2, "ichi_tenkan");
+    lua_pushnumber(L, snap.ichi_kijun);    lua_setfield(L, -2, "ichi_kijun");
+    lua_pushnumber(L, snap.ichi_senkou_a); lua_setfield(L, -2, "ichi_senkou_a");
+    lua_pushnumber(L, snap.ichi_senkou_b); lua_setfield(L, -2, "ichi_senkou_b");
+    lua_pushnumber(L, snap.ichi_chikou);   lua_setfield(L, -2, "ichi_chikou");
+
     /* Signals */
     lua_pushboolean(L, snap.above_sma_200);     lua_setfield(L, -2, "above_sma200");
     lua_pushboolean(L, snap.golden_cross);       lua_setfield(L, -2, "golden_cross");
@@ -806,6 +855,9 @@ static int api_get_indicators(lua_State *L) {
     lua_pushboolean(L, snap.rsi_overbought);     lua_setfield(L, -2, "rsi_overbought");
     lua_pushboolean(L, snap.bb_squeeze);         lua_setfield(L, -2, "bb_squeeze");
     lua_pushboolean(L, snap.macd_bullish_cross); lua_setfield(L, -2, "macd_bullish");
+    lua_pushboolean(L, snap.adx_trending);       lua_setfield(L, -2, "adx_trending");
+    lua_pushboolean(L, snap.kc_squeeze);         lua_setfield(L, -2, "kc_squeeze");
+    lua_pushboolean(L, snap.ichi_bullish);       lua_setfield(L, -2, "ichi_bullish");
 
     return 1;
 }

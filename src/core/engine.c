@@ -441,6 +441,11 @@ static void engine_on_mids(const tb_mid_t *mids, int n_mids, void *userdata) {
     for (int i = 0; i < n_mids; i++) {
         double mid = tb_decimal_to_double(mids[i].mid);
 
+        /* Feed to circuit breaker (tracks price velocity per coin) */
+        if (engine->risk_mgr) {
+            tb_risk_circuit_breaker_check(engine->risk_mgr, mids[i].coin, mid);
+        }
+
         /* Feed to Lua strategies */
         if (engine->lua_engine) {
             tb_lua_engine_on_tick(engine->lua_engine, mids[i].coin, mid);
@@ -524,6 +529,10 @@ static void engine_update_dashboard(tb_engine_t *engine) {
     } else {
         data.account_value = tb_pos_tracker_account_value(&engine->pos_tracker);
         data.daily_pnl     = tb_pos_tracker_daily_pnl(&engine->pos_tracker);
+    }
+    /* Update risk manager with current account value (for %-based limits) */
+    if (engine->risk_mgr && data.account_value > 0) {
+        tb_risk_update_account_value(engine->risk_mgr, data.account_value);
     }
     data.daily_fees   = tb_pos_tracker_daily_fees(&engine->pos_tracker);
     data.daily_trades = tb_pos_tracker_daily_trades(&engine->pos_tracker);

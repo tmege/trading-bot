@@ -1,0 +1,377 @@
+{
+    "config": {
+        "strategy": "strategies/triple_confirm_15m.lua",
+        "coin": "ETH",
+        "interval": "15m",
+        "n_days": 90,
+        "end_days_ago": 0,
+        "initial_balance": 100.0,
+        "max_leverage": 5,
+        "maker_fee": 0.0002,
+        "taker_fee": 0.0005,
+        "slippage_bps": 1.0,
+        "n_candles": 5007
+    },
+    "stats": {
+        "net_pnl": 0.0,
+        "return_pct": 0.0,
+        "total_pnl": 0.0,
+        "total_fees": 0.0,
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "max_win": 0.0,
+        "max_loss": 0.0,
+        "sharpe_ratio": 0.0,
+        "sortino_ratio": 0.0,
+        "max_drawdown_pct": 0.0,
+        "start_balance": 100.0,
+        "end_balance": 100.0,
+        "n_candles": 5007,
+        "n_days": 53
+    },
+    "stats_is": {
+        "net_pnl": 0.0,
+        "return_pct": 0.0,
+        "total_pnl": 0.0,
+        "total_fees": 0.0,
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "max_win": 0.0,
+        "max_loss": 0.0,
+        "sharpe_ratio": 0.0,
+        "sortino_ratio": 0.0,
+        "max_drawdown_pct": 0.0,
+        "start_balance": 100.0,
+        "end_balance": 100.0,
+        "n_candles": 3004,
+        "n_days": 32
+    },
+    "stats_oos": {
+        "net_pnl": 0.0,
+        "return_pct": 0.0,
+        "total_pnl": 0.0,
+        "total_fees": 0.0,
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "max_win": 0.0,
+        "max_loss": 0.0,
+        "sharpe_ratio": 0.0,
+        "sortino_ratio": 0.0,
+        "max_drawdown_pct": 0.0,
+        "start_balance": 100.0,
+        "end_balance": 100.0,
+        "n_candles": 2003,
+        "n_days": 21
+    },
+    "buy_and_hold": {
+        "full": {
+            "return_pct": -193.74389046504555,
+            "sharpe": 1.0158111509338092,
+            "sortino": 1.6448197539796057,
+            "max_dd_pct": 224.38568513251846
+        },
+        "is": {
+            "return_pct": -200.47760817100348,
+            "sharpe": 1.2982663065265805,
+            "sortino": 2.1043543153899837,
+            "max_dd_pct": 224.38568513251846
+        },
+        "oos": {
+            "return_pct": 10.678404825749055,
+            "sharpe": 1.195792003431239,
+            "sortino": 1.8052106418902456,
+            "max_dd_pct": 51.64402882259785
+        }
+    },
+    "walk_forward": {
+        "sharpe_decay_pct": 0.0,
+        "pf_decay_pct": 0.0,
+        "wr_decay_pp": 0.0,
+        "overfit_warning": false
+    },
+    "trades": [],
+    "equity_curve": [
+        {
+            "time_ms": 1768680900000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1768694400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1768780800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1768867200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1768953600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769040000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769126400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769212800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769299200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769385600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769472000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769558400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769644800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769731200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769817600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769904000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1769990400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770076800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770163200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770249600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770336000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770422400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770508800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770595200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770681600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770768000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770854400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1770940800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771027200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771113600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771200000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771286400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771372800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771459200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771545600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771632000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771718400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771804800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771891200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1771977600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772064000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772150400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772236800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772323200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772409600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772496000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772582400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772668800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772755200000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772841600000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1772928000000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1773014400000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        },
+        {
+            "time_ms": 1773100800000,
+            "equity": 100.0,
+            "drawdown": 0.0
+        }
+    ],
+    "verdict": "INSUFFISANT",
+    "alpha": -10.678404825749055
+}
