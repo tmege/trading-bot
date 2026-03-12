@@ -144,6 +144,50 @@ static void log_trade_to_db(tb_order_mgr_t *mgr, const tb_fill_t *fill,
     }
 }
 
+/* ── Cache coin → strategy for trigger orders (fallback when OID mismatch) ── */
+#define TRIGGER_COIN_CACHE_SIZE 32
+
+typedef struct {
+    char coin[16];
+    char strategy[64];
+    time_t cached_at;
+} trigger_coin_entry_t;
+
+static trigger_coin_entry_t g_trigger_coin_cache[TRIGGER_COIN_CACHE_SIZE];
+static int g_trigger_coin_count = 0;
+
+static void cache_trigger_coin(const char *coin, const char *strategy) {
+    time_t now = time(NULL);
+    /* Update existing entry for this coin */
+    for (int i = 0; i < g_trigger_coin_count; i++) {
+        if (strcmp(g_trigger_coin_cache[i].coin, coin) == 0) {
+            snprintf(g_trigger_coin_cache[i].strategy,
+                     sizeof(g_trigger_coin_cache[i].strategy), "%s", strategy);
+            g_trigger_coin_cache[i].cached_at = now;
+            return;
+        }
+    }
+    /* Add new entry */
+    if (g_trigger_coin_count < TRIGGER_COIN_CACHE_SIZE) {
+        trigger_coin_entry_t *e = &g_trigger_coin_cache[g_trigger_coin_count++];
+        snprintf(e->coin, sizeof(e->coin), "%s", coin);
+        snprintf(e->strategy, sizeof(e->strategy), "%s", strategy);
+        e->cached_at = now;
+    }
+}
+
+static bool find_strategy_by_coin_trigger(const char *coin, char *out, size_t out_len) {
+    time_t now = time(NULL);
+    for (int i = 0; i < g_trigger_coin_count; i++) {
+        if (strcmp(g_trigger_coin_cache[i].coin, coin) == 0 &&
+            now - g_trigger_coin_cache[i].cached_at < 86400) {  /* 24h TTL */
+            snprintf(out, out_len, "%s", g_trigger_coin_cache[i].strategy);
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ── Cache OID → strategy (ring buffer + SQLite) ──────────────────────────── */
 static void cache_oid_strategy(tb_order_mgr_t *mgr, uint64_t oid,
                                 const char *strategy, const char *coin) {
@@ -267,6 +311,17 @@ void tb_order_mgr_handle_ws_fills(tb_order_mgr_t *mgr,
 
         char strategy[64] = "unknown";
         find_strategy_for_oid(mgr, fill->oid, strategy, sizeof(strategy));
+
+        /* Fallback: if OID lookup failed and fill has closed_pnl (exit fill),
+         * try coin-based trigger cache. This handles the Hyperliquid trigger
+         * OID mismatch: trigger placement OID ≠ triggered fill OID. */
+        if (strcmp(strategy, "unknown") == 0 &&
+            !tb_decimal_is_zero(fill->closed_pnl)) {
+            if (find_strategy_by_coin_trigger(fill->coin, strategy, sizeof(strategy))) {
+                tb_log_info("fill: OID %llu unknown, resolved %s via coin fallback (%s)",
+                            (unsigned long long)fill->oid, strategy, fill->coin);
+            }
+        }
 
         /* Update position tracker */
         tb_pos_tracker_on_fill(mgr->pos_tracker, fill);
@@ -560,10 +615,18 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
 
     /* Cache OID → strategy (survives reconciliation + restart) */
     if (oid == 0) {
-        tb_log_warn("oid=0 for %s %s — strategy tracking will fail",
-                    coin, submit->strategy_name);
+        tb_log_warn("oid=0 for %s %s (type=%d) — will use coin fallback",
+                    coin, submit->strategy_name, submit->order.type);
     }
     cache_oid_strategy(mgr, oid, submit->strategy_name, coin);
+
+    /* For trigger orders (SL/TP): also cache coin → strategy.
+     * When a trigger fires, Hyperliquid creates a child order with a new OID.
+     * The fill carries the child OID, not the trigger OID, so the OID→strategy
+     * lookup fails. The coin-based cache is the fallback. */
+    if (submit->order.type == TB_ORDER_TRIGGER) {
+        cache_trigger_coin(coin, submit->strategy_name);
+    }
 
     /* Track the order locally */
     pthread_rwlock_wrlock(&mgr->orders_lock);

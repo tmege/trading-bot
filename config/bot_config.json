@@ -5,10 +5,10 @@
         "is_testnet": false
     },
     "risk": {
-        "daily_loss_pct": 8,
-        "emergency_close_pct": 6,
-        "max_leverage": 10,
-        "max_position_pct": 200
+        "daily_loss_pct": 6,
+        "emergency_close_pct": 5,
+        "max_leverage": 5,
+        "max_position_pct": 150
     },
     "strategies": {
         "dir": "./strategies",
@@ -17,44 +17,29 @@
             {
                 "file": "regime_adaptive_1h.lua",
                 "coins": [
-                    "BTC"
+                    "BTC",
+                    "ETH",
+                    "SOL"
                 ],
                 "role": "primary"
             },
             {
-                "file": "stochrsi_scalp_5m.lua",
-                "role": "secondary",
-                "coins": [
-                    "ETH"
-                ]
-            },
-            {
-                "file": "vwap_reversion_15m.lua",
-                "role": "secondary",
-                "coins": [
-                    "DOGE"
-                ]
-            },
-            {
-                "file": "macd_momentum_1h.lua",
-                "role": "secondary",
-                "coins": [
-                    "AVAX"
-                ]
-            },
-            {
                 "file": "bb_scalp_15m.lua",
-                "role": "secondary",
                 "coins": [
-                    "HYPE"
-                ]
+                    "BTC",
+                    "ETH",
+                    "SOL"
+                ],
+                "role": "secondary"
             },
             {
-                "file": "triple_confirm_15m.lua",
-                "role": "secondary",
+                "file": "ichimoku_trend_4h.lua",
                 "coins": [
-                    "TAO"
-                ]
+                    "BTC",
+                    "ETH",
+                    "SOL"
+                ],
+                "role": "secondary"
             }
         ]
     },
@@ -67,6 +52,6 @@
     },
     "mode": {
         "paper_trading": false,
-        "paper_initial_balance": 100
+        "paper_initial_balance": 500
     }
 }

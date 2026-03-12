@@ -1,4 +1,5 @@
 #include "risk/risk_manager.h"
+#include "exchange/position_tracker.h"
 #include "core/logging.h"
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +43,10 @@ struct tb_risk_mgr {
     bool            emergency_triggered;
     char            pause_reason[256];
 
+    /* Global exposure cap */
+    double          max_global_exposure_pct;  /* e.g. 300.0 → max 300% of account total */
+    tb_position_tracker_t *pos_tracker;       /* NULL until set, enables global check */
+
     /* Circuit breaker */
     cb_coin_history_t cb_coins[CB_MAX_COINS];
     int               cb_n_coins;
@@ -63,6 +68,8 @@ tb_risk_mgr_t *tb_risk_mgr_create(const tb_config_t *cfg) {
     mgr->max_leverage       = cfg->max_leverage;
     mgr->max_position_pct   = cfg->max_position_pct;
     mgr->account_value      = 100.0;  /* default until engine updates */
+    mgr->max_global_exposure_pct = 300.0;  /* default: max 300% total notional */
+    mgr->pos_tracker        = NULL;
     mgr->paused             = false;
     mgr->emergency_triggered = false;
 
@@ -180,7 +187,30 @@ tb_risk_result_t tb_risk_check_order(
         }
     }
 
-    /* 5. Reserve pessimistic loss for new entries (prevents TOCTOU race) */
+    /* 5. Global exposure cap: total notional across ALL positions + new order */
+    if (!order->reduce_only && mgr->pos_tracker) {
+        double order_value = tb_decimal_to_double(order->price) *
+                             tb_decimal_to_double(order->size);
+        tb_position_t all_pos[TB_MAX_POSITIONS];
+        int n_pos = TB_MAX_POSITIONS;
+        tb_pos_tracker_get_all(mgr->pos_tracker, all_pos, &n_pos);
+        double total_notional = 0;
+        for (int i = 0; i < n_pos; i++) {
+            double sz = fabs(tb_decimal_to_double(all_pos[i].size));
+            double px = tb_decimal_to_double(all_pos[i].entry_px);
+            total_notional += sz * px;
+        }
+        double max_exposure = mgr->account_value * mgr->max_global_exposure_pct / 100.0;
+        if (total_notional + order_value > max_exposure) {
+            pthread_mutex_unlock(&mgr->lock);
+            tb_log_warn("risk: global exposure $%.2f + $%.2f > max $%.2f (%.0f%% of $%.0f)",
+                        total_notional, order_value, max_exposure,
+                        mgr->max_global_exposure_pct, mgr->account_value);
+            return TB_RISK_REJECT_GLOBAL_EXPOSURE;
+        }
+    }
+
+    /* 6. Reserve pessimistic loss for new entries (prevents TOCTOU race) */
     if (!order->reduce_only) {
         double order_notional = tb_decimal_to_double(order->price) *
                                 tb_decimal_to_double(order->size);
@@ -200,6 +230,7 @@ const char *tb_risk_result_str(tb_risk_result_t r) {
         case TB_RISK_REJECT_PAUSED:         return "trading paused";
         case TB_RISK_REJECT_MAX_ORDERS:     return "max orders reached";
         case TB_RISK_REJECT_CIRCUIT_BREAKER: return "circuit breaker active";
+        case TB_RISK_REJECT_GLOBAL_EXPOSURE: return "global exposure exceeded";
         default:                            return "unknown";
     }
 }
@@ -367,6 +398,17 @@ double tb_risk_get_max_leverage(tb_risk_mgr_t *mgr) {
     double v = mgr->max_leverage;
     pthread_mutex_unlock(&mgr->lock);
     return v;
+}
+
+/* ── Global Exposure ────────────────────────────────────────────────────── */
+
+void tb_risk_set_position_tracker(tb_risk_mgr_t *mgr, void *pos_tracker) {
+    if (!mgr) return;
+    pthread_mutex_lock(&mgr->lock);
+    mgr->pos_tracker = (tb_position_tracker_t *)pos_tracker;
+    pthread_mutex_unlock(&mgr->lock);
+    tb_log_info("risk: position tracker linked for global exposure cap (%.0f%%)",
+                mgr->max_global_exposure_pct);
 }
 
 /* ── Circuit Breaker Implementation ──────────────────────────────────────── */

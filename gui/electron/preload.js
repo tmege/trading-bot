@@ -50,6 +50,8 @@ contextBridge.exposeInMainWorld('api', {
     equityCurve:    ()       => ipcRenderer.invoke('db:equityCurve'),
     strategyPnl:    ()       => ipcRenderer.invoke('db:strategyPnl'),
     backtestCoins:  ()       => ipcRenderer.invoke('db:backtestCoins'),
+    performanceMetrics: ()   => ipcRenderer.invoke('db:performanceMetrics'),
+    strategyDetails:    ()   => ipcRenderer.invoke('db:strategyDetails'),
   },
 
   // Logs

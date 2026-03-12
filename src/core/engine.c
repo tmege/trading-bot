@@ -222,6 +222,7 @@ int tb_engine_start(tb_engine_t *engine) {
         tb_log_error("failed to create risk manager");
         goto fail;
     }
+    tb_risk_set_position_tracker(engine->risk_mgr, &engine->pos_tracker);
     tb_log_info("risk manager created");
 
     /* 7. Order manager */

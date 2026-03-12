@@ -15,6 +15,7 @@ typedef enum {
     TB_RISK_REJECT_PAUSED,
     TB_RISK_REJECT_MAX_ORDERS,
     TB_RISK_REJECT_CIRCUIT_BREAKER,
+    TB_RISK_REJECT_GLOBAL_EXPOSURE,
 } tb_risk_result_t;
 
 tb_risk_mgr_t *tb_risk_mgr_create(const tb_config_t *cfg);
@@ -72,6 +73,12 @@ void tb_risk_update_account_value(tb_risk_mgr_t *mgr, double value);
 /* Get current parameters (for dashboard/reports) */
 double tb_risk_get_daily_limit(tb_risk_mgr_t *mgr);
 double tb_risk_get_max_leverage(tb_risk_mgr_t *mgr);
+
+/* ── Global Exposure ─────────────────────────────────────────────────────── */
+/* Set position tracker reference for global exposure cap.
+ * Must be called after both risk manager and position tracker are created.
+ * Accepts void* to avoid header dependency on position_tracker.h. */
+void tb_risk_set_position_tracker(tb_risk_mgr_t *mgr, void *pos_tracker);
 
 /* ── Circuit Breaker ─────────────────────────────────────────────────────── */
 /* Feed price updates; returns true if circuit breaker tripped (new entries blocked).

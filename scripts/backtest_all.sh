@@ -2,7 +2,7 @@
 #
 # Batch Backtest Runner — Run all strategies on ETH + BTC, 1 year
 #
-# Usage: ./tools/backtest_all.sh [n_days] [end_days_ago]
+# Usage: ./scripts/backtest_all.sh [n_days] [end_days_ago]
 #   n_days      : backtest period in days (default: 365)
 #   end_days_ago: how many days ago to end (default: 0 = today)
 #

@@ -298,7 +298,7 @@ Tous les indicateurs sont calcules nativement en C et exposes via `bot.get_indic
 ./build/backtest_json strategies/triple_confirm_15m.lua ETH 0 365 15m
 
 # Toutes les strategies (batch)
-./tools/backtest_all.sh 365 0
+./scripts/backtest_all.sh 365 0
 ```
 
 Le runner effectue un walk-forward 60% IS / 40% OOS avec verdicts automatiques :

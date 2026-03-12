@@ -9,6 +9,7 @@ export default function Strategies() {
   const [loading, setLoading] = useState(true);
   const [togglingFile, setTogglingFile] = useState(null);
   const [stratPnl, setStratPnl] = useState({});
+  const [stratDetails, setStratDetails] = useState({});
 
   const loadStrategies = useCallback(async () => {
     try {
@@ -26,10 +27,19 @@ export default function Strategies() {
     } catch (_) {}
   }, []);
 
+  const loadDetails = useCallback(async () => {
+    try {
+      if (!window.api?.db?.strategyDetails) return;
+      const res = await window.api.db.strategyDetails();
+      if (res.ok) setStratDetails(res.details || {});
+    } catch (_) {}
+  }, []);
+
   useEffect(() => {
     loadStrategies();
     loadPnl();
-  }, [loadStrategies, loadPnl]);
+    loadDetails();
+  }, [loadStrategies, loadPnl, loadDetails]);
 
   async function handleSelect(filename) {
     setSelected(filename);
@@ -61,6 +71,7 @@ export default function Strategies() {
           onSelect={handleSelect}
           onToggle={handleToggle}
           stratPnl={stratPnl}
+          stratDetails={stratDetails}
           loading={loading}
           togglingFile={togglingFile}
         />

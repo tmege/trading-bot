@@ -18,7 +18,7 @@ mkdir -p "$OUTDIR"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 CSVFILE="$OUTDIR/full_report_${TIMESTAMP}.csv"
-MDFILE="$ROOTDIR/strategies/BACKTEST_REPORT.md"
+MDFILE="$ROOTDIR/docs/backtest-report.md"
 
 COINS="ETH BTC SOL DOGE"
 

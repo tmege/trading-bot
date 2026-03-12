@@ -56,12 +56,15 @@ module.exports = function registerWsIPC(ipcMain, projectRoot, getWindow) {
         subscription: { type: 'allMids' },
       }));
 
-      // Subscribe to user events (fills, positions) if wallet available
+      // Subscribe to user fills if wallet available
       if (walletAddress) {
         ws.send(JSON.stringify({
           method: 'subscribe',
-          subscription: { type: 'userEvents', user: walletAddress },
+          subscription: { type: 'userFills', user: walletAddress },
         }));
+        console.log('[ws] subscribed to userFills for', walletAddress);
+      } else {
+        console.warn('[ws] no wallet address — userFills subscription skipped');
       }
     });
 
@@ -77,8 +80,10 @@ module.exports = function registerWsIPC(ipcMain, projectRoot, getWindow) {
         if (channel === 'allMids') {
           // { mids: { "ETH": "2035.5", "BTC": "69800", ... } }
           send(win, 'ws:prices', data.mids || data);
-        } else if (channel === 'userEvents') {
-          // Fills and position updates
+        } else if (channel === 'userFills') {
+          // { isSnapshot: bool, user: "0x...", fills: [...] }
+          // Skip initial snapshot to avoid flood of old notifications
+          if (data && data.isSnapshot) return;
           send(win, 'ws:user', data);
         }
       } catch (_) {}

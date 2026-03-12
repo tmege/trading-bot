@@ -55,7 +55,7 @@ local config = {
     -- Position sizing
     entry_size    = 40.0,
     equity_pct    = 0.10,        -- 10% of account per trade
-    max_size      = 60.0,
+    max_size      = 80.0,
 
     -- Timing
     check_sec     = 60,          -- 1h TF: no need for faster than 60s

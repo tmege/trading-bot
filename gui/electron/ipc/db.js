@@ -350,6 +350,214 @@ module.exports = function registerDbIPC(ipcMain, projectRoot) {
     }
   });
 
+  // ── Performance metrics (Marcus Venn monitoring) ──────────────────────
+  ipcMain.handle('db:performanceMetrics', async () => {
+    const conn = getDb(projectRoot);
+    if (!conn) return { ok: true, metrics: null };
+
+    try {
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 3600 * 1000;
+      const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000;
+
+      // 1. Rolling 30-day Sharpe from daily_pnl
+      const dailyRows = conn.prepare(
+        `SELECT date, realized_pnl, fees_paid
+         FROM daily_pnl WHERE date >= date(? / 1000, 'unixepoch') ORDER BY date ASC`
+      ).all(thirtyDaysAgo);
+
+      const dailyReturns = dailyRows.map(r =>
+        (parseFloat(r.realized_pnl) || 0) - (parseFloat(r.fees_paid) || 0)
+      );
+
+      let sharpe = null;
+      if (dailyReturns.length >= 5) {
+        const mean = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
+        const variance = dailyReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / dailyReturns.length;
+        const stddev = Math.sqrt(variance);
+        if (stddev > 0) {
+          sharpe = Math.round((mean / stddev) * Math.sqrt(365) * 100) / 100;
+        }
+      }
+
+      // 2. Max drawdown from cumulative equity curve
+      const allDaily = conn.prepare(
+        `SELECT realized_pnl, fees_paid FROM daily_pnl ORDER BY date ASC`
+      ).all();
+
+      let equity = 0, peak = 0, maxDD = 0;
+      for (const r of allDaily) {
+        equity += (parseFloat(r.realized_pnl) || 0) - (parseFloat(r.fees_paid) || 0);
+        if (equity > peak) peak = equity;
+        const dd = peak - equity;
+        if (dd > maxDD) maxDD = dd;
+      }
+
+      // Get account value for DD% calculation
+      const hl = await fetchHyperliquid(projectRoot);
+      const accountValue = hl.balance || 500;
+      const maxDDPct = accountValue > 0
+        ? Math.round((maxDD / accountValue) * 10000) / 100
+        : 0;
+
+      // 3. Fee drag (fees / gross profit)
+      const feeRow = conn.prepare(
+        `SELECT SUM(ABS(CAST(fee AS REAL))) as total_fees,
+                SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN CAST(pnl AS REAL) ELSE 0 END) as gross_profit
+         FROM trades`
+      ).get();
+      const totalFees = feeRow?.total_fees || 0;
+      const grossProfit = feeRow?.gross_profit || 0;
+      const feeDragPct = grossProfit > 0
+        ? Math.round((totalFees / grossProfit) * 10000) / 100
+        : 0;
+
+      // 4. Global win rate (trades with non-zero P&L)
+      const winRow = conn.prepare(
+        `SELECT COUNT(*) as total,
+                SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins
+         FROM trades WHERE CAST(pnl AS REAL) != 0`
+      ).get();
+      const winRate = winRow?.total > 0
+        ? Math.round((winRow.wins / winRow.total) * 10000) / 100
+        : 0;
+
+      // 5. Trades per day (last 30 days)
+      const tpdRow = conn.prepare(
+        `SELECT COUNT(*) as total,
+                COUNT(DISTINCT date(timestamp_ms / 1000, 'unixepoch')) as days
+         FROM trades WHERE timestamp_ms >= ?`
+      ).get(thirtyDaysAgo);
+      const tradesPerDay = tpdRow?.days > 0
+        ? Math.round((tpdRow.total / tpdRow.days) * 10) / 10
+        : 0;
+
+      // 6. Weekly P&L (7 days)
+      const weekRow = conn.prepare(
+        `SELECT SUM(CAST(pnl AS REAL)) as pnl_7d,
+                SUM(ABS(CAST(fee AS REAL))) as fees_7d
+         FROM trades WHERE timestamp_ms >= ?`
+      ).get(sevenDaysAgo);
+      const weeklyPnl = (weekRow?.pnl_7d || 0) - (weekRow?.fees_7d || 0);
+      const weeklyPnlPct = accountValue > 0
+        ? Math.round((weeklyPnl / accountValue) * 10000) / 100
+        : 0;
+
+      return {
+        ok: true,
+        metrics: {
+          sharpe30d: sharpe,
+          maxDrawdown: Math.round(maxDD * 100) / 100,
+          maxDrawdownPct: maxDDPct,
+          feeDragPct,
+          winRate,
+          winTotal: winRow?.wins || 0,
+          lossTotal: (winRow?.total || 0) - (winRow?.wins || 0),
+          tradesPerDay,
+          weeklyPnl: Math.round(weeklyPnl * 100) / 100,
+          weeklyPnlPct,
+          dataPoints: dailyReturns.length,
+        },
+      };
+    } catch (err) {
+      return { ok: true, metrics: null, dbError: err.message };
+    }
+  });
+
+  // ── Strategy details (win rate per coin, 7d rolling P&L) ────────────
+  ipcMain.handle('db:strategyDetails', async () => {
+    const conn = getDb(projectRoot);
+    if (!conn) return { ok: true, details: {} };
+
+    try {
+      const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000;
+
+      // Win rate per strategy per coin (only closed trades with P&L)
+      const rows = conn.prepare(
+        `SELECT strategy, coin,
+                COUNT(*) as total,
+                SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CAST(pnl AS REAL)) as total_pnl,
+                SUM(ABS(CAST(fee AS REAL))) as total_fees
+         FROM trades
+         WHERE CAST(pnl AS REAL) != 0 AND strategy IS NOT NULL
+         GROUP BY strategy, coin`
+      ).all();
+
+      // 7-day rolling P&L + win rate per strategy
+      const recentRows = conn.prepare(
+        `SELECT strategy,
+                SUM(CAST(pnl AS REAL)) as pnl_7d,
+                COUNT(*) as trades_7d,
+                SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins_7d
+         FROM trades
+         WHERE timestamp_ms >= ? AND strategy IS NOT NULL AND CAST(pnl AS REAL) != 0
+         GROUP BY strategy`
+      ).all(sevenDaysAgo);
+
+      const details = {};
+
+      for (const r of rows) {
+        // Group coin instances under base strategy name
+        // e.g. bb_scalp_15m_eth → bb_scalp_15m
+        const parts = r.strategy.split('_');
+        let base = r.strategy;
+        // Try to find base by removing last part if it's a known coin suffix
+        const lastPart = parts[parts.length - 1].toUpperCase();
+        if (['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP', 'AVAX', 'TAO'].includes(lastPart)) {
+          base = parts.slice(0, -1).join('_');
+        }
+
+        if (!details[base]) {
+          details[base] = { coins: {}, totalPnl: 0, totalTrades: 0, totalWins: 0, pnl7d: 0, trades7d: 0, winRate7d: 0 };
+        }
+
+        const coinKey = r.coin || lastPart;
+        if (!details[base].coins[coinKey]) {
+          details[base].coins[coinKey] = { wins: 0, total: 0, pnl: 0, fees: 0 };
+        }
+        details[base].coins[coinKey].wins += r.wins;
+        details[base].coins[coinKey].total += r.total;
+        details[base].coins[coinKey].pnl += r.total_pnl || 0;
+        details[base].coins[coinKey].fees += r.total_fees || 0;
+
+        details[base].totalPnl += r.total_pnl || 0;
+        details[base].totalTrades += r.total;
+        details[base].totalWins += r.wins;
+      }
+
+      // Compute win rates per coin
+      for (const strat of Object.values(details)) {
+        for (const coin of Object.values(strat.coins)) {
+          coin.winRate = coin.total > 0 ? Math.round((coin.wins / coin.total) * 10000) / 100 : 0;
+        }
+        strat.winRate = strat.totalTrades > 0
+          ? Math.round((strat.totalWins / strat.totalTrades) * 10000) / 100
+          : 0;
+      }
+
+      // Merge 7-day data
+      for (const r of recentRows) {
+        const parts = r.strategy.split('_');
+        let base = r.strategy;
+        const lastPart = parts[parts.length - 1].toUpperCase();
+        if (['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP', 'AVAX', 'TAO'].includes(lastPart)) {
+          base = parts.slice(0, -1).join('_');
+        }
+        if (details[base]) {
+          details[base].pnl7d += r.pnl_7d || 0;
+          details[base].trades7d += r.trades_7d || 0;
+          details[base].winRate7d = r.trades_7d > 0
+            ? Math.round(((details[base].totalWins) / details[base].totalTrades) * 10000) / 100
+            : details[base].winRate;
+        }
+      }
+
+      return { ok: true, details };
+    } catch (err) {
+      return { ok: true, details: {}, dbError: err.message };
+    }
+  });
+
   ipcMain.handle('db:account', async () => {
     const conn = getDb(projectRoot);
     const hl = await fetchHyperliquid(projectRoot);

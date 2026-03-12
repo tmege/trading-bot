@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import BotControls from '../components/BotControls';
 import AccountPanel from '../components/AccountPanel';
+import PerformanceMetrics from '../components/PerformanceMetrics';
 import PositionTable from '../components/PositionTable';
 import OrderTable from '../components/OrderTable';
 import EquityCurve from '../components/EquityCurve';
@@ -10,6 +11,7 @@ import useLiveData from '../hooks/useLiveData';
 export default function Dashboard({ botStatus, paperMode }) {
   const { positions, account } = useLiveData();
   const [equityCurve, setEquityCurve] = useState(null);
+  const [perfMetrics, setPerfMetrics] = useState(null);
 
   const fetchEquity = useCallback(async () => {
     try {
@@ -19,11 +21,21 @@ export default function Dashboard({ botStatus, paperMode }) {
     } catch (_) {}
   }, []);
 
+  const fetchPerformance = useCallback(async () => {
+    try {
+      if (!window.api?.db?.performanceMetrics) return;
+      const res = await window.api.db.performanceMetrics();
+      if (res.ok) setPerfMetrics(res.metrics);
+    } catch (_) {}
+  }, []);
+
   useEffect(() => {
     fetchEquity();
-    const id = setInterval(fetchEquity, 60000);
-    return () => clearInterval(id);
-  }, [fetchEquity]);
+    fetchPerformance();
+    const eqId = setInterval(fetchEquity, 60000);
+    const perfId = setInterval(fetchPerformance, 60000);
+    return () => { clearInterval(eqId); clearInterval(perfId); };
+  }, [fetchEquity, fetchPerformance]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -47,6 +59,7 @@ export default function Dashboard({ botStatus, paperMode }) {
       {/* Content grid */}
       <div className="flex-1 p-4 overflow-auto space-y-4">
         <AccountPanel account={account} />
+        <PerformanceMetrics metrics={perfMetrics} />
 
         {/* Equity curve */}
         {equityCurve && (

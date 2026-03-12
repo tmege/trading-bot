@@ -27,9 +27,11 @@ local config = {
     equity_pct    = 0.05,        -- 5% of account per trade (Kelly-aligned at ~40% WR)
     max_size      = 60.0,
 
-    -- Exit targets (fixed backup)
-    sl_pct        = 3.0,        -- hard stop loss %
-    tp_pct        = 8.0,        -- hard take profit % (wide for trend)
+    -- Exit targets (ATR-based SL, fixed TP backup)
+    sl_atr_mult   = 2.0,        -- SL = 2.0x ATR (adapts to 4h volatility)
+    sl_pct_min    = 2.0,        -- SL floor (never below 2%)
+    sl_pct_max    = 4.5,        -- SL cap (never above 4.5%)
+    tp_pct        = 8.0,        -- hard take profit % (wide for trend, trailing handles most exits)
 
     -- Trailing stop config
     trail_enabled  = true,       -- trail SL under Tenkan-sen
@@ -70,6 +72,7 @@ local ENTRY_TIMEOUT   = 60        -- cancel unfilled ALO after 60s
 local trade_count    = 0
 local win_count      = 0
 local last_trail_px  = 0         -- last trailing stop price
+local entry_atr      = 0         -- ATR at signal time, for dynamic SL
 
 -- ── Crash protection ──────────────────────────────────────────────────────
 local price_history     = {}      -- {price, time} ring buffer
@@ -138,25 +141,31 @@ local function place_entry(side, mid)
 end
 
 local function place_sl_tp(fill_price, side, pos_size)
+    -- ATR-based SL, clamped to min/max
+    local atr_val = entry_atr > 0 and entry_atr or (fill_price * 0.025)  -- fallback 2.5%
+    local sl_pct = (config.sl_atr_mult * atr_val / fill_price) * 100
+    sl_pct = math.max(config.sl_pct_min, math.min(config.sl_pct_max, sl_pct))
+
+    local tp_pct = config.tp_pct
     local sl_price, tp_price
     local size = pos_size
 
     if side == "long" then
-        sl_price = fill_price * (1 - config.sl_pct / 100)
-        tp_price = fill_price * (1 + config.tp_pct / 100)
+        sl_price = fill_price * (1 - sl_pct / 100)
+        tp_price = fill_price * (1 + tp_pct / 100)
         sl_oid = bot.place_trigger(config.coin, "sell", sl_price, size, sl_price, "sl")
         tp_oid = bot.place_trigger(config.coin, "sell", tp_price, size, tp_price, "tp")
     else
-        sl_price = fill_price * (1 + config.sl_pct / 100)
-        tp_price = fill_price * (1 - config.tp_pct / 100)
+        sl_price = fill_price * (1 + sl_pct / 100)
+        tp_price = fill_price * (1 - tp_pct / 100)
         sl_oid = bot.place_trigger(config.coin, "buy", sl_price, size, sl_price, "sl")
         tp_oid = bot.place_trigger(config.coin, "buy", tp_price, size, tp_price, "tp")
     end
 
     last_trail_px = sl_price
 
-    bot.log("info", string.format("%s: SL=$%.2f (%.1f%%), TP=$%.2f (+%.1f%%)",
-        instance_name, sl_price, config.sl_pct, tp_price, config.tp_pct))
+    bot.log("info", string.format("%s: SL=$%.2f (%.1f%% ATR), TP=$%.2f (+%.1f%%)",
+        instance_name, sl_price, sl_pct, tp_price, tp_pct))
 end
 
 local function update_trailing_stop(tenkan, side)
@@ -249,9 +258,9 @@ end
 
 function on_init()
     bot.log("info", string.format(
-        "%s: Ichimoku Cloud — SL=%.1f%%, TP=%.1f%%, trail=%s, check=%ds",
-        instance_name, config.sl_pct, config.tp_pct,
-        config.trail_enabled and "ON" or "OFF", config.check_sec))
+        "%s: Ichimoku Cloud — SL=%.1fxATR [%.1f-%.1f%%], TP=%.1f%%, trail=%s, check=%ds",
+        instance_name, config.sl_atr_mult, config.sl_pct_min, config.sl_pct_max,
+        config.tp_pct, config.trail_enabled and "ON" or "OFF", config.check_sec))
 
     local saved = bot.load_state("enabled")
     if saved == "false" then config.enabled = false end
@@ -290,7 +299,7 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Get indicators (4h timeframe, 52 candles for full Ichimoku)
+    -- Get indicators (4h timeframe, 52 candles for full Ichimoku + ATR)
     local ind = bot.get_indicators(config.coin, "4h", 52, mid_price)
     if not ind then
         bot.log("warn", instance_name .. ": get_indicators returned nil")
@@ -302,11 +311,15 @@ function on_tick(coin, mid_price)
     local senkou_b     = ind.ichi_senkou_b
     local tenkan       = ind.ichi_tenkan
     local kijun        = ind.ichi_kijun
+    local atr          = ind.atr
 
     if not senkou_a or not senkou_b or not tenkan or not kijun then
         bot.log("warn", string.format("%s: missing Ichimoku fields", instance_name))
         return
     end
+
+    -- Store ATR for dynamic SL on fill
+    if atr and atr > 0 then entry_atr = atr end
 
     local cloud_top    = math.max(senkou_a, senkou_b)
     local cloud_bottom = math.min(senkou_a, senkou_b)
