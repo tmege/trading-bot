@@ -13,13 +13,12 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 - **Risk management** — automatic SL/TP placement on exchange after each fill, daily loss limit (8%), emergency close (6%), leverage and position size control, circuit breaker (15% flash crash detection), velocity guard, losing streak pause (3 consecutive losses)
 - **Market data** — crypto prices via Hyperliquid WebSocket, macro (Gold, Silver, indices, mega-caps, forex), Fear & Greed Index, crypto news sentiment
 - **Technical indicators** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP, ADX, Keltner Channels, Donchian, Stochastic RSI, CCI, Williams %R, OBV, Ichimoku
-- **AI advisory** — Claude Haiku called on startup + twice daily (8h/20h UTC) to analyze positions and suggest adjustments
 - **Backtesting** — synthetic + real data (Hyperliquid REST), walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Paper trading** — real market data, locally simulated order execution
-- **Desktop GUI** — Electron + React app with dashboard, market overview (TOTAL1/2/3, stocks, forex, commodities), strategy selection, live logs (xterm.js), interactive backtesting with TradingView charts, settings page, trade notifications
+- **Desktop GUI** — Electron + React app with dashboard (equity curve, filtered trades, position ROI%), market overview (TOTAL1/2/3, forex, commodities), strategy P&L badges, interactive backtesting with comparison overlay, settings page (paper→live confirmation, input validation), keyboard shortcuts, unified toast notifications, responsive sidebar, WebSocket status indicator
 - **Terminal dashboard** — real-time display with ANSI colors
 - **Reports** — daily and weekly with win rate, profit factor, drawdown, per-strategy statistics
-- **SQLite database** — trade history, P&L, advisory logs
+- **SQLite database** — trade history, P&L, strategy state
 
 ## Architecture
 
@@ -53,7 +52,6 @@ src/
 │   ├── twitter_sentiment.c     Crypto news RSS sentiment (CryptoPanic, CoinDesk, Cointelegraph)
 │   ├── fear_greed.c            alternative.me API
 │   ├── data_manager.c          Background thread, periodic refresh
-│   └── ai_advisor.c            Claude Haiku, JSON context, response parsing
 ├── risk/                       Pre-trade controls
 │   └── risk_manager.c          Loss limit, leverage, position size, pause
 ├── report/                     Display and reports
@@ -90,7 +88,6 @@ tests/                          Unit tests & benchmarks
 ├── test_risk.c                 Risk manager
 ├── test_lua_engine.c           Lua engine, sandbox, hot-reload
 ├── test_data.c                 Macro, sentiment, Fear & Greed
-├── test_advisor.c              AI advisor, response parsing
 ├── test_indicators.c           All technical indicators
 ├── bench_speed.c               Performance benchmark
 ├── bench_strategies.c          Strategy comparison (5 strategies x 5 synthetic scenarios)
@@ -237,7 +234,6 @@ TB_PRIVATE_KEY=0x...        # Hyperliquid API Wallet private key (0x + 64 hex)
 TB_WALLET_ADDRESS=0x...     # Main wallet address (0x + 40 hex)
 
 # Optional
-TB_CLAUDE_API_KEY=sk-...    # Claude API key (for AI advisory)
 TB_MACRO_API_KEY=...        # FinancialModelingPrep (indices, stocks, commodities)
 ```
 
@@ -280,11 +276,6 @@ The `.env` file is excluded from version control via `.gitignore` and restricted
             { "file": "ichimoku_trend_4h.lua", "coins": ["BTC","DOGE","SOL","ETH"], "role": "secondary" },
             { "file": "triple_confirm_15m.lua", "coins": ["BTC","DOGE","SOL","ETH"], "role": "secondary" }
         ]
-    },
-    "ai_advisory": {
-        "model": "claude-haiku-4-5-20251001",
-        "morning_hour_utc": 8,
-        "evening_hour_utc": 20
     },
     "database": {
         "path": "./data/trading_bot.db"
@@ -350,7 +341,6 @@ function on_tick(data)       -- On each price update
 function on_fill(fill)       -- When an order is filled
 function on_timer()          -- Periodic timer (60s)
 function on_book(book)       -- Order book update
-function on_advisory(adj)    -- AI advisory adjustments
 function on_shutdown()       -- Graceful shutdown
 ```
 
@@ -372,6 +362,7 @@ function on_shutdown()       -- Graceful shutdown
 | `bot.get_sentiment()` | Crypto news sentiment score |
 | `bot.get_fear_greed()` | Fear & Greed Index |
 | `bot.get_indicators(coin, interval, limit)` | Technical indicators |
+| `bot.get_market_summary()` | AI market summary (string or nil) |
 | `bot.save_state(key, value)` | Save persistent state |
 | `bot.load_state(key)` | Load persistent state |
 | `bot.log(level, message)` | Log a message |
@@ -460,21 +451,6 @@ Backtest config: $100 balance, 5x leverage, maker 2bps, taker 5bps, slippage 1bp
 - **Position reconciliation**: REST sync every 15 seconds to detect external fills and position changes
 - **Entry order tracking**: single pending ALO entry per strategy instance, automatic 60s timeout, cancel-before-place prevents order spam
 
-## AI Advisory
-
-Claude Haiku is called automatically:
-- **On startup** (15 seconds after boot, once market data has arrived)
-- **Twice daily** at 8:00 and 20:00 UTC
-
-Each call sends a structured JSON context containing:
-- Current positions and P&L
-- Macro data (BTC, dominance, Gold, S&P500, DXY)
-- Crypto news sentiment and Fear & Greed Index
-- Trade history from the last 24 hours
-- Current strategy parameters
-
-The AI returns JSON adjustments (entry sizing, stop-loss/take-profit percentages, pause/resume, risk parameters) that are automatically applied to strategies via the `on_advisory()` callback. Markdown code fences in the response are stripped before parsing.
-
 ## Sentiment Analysis
 
 Crypto market sentiment is derived from public RSS feeds (no API key required):
@@ -552,11 +528,12 @@ npm run dev   # Launches Vite + Electron with hot-reload
 
 ### Features
 
-- **Dashboard**: Start/stop bot, account summary (realized + unrealized P&L), open positions, recent trades, live ANSI log viewer (xterm.js), paper trading banner, trade notifications (buy/sell toasts)
-- **Market**: Dedicated page with 5 sections — Crypto (live WebSocket prices, BTC.D, TOTAL1/2/3 market caps, Fear & Greed gauge), Indices (S&P 500, NASDAQ, Dow Jones, Hang Seng, Nikkei 225, Euro Stoxx 50, FTSE 100), Mega-Caps (AAPL, MSFT, NVDA, TSLA, GOOG, AMZN, META), Commodities (Gold, Silver), Forex (EUR/USD, GBP/USD, USD/JPY, USD/CHF)
-- **Strategies**: Browse all `.lua` files, toggle active/inactive (hot-reload compatible), syntax-highlighted code viewer (Prism.js)
-- **Backtest**: Configure strategy/coin/period/interval, multi-coin comparison, walk-forward statistics (IS/OOS/decay), equity curve (TradingView Lightweight Charts), sortable trade log with CSV export, verdict display
-- **Settings**: Active coins management (toggle/add/remove per strategy), market data cache sync, risk parameters overview, paper trading mode toggle with configurable bankroll
+- **Dashboard**: Start/stop bot, account summary (realized + unrealized P&L), portfolio equity curve (90 days), open positions with ROI%, filtered/paginated trades with CSV export, live ANSI log viewer (xterm.js), paper trading banner, trade notifications (buy/sell toasts)
+- **Market**: Crypto (live WebSocket prices with staleness detection, BTC.D, TOTAL1/2/3 market caps, Fear & Greed gauge, market phase indicator), Commodities (Gold, Silver), Forex (EUR/USD, GBP/USD, USD/JPY, USD/CHF). Dynamic coin list from active config
+- **Strategies**: Browse all `.lua` files, P&L badges per strategy (aggregated across coins), toggle active/inactive with loading indicator, syntax-highlighted code viewer (Prism.js)
+- **Backtest**: Configure strategy/coin/period/interval, multi-coin comparison, walk-forward statistics (IS/OOS/decay), equity curve (TradingView Lightweight Charts), multi-strategy comparison overlay (up to 3), sortable trade log with CSV export, verdict display
+- **Settings**: Active coins management (toggle/add/remove per strategy with validation), market data cache sync, risk parameters with input validation, paper→live confirmation modal, restart notice banner, paper trading mode toggle with configurable bankroll
+- **UX**: Keyboard shortcuts (Cmd+1-5 navigation), unified toast notification system, WebSocket connection status indicator in status bar, responsive sidebar (auto-collapse < 1100px), loading states throughout
 
 ### Architecture
 

@@ -74,12 +74,17 @@ void tb_pos_tracker_on_fill(tb_position_tracker_t *pt, const tb_fill_t *fill) {
             cur_sz -= fill_sz;
         }
 
-        /* Update entry price (simple average for adds, keep for reduces) */
+        /* Update entry price */
         if (fabs(cur_sz) > 1e-12) {
             pos->size = tb_decimal_from_double(cur_sz, fill->sz.scale);
-            /* Rough entry px update — REST sync will correct this */
-            if ((fill->side == TB_SIDE_BUY && cur_sz > 0) ||
-                (fill->side == TB_SIDE_SELL && cur_sz < 0)) {
+
+            /* Position flip: prev_sz and cur_sz have opposite signs → new entry at fill_px */
+            if ((prev_sz > 0 && cur_sz < 0) || (prev_sz < 0 && cur_sz > 0)) {
+                pos->entry_px = tb_decimal_from_double(fill_px, fill->px.scale);
+            }
+            /* Adding in same direction: weighted average entry */
+            else if ((fill->side == TB_SIDE_BUY && cur_sz > 0) ||
+                     (fill->side == TB_SIDE_SELL && cur_sz < 0)) {
                 double old_entry = tb_decimal_to_double(pos->entry_px);
                 double old_sz = fabs(prev_sz);
                 if (old_sz > 0) {
@@ -88,6 +93,7 @@ void tb_pos_tracker_on_fill(tb_position_tracker_t *pt, const tb_fill_t *fill) {
                     pos->entry_px = tb_decimal_from_double(new_entry, fill->px.scale);
                 }
             }
+            /* Reducing position: keep existing entry_px */
         } else {
             /* Position closed */
             if (found < pt->n_positions - 1) {
@@ -128,9 +134,10 @@ void tb_pos_tracker_sync(tb_position_tracker_t *pt, const tb_account_t *account)
     pthread_rwlock_wrlock(&pt->lock);
 
     pt->account_value = tb_decimal_to_double(account->account_value);
-    pt->n_positions = account->n_positions;
-    memcpy(pt->positions, account->positions,
-           sizeof(tb_position_t) * account->n_positions);
+    int n = account->n_positions;
+    if (n > TB_MAX_POSITIONS) n = TB_MAX_POSITIONS;
+    pt->n_positions = n;
+    memcpy(pt->positions, account->positions, sizeof(tb_position_t) * n);
 
     pthread_rwlock_unlock(&pt->lock);
 
@@ -157,9 +164,12 @@ int tb_pos_tracker_get(const tb_position_tracker_t *pt, const char *coin,
 int tb_pos_tracker_get_all(const tb_position_tracker_t *pt,
                            tb_position_t *out, int *count) {
     pthread_rwlock_rdlock((pthread_rwlock_t *)&pt->lock);
-    *count = pt->n_positions;
+    int n = pt->n_positions;
+    /* Clamp to caller's buffer capacity (TB_MAX_POSITIONS assumed) */
+    if (n > TB_MAX_POSITIONS) n = TB_MAX_POSITIONS;
+    *count = n;
     if (out) {
-        memcpy(out, pt->positions, sizeof(tb_position_t) * pt->n_positions);
+        memcpy(out, pt->positions, sizeof(tb_position_t) * n);
     }
     pthread_rwlock_unlock((pthread_rwlock_t *)&pt->lock);
     return 0;

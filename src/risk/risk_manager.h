@@ -51,10 +51,13 @@ void tb_risk_resume(tb_risk_mgr_t *mgr);
 bool tb_risk_is_paused(tb_risk_mgr_t *mgr);
 void tb_risk_pause_reason(tb_risk_mgr_t *mgr, char *buf, size_t buf_len);
 
-/* Dynamic parameter adjustment (from AI advisory) */
+/* Dynamic parameter adjustment */
 void tb_risk_set_daily_limit(tb_risk_mgr_t *mgr, double limit);
 void tb_risk_set_max_leverage(tb_risk_mgr_t *mgr, double max_lev);
 void tb_risk_set_max_position_usd(tb_risk_mgr_t *mgr, double max_usd);
+
+/* Release pessimistic loss reservation (e.g. on order cancel/reject) */
+void tb_risk_release_reservation(tb_risk_mgr_t *mgr, double amount);
 
 /* Check if emergency close is needed (mutates internal flag — non-const) */
 bool tb_risk_should_emergency_close(tb_risk_mgr_t *mgr);

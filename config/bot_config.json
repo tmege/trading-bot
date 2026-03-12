@@ -17,27 +17,46 @@
             {
                 "file": "regime_adaptive_1h.lua",
                 "coins": [
-                    "BTC",
-                    "ETH"
+                    "BTC"
                 ],
                 "role": "primary"
             },
             {
-                "file": "bb_scalp_15m.lua",
+                "file": "stochrsi_scalp_5m.lua",
+                "role": "secondary",
                 "coins": [
-                    "DOGE",
-                    "SOL",
-                    "HYPE",
-                    "PUMP"
-                ],
-                "role": "secondary"
+                    "ETH"
+                ]
+            },
+            {
+                "file": "vwap_reversion_15m.lua",
+                "role": "secondary",
+                "coins": [
+                    "DOGE"
+                ]
+            },
+            {
+                "file": "macd_momentum_1h.lua",
+                "role": "secondary",
+                "coins": [
+                    "AVAX"
+                ]
+            },
+            {
+                "file": "bb_scalp_15m.lua",
+                "role": "secondary",
+                "coins": [
+                    "HYPE"
+                ]
+            },
+            {
+                "file": "triple_confirm_15m.lua",
+                "role": "secondary",
+                "coins": [
+                    "TAO"
+                ]
             }
         ]
-    },
-    "ai_advisory": {
-        "model": "claude-haiku-4-5-20251001",
-        "morning_hour_utc": 8,
-        "evening_hour_utc": 20
     },
     "database": {
         "path": "./data/trading_bot.db"

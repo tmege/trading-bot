@@ -6,17 +6,30 @@ export default function Strategies() {
   const [strategies, setStrategies] = useState([]);
   const [selected, setSelected] = useState(null);
   const [code, setCode] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [togglingFile, setTogglingFile] = useState(null);
+  const [stratPnl, setStratPnl] = useState({});
 
   const loadStrategies = useCallback(async () => {
     try {
       const res = await window.api.strategies.list();
       if (res.ok) setStrategies(res.strategies);
     } catch (_) {}
+    setLoading(false);
+  }, []);
+
+  const loadPnl = useCallback(async () => {
+    try {
+      if (!window.api?.db?.strategyPnl) return;
+      const res = await window.api.db.strategyPnl();
+      if (res.ok) setStratPnl(res.pnl || {});
+    } catch (_) {}
   }, []);
 
   useEffect(() => {
     loadStrategies();
-  }, [loadStrategies]);
+    loadPnl();
+  }, [loadStrategies, loadPnl]);
 
   async function handleSelect(filename) {
     setSelected(filename);
@@ -27,16 +40,18 @@ export default function Strategies() {
   }
 
   async function handleToggle(filename, enabled) {
+    setTogglingFile(filename);
     try {
       await window.api.strategies.toggle(filename, enabled);
       await loadStrategies();
     } catch (_) {}
+    setTogglingFile(null);
   }
 
   return (
-    <div className="flex-1 flex overflow-hidden">
+    <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
       {/* Left panel: strategy list */}
-      <div className="w-2/5 p-4 overflow-auto border-r border-surface-border">
+      <div className="w-full lg:w-2/5 p-4 overflow-auto border-b lg:border-b-0 lg:border-r border-surface-border">
         <h2 className="text-sm font-bold text-white mb-4 uppercase tracking-wider">
           Strategies
         </h2>
@@ -45,6 +60,9 @@ export default function Strategies() {
           selected={selected}
           onSelect={handleSelect}
           onToggle={handleToggle}
+          stratPnl={stratPnl}
+          loading={loading}
+          togglingFile={togglingFile}
         />
       </div>
 

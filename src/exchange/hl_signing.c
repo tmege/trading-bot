@@ -5,7 +5,7 @@
  * Primary type: Agent { source: string, connectionId: bytes32 }
  *
  * The phantom Agent is constructed from the action hash:
- *   connectionId = keccak256(msgpack(action) || nonce_le_8bytes)
+ *   connectionId = keccak256(msgpack(action) || nonce_be_8bytes)
  *   source = 0x61 ("a") for mainnet, 0x62 ("b") for testnet
  */
 
@@ -250,14 +250,23 @@ int hl_sign_l1_action(
 ) {
     if (!signer || !msgpack_data || !out_sig) return -1;
 
+    int result = -1;
+
+    /* Declare all sensitive buffers upfront for cleanup */
+    keccak256_ctx_t ctx;
+    uint8_t nonce_be[8];
+    uint8_t connection_id[32];
+    uint8_t agent_hash[32];
+    uint8_t msg_hash[32];
+    secp256k1_ecdsa_recoverable_signature rsig;
+    uint8_t sig_bytes[64];
+
     /* Step 1: connectionId = keccak256(msgpack || nonce_be_8 || vault_flag [|| vault_20])
      * Matches Python SDK: action_hash() in hyperliquid-python-sdk */
-    keccak256_ctx_t ctx;
     keccak256_init(&ctx);
     keccak256_update(&ctx, msgpack_data, msgpack_len);
 
     /* Nonce as 8-byte BIG-endian (Python: nonce.to_bytes(8, "big")) */
-    uint8_t nonce_be[8];
     for (int i = 0; i < 8; i++) {
         nonce_be[i] = (uint8_t)(nonce >> ((7 - i) * 8));
     }
@@ -276,27 +285,23 @@ int hl_sign_l1_action(
         keccak256_update(&ctx, &flag, 1);
     }
 
-    uint8_t connection_id[32];
     keccak256_final(&ctx, connection_id);
 
     /* Step 2: hashStruct(Agent) */
-    uint8_t agent_hash[32];
     compute_agent_hash(connection_id, is_mainnet, agent_hash);
 
     /* Step 3: EIP-712 final hash */
-    uint8_t msg_hash[32];
     compute_eip712_hash(agent_hash, msg_hash);
 
     /* Step 4: Sign with secp256k1 */
-    secp256k1_ecdsa_recoverable_signature rsig;
+    memset(&rsig, 0, sizeof(rsig));
     if (!secp256k1_ecdsa_sign_recoverable(signer->secp_ctx, &rsig,
                                            msg_hash, signer->privkey,
                                            NULL, NULL)) {
-        return -1;
+        goto cleanup;
     }
 
     /* Extract r, s, recid */
-    uint8_t sig_bytes[64];
     int recid;
     secp256k1_ecdsa_recoverable_signature_serialize_compact(
         signer->secp_ctx, sig_bytes, &recid, &rsig
@@ -305,8 +310,18 @@ int hl_sign_l1_action(
     memcpy(out_sig->r, sig_bytes, 32);
     memcpy(out_sig->s, sig_bytes + 32, 32);
     out_sig->v = (uint8_t)(27 + recid);
+    result = 0;
 
-    return 0;
+cleanup:
+    /* Wipe all stack buffers containing key-derived material */
+    secure_wipe(&ctx, sizeof(ctx));
+    secure_wipe(nonce_be, sizeof(nonce_be));
+    secure_wipe(connection_id, sizeof(connection_id));
+    secure_wipe(agent_hash, sizeof(agent_hash));
+    secure_wipe(msg_hash, sizeof(msg_hash));
+    secure_wipe(&rsig, sizeof(rsig));
+    secure_wipe(sig_bytes, sizeof(sig_bytes));
+    return result;
 }
 
 int hl_signature_to_hex(const hl_signature_t *sig, char *buf, size_t buf_len) {

@@ -131,6 +131,23 @@ static void dispatch_message(hl_ws_t *ws, const char *data, size_t len) {
         return;
     }
 
+    /* Validate channel against whitelist of known channels */
+    static const char *KNOWN_CHANNELS[] = {
+        "allMids", "l2Book", "candle", "orderUpdates", "userFills", NULL
+    };
+    bool channel_known = false;
+    for (int i = 0; KNOWN_CHANNELS[i]; i++) {
+        if (strcmp(channel, KNOWN_CHANNELS[i]) == 0) {
+            channel_known = true;
+            break;
+        }
+    }
+    if (!channel_known) {
+        tb_log_warn("ws: ignoring unknown channel '%s'", channel);
+        yyjson_doc_free(doc);
+        return;
+    }
+
     if (strcmp(channel, "allMids") == 0 && ws->cbs.on_mids) {
         tb_mid_t mids[TB_MAX_ASSETS];
         int n = 0;
@@ -242,7 +259,10 @@ static int lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
                 break;
             }
             char *new_buf = realloc(ws->recv_buf, new_cap);
-            if (!new_buf) break;
+            if (!new_buf) {
+                ws->recv_len = 0;
+                break;
+            }
             ws->recv_buf = new_buf;
             ws->recv_cap = new_cap;
         }
@@ -437,6 +457,18 @@ void hl_ws_disconnect(hl_ws_t *ws) {
     tb_log_info("WebSocket disconnected");
 }
 
+/* ── Input validation ──────────────────────────────────────────────────────── */
+
+/* Reject strings containing JSON-special characters to prevent injection */
+static bool is_safe_json_str(const char *s) {
+    if (!s) return false;
+    for (const char *p = s; *p; p++) {
+        if (*p == '"' || *p == '\\' || (unsigned char)*p < 0x20)
+            return false;
+    }
+    return true;
+}
+
 /* ── Subscription helpers ──────────────────────────────────────────────────── */
 
 static int send_subscribe(hl_ws_t *ws, const char *sub_json) {
@@ -471,12 +503,20 @@ int hl_ws_subscribe_all_mids(hl_ws_t *ws) {
 }
 
 int hl_ws_subscribe_l2_book(hl_ws_t *ws, const char *coin) {
+    if (!is_safe_json_str(coin)) {
+        tb_log_error("ws: invalid coin for l2Book subscribe");
+        return -1;
+    }
     char sub[128];
     snprintf(sub, sizeof(sub), "{\"type\":\"l2Book\",\"coin\":\"%s\"}", coin);
     return send_subscribe(ws, sub);
 }
 
 int hl_ws_subscribe_candle(hl_ws_t *ws, const char *coin, const char *interval) {
+    if (!is_safe_json_str(coin) || !is_safe_json_str(interval)) {
+        tb_log_error("ws: invalid coin/interval for candle subscribe");
+        return -1;
+    }
     char sub[128];
     snprintf(sub, sizeof(sub),
              "{\"type\":\"candle\",\"coin\":\"%s\",\"interval\":\"%s\"}",
@@ -485,6 +525,10 @@ int hl_ws_subscribe_candle(hl_ws_t *ws, const char *coin, const char *interval) 
 }
 
 int hl_ws_subscribe_order_updates(hl_ws_t *ws, const char *user_addr) {
+    if (!is_safe_json_str(user_addr)) {
+        tb_log_error("ws: invalid user address for orderUpdates subscribe");
+        return -1;
+    }
     char sub[128];
     snprintf(sub, sizeof(sub),
              "{\"type\":\"orderUpdates\",\"user\":\"%s\"}", user_addr);
@@ -492,6 +536,10 @@ int hl_ws_subscribe_order_updates(hl_ws_t *ws, const char *user_addr) {
 }
 
 int hl_ws_subscribe_user_fills(hl_ws_t *ws, const char *user_addr) {
+    if (!is_safe_json_str(user_addr)) {
+        tb_log_error("ws: invalid user address for userFills subscribe");
+        return -1;
+    }
     char sub[128];
     snprintf(sub, sizeof(sub),
              "{\"type\":\"userFills\",\"user\":\"%s\"}", user_addr);

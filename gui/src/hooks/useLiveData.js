@@ -6,19 +6,16 @@ const defaultAccount = {
 
 export default function useLiveData() {
   const [positions, setPositions] = useState([]);
-  const [trades, setTrades] = useState([]);
   const [account, setAccount] = useState(defaultAccount);
 
   const refresh = useCallback(async () => {
     try {
-      const [posRes, tradeRes, accRes] = await Promise.all([
+      const [posRes, accRes] = await Promise.all([
         window.api.db.positions(),
-        window.api.db.trades(30),
         window.api.db.account(),
       ]);
 
       if (posRes.ok) setPositions(posRes.positions);
-      if (tradeRes.ok) setTrades(tradeRes.trades);
       if (accRes.ok && accRes.account) setAccount(accRes.account);
     } catch (_) {
       // api not available
@@ -31,5 +28,5 @@ export default function useLiveData() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  return { positions, trades, account, refresh };
+  return { positions, account, refresh };
 }

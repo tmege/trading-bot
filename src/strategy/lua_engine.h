@@ -68,9 +68,6 @@ void tb_lua_engine_on_timer(tb_lua_engine_t *engine);
 /* Called on L2 book update */
 void tb_lua_engine_on_book(tb_lua_engine_t *engine, const tb_book_t *book);
 
-/* Called when AI advisory produces adjustments */
-void tb_lua_engine_on_advisory(tb_lua_engine_t *engine, const char *json_adjustments);
-
 /* Called on graceful shutdown */
 void tb_lua_engine_on_shutdown(tb_lua_engine_t *engine);
 

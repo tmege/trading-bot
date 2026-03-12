@@ -48,6 +48,12 @@ static int load_from_cache(const char *coin, const char *interval,
         return -1;
     }
 
+    int64_t candle_ms = 3600000LL; /* 1h default */
+    if (strcmp(interval, "5m") == 0)  candle_ms = 300000LL;
+    else if (strcmp(interval, "15m") == 0) candle_ms = 900000LL;
+    else if (strcmp(interval, "4h") == 0)  candle_ms = 14400000LL;
+    else if (strcmp(interval, "1d") == 0)  candle_ms = 86400000LL;
+
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(db,
         "SELECT time_ms, open, high, low, close, volume FROM candles "
@@ -67,7 +73,7 @@ static int load_from_cache(const char *coin, const char *interval,
     int n = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && n < max) {
         out[n].time_open = sqlite3_column_int64(stmt, 0);
-        out[n].time_close = out[n].time_open;
+        out[n].time_close = out[n].time_open + candle_ms;
         out[n].open   = tb_decimal_from_double(sqlite3_column_double(stmt, 1), 8);
         out[n].high   = tb_decimal_from_double(sqlite3_column_double(stmt, 2), 8);
         out[n].low    = tb_decimal_from_double(sqlite3_column_double(stmt, 3), 8);
@@ -147,7 +153,8 @@ typedef struct {
 } bnh_result_t;
 
 static bnh_result_t compute_buy_and_hold(const tb_candle_t *candles, int n,
-                                          double initial_balance, int leverage) {
+                                          double initial_balance, int leverage,
+                                          const char *interval) {
     bnh_result_t r = {0};
     if (n < 2) return r;
 
@@ -156,6 +163,7 @@ static bnh_result_t compute_buy_and_hold(const tb_candle_t *candles, int n,
     double size = (initial_balance * leverage) / (entry + fee_entry);
 
     double *period_ret = calloc((size_t)n, sizeof(double));
+    if (!period_ret) return r;
     double peak = initial_balance;
     double max_dd = 0;
     double prev_equity = initial_balance;
@@ -194,8 +202,13 @@ static bnh_result_t compute_buy_and_hold(const tb_candle_t *candles, int n,
         double std = sqrt(var > 0 ? var : 0);
         double downside_std = sqrt(sum_neg2 / count);
 
-        /* Annualize based on candle frequency */
-        double ann = sqrt(8760.0); /* hourly default */
+        /* Annualize based on candle interval */
+        double periods_per_year = 8760.0; /* 1h default */
+        if (strcmp(interval, "5m") == 0)       periods_per_year = 105120.0;
+        else if (strcmp(interval, "15m") == 0) periods_per_year = 35040.0;
+        else if (strcmp(interval, "4h") == 0)  periods_per_year = 2190.0;
+        else if (strcmp(interval, "1d") == 0)  periods_per_year = 365.0;
+        double ann = sqrt(periods_per_year);
         r.sharpe = std > 0 ? (mean / std) * ann : 0;
         r.sortino = downside_std > 0 ? (mean / downside_std) * ann : 0;
     }
@@ -233,34 +246,51 @@ static int run_backtest_on_slice(const char *strat_path, const char *coin,
 }
 
 /* ── Fork-isolated backtest ───────────────────────────────────────────── */
+/* Shared memory layout: result struct + serialized trade log after it */
+#define BT_SHARED_TRADES_MAX 262144
+
 typedef struct {
     int rc;
     tb_backtest_result_t result;
+    int n_shared_trades;
+    tb_bt_trade_t shared_trades[];
 } bt_shared_t;
+
+#define BT_SHARED_SIZE (sizeof(bt_shared_t) + BT_SHARED_TRADES_MAX * sizeof(tb_bt_trade_t))
 
 static int run_backtest_isolated(const char *strat_path, const char *coin,
                                   const tb_candle_t *candles, int n,
                                   tb_backtest_result_t *result) {
-    bt_shared_t *shared = mmap(NULL, sizeof(bt_shared_t),
+    bt_shared_t *shared = mmap(NULL, BT_SHARED_SIZE,
                                 PROT_READ | PROT_WRITE,
                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (shared == MAP_FAILED) {
         return run_backtest_on_slice(strat_path, coin, candles, n, result);
     }
     shared->rc = -1;
+    shared->n_shared_trades = 0;
 
     fflush(stdout);
     fflush(stderr);
 
     pid_t pid = fork();
     if (pid < 0) {
-        munmap(shared, sizeof(bt_shared_t));
+        munmap(shared, BT_SHARED_SIZE);
         return run_backtest_on_slice(strat_path, coin, candles, n, result);
     }
 
     if (pid == 0) {
         shared->rc = run_backtest_on_slice(strat_path, coin, candles, n,
                                             &shared->result);
+        /* Serialize trades into mmap region (child heap won't survive _exit) */
+        int nt = shared->result.n_trade_log;
+        if (nt > BT_SHARED_TRADES_MAX) nt = BT_SHARED_TRADES_MAX;
+        shared->n_shared_trades = nt;
+        if (nt > 0 && shared->result.trades) {
+            memcpy(shared->shared_trades, shared->result.trades,
+                   (size_t)nt * sizeof(tb_bt_trade_t));
+        }
+        tb_backtest_result_cleanup(&shared->result);
         if (shared->rc != 0) {
             fprintf(stderr, "{\"status\":\"debug\",\"detail\":\"child slice failed rc=%d n=%d\"}\n",
                     shared->rc, n);
@@ -273,7 +303,20 @@ static int run_backtest_isolated(const char *strat_path, const char *coin,
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && shared->rc == 0) {
         *result = shared->result;
-        munmap(shared, sizeof(bt_shared_t));
+        /* Reconstruct trade log from mmap into parent heap */
+        result->trades = NULL;
+        result->trade_cap = 0;
+        result->n_trade_log = 0;
+        if (shared->n_shared_trades > 0) {
+            result->trades = malloc((size_t)shared->n_shared_trades * sizeof(tb_bt_trade_t));
+            if (result->trades) {
+                memcpy(result->trades, shared->shared_trades,
+                       (size_t)shared->n_shared_trades * sizeof(tb_bt_trade_t));
+                result->n_trade_log = shared->n_shared_trades;
+                result->trade_cap = shared->n_shared_trades;
+            }
+        }
+        munmap(shared, BT_SHARED_SIZE);
         return 0;
     }
 
@@ -285,7 +328,7 @@ static int run_backtest_isolated(const char *strat_path, const char *coin,
                 WEXITSTATUS(status), n);
     }
 
-    munmap(shared, sizeof(bt_shared_t));
+    munmap(shared, BT_SHARED_SIZE);
     return -1;
 }
 
@@ -367,13 +410,20 @@ int main(int argc, char *argv[]) {
     int n_days                = atoi(argv[4]);
     const char *interval      = argc >= 6 ? argv[5] : "1h";
 
-    /* Compute max candles based on interval */
-    int candles_per_day = 24; /* 1h */
+    /* Validate inputs to prevent signed overflow */
+    if (n_days < 1) n_days = 1;
+    if (n_days > 5000) n_days = 5000;
+    if (end_days_ago < 0) end_days_ago = 0;
+
+    /* Compute max candles based on interval (int64_t to avoid overflow) */
+    int64_t candles_per_day = 24; /* 1h */
     if (strcmp(interval, "5m") == 0)  candles_per_day = 288;
     else if (strcmp(interval, "15m") == 0) candles_per_day = 96;
     else if (strcmp(interval, "4h") == 0) candles_per_day = 6;
     else if (strcmp(interval, "1d") == 0) candles_per_day = 1;
-    int max_candles = n_days * candles_per_day + 200;
+    int64_t max_candles_64 = (int64_t)n_days * candles_per_day + 200;
+    if (max_candles_64 > 2000000) max_candles_64 = 2000000;
+    int max_candles = (int)max_candles_64;
 
     /* ── Fetch candles ─────────────────────────────────────────────────── */
     progress("fetching", coin);
@@ -418,6 +468,8 @@ int main(int argc, char *argv[]) {
     if (rc_is != 0 || rc_oos != 0) {
         fprintf(stderr, "{\"status\":\"error\",\"detail\":\"backtest failed IS=%d OOS=%d\"}\n",
                 rc_is, rc_oos);
+        tb_backtest_result_cleanup(&r_is);
+        tb_backtest_result_cleanup(&r_oos);
         free(candles);
         return 1;
     }
@@ -441,11 +493,11 @@ int main(int argc, char *argv[]) {
 
     /* ── Buy & Hold benchmarks ─────────────────────────────────────────── */
     bnh_result_t bnh_full = compute_buy_and_hold(candles, n_candles,
-                                                  INITIAL_BALANCE, MAX_LEVERAGE);
+                                                  INITIAL_BALANCE, MAX_LEVERAGE, interval);
     bnh_result_t bnh_is   = compute_buy_and_hold(is_candles, is_count,
-                                                  INITIAL_BALANCE, MAX_LEVERAGE);
+                                                  INITIAL_BALANCE, MAX_LEVERAGE, interval);
     bnh_result_t bnh_oos  = compute_buy_and_hold(oos_candles, oos_count,
-                                                  INITIAL_BALANCE, MAX_LEVERAGE);
+                                                  INITIAL_BALANCE, MAX_LEVERAGE, interval);
 
     /* ── Build JSON output ─────────────────────────────────────────────── */
     progress("complete", "building JSON");
@@ -556,5 +608,8 @@ int main(int argc, char *argv[]) {
 
     yyjson_mut_doc_free(doc);
     free(candles);
+    tb_backtest_result_cleanup(&r_full);
+    tb_backtest_result_cleanup(&r_is);
+    tb_backtest_result_cleanup(&r_oos);
     return 0;
 }

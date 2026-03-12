@@ -35,6 +35,7 @@ struct tb_risk_mgr {
     /* Daily state */
     double          daily_realized_pnl;
     double          daily_fees;
+    double          reserved_loss;          /* pessimistic loss reservation for pending orders */
 
     /* Pause state */
     bool            paused;
@@ -106,18 +107,24 @@ tb_risk_result_t tb_risk_check_order(
         tb_log_info("CIRCUIT BREAKER: auto-reset after %ds cooldown", CB_COOLDOWN_SEC);
     }
 
-    /* 2. Daily loss limit (% of account) */
-    double net_daily = mgr->daily_realized_pnl - mgr->daily_fees;
+    /* 2. Daily loss limit (% of account), including pessimistic reservations */
+    double net_daily = mgr->daily_realized_pnl - mgr->daily_fees - mgr->reserved_loss;
     double daily_limit_usd = -(mgr->account_value * mgr->daily_loss_pct / 100.0);
     if (net_daily <= daily_limit_usd) {
         pthread_mutex_unlock(&mgr->lock);
-        tb_log_warn("risk: daily loss limit breached (%.2f <= %.2f = -%.0f%% of $%.0f)",
-                    net_daily, daily_limit_usd, mgr->daily_loss_pct, mgr->account_value);
+        tb_log_warn("risk: daily loss limit breached (%.2f <= %.2f = -%.0f%% of $%.0f, reserved=%.2f)",
+                    net_daily, daily_limit_usd, mgr->daily_loss_pct, mgr->account_value,
+                    mgr->reserved_loss);
         return TB_RISK_REJECT_DAILY_LOSS;
     }
 
     /* 3. Leverage check */
-    if (account_value > 0) {
+    if (account_value <= 0) {
+        pthread_mutex_unlock(&mgr->lock);
+        tb_log_warn("risk: account_value=%.2f <= 0, rejecting order", account_value);
+        return TB_RISK_REJECT_LEVERAGE;
+    }
+    {
         double order_value = tb_decimal_to_double(order->price) *
                              tb_decimal_to_double(order->size);
         double existing_value = 0;
@@ -173,6 +180,13 @@ tb_risk_result_t tb_risk_check_order(
         }
     }
 
+    /* 5. Reserve pessimistic loss for new entries (prevents TOCTOU race) */
+    if (!order->reduce_only) {
+        double order_notional = tb_decimal_to_double(order->price) *
+                                tb_decimal_to_double(order->size);
+        mgr->reserved_loss += order_notional * 0.02; /* 2% pessimistic stop */
+    }
+
     pthread_mutex_unlock(&mgr->lock);
     return TB_RISK_PASS;
 }
@@ -194,6 +208,16 @@ void tb_risk_update_pnl(tb_risk_mgr_t *mgr, double realized_pnl, double fee) {
     pthread_mutex_lock(&mgr->lock);
     mgr->daily_realized_pnl += realized_pnl;
     mgr->daily_fees += fabs(fee);
+
+    /* Release pessimistic reservation — the real P&L now replaces it.
+     * Estimate: the original reservation was order_notional * 2%.
+     * We release proportionally: |realized_pnl| as a proxy. */
+    if (mgr->reserved_loss > 0) {
+        double release = fabs(realized_pnl) + fabs(fee);
+        if (release > mgr->reserved_loss) release = mgr->reserved_loss;
+        mgr->reserved_loss -= release;
+    }
+
     double net = mgr->daily_realized_pnl - mgr->daily_fees;
 
     /* Compute dynamic thresholds from percentages */
@@ -243,6 +267,7 @@ void tb_risk_pause(tb_risk_mgr_t *mgr, const char *reason) {
 void tb_risk_resume(tb_risk_mgr_t *mgr) {
     pthread_mutex_lock(&mgr->lock);
     mgr->paused = false;
+    mgr->emergency_triggered = false;
     mgr->pause_reason[0] = '\0';
     pthread_mutex_unlock(&mgr->lock);
     tb_log_info("RISK: trading RESUMED");
@@ -303,7 +328,12 @@ bool tb_risk_should_emergency_close(tb_risk_mgr_t *mgr) {
     double net = mgr->daily_realized_pnl - mgr->daily_fees;
     double emergency_usd = -(mgr->account_value * mgr->emergency_close_pct / 100.0);
     bool result = (net <= emergency_usd && !mgr->emergency_triggered);
-    if (result) mgr->emergency_triggered = true;
+    if (result) {
+        mgr->emergency_triggered = true;
+        mgr->paused = true;
+        snprintf(mgr->pause_reason, sizeof(mgr->pause_reason),
+                 "emergency close threshold");
+    }
     pthread_mutex_unlock(&mgr->lock);
     return result;
 }
@@ -312,6 +342,7 @@ void tb_risk_reset_daily(tb_risk_mgr_t *mgr) {
     pthread_mutex_lock(&mgr->lock);
     mgr->daily_realized_pnl = 0.0;
     mgr->daily_fees = 0.0;
+    mgr->reserved_loss = 0.0;
     mgr->emergency_triggered = false;
     if (mgr->paused &&
         (strcmp(mgr->pause_reason, "daily loss limit hit") == 0 ||
@@ -420,9 +451,18 @@ bool tb_risk_circuit_breaker_active(tb_risk_mgr_t *mgr) {
     if (active) {
         time_t now = time(NULL);
         if (now - mgr->cb_trip_time >= CB_COOLDOWN_SEC) {
+            mgr->cb_tripped = false;
             active = false;
         }
     }
     pthread_mutex_unlock(&mgr->lock);
     return active;
+}
+
+void tb_risk_release_reservation(tb_risk_mgr_t *mgr, double amount) {
+    if (amount <= 0) return;
+    pthread_mutex_lock(&mgr->lock);
+    mgr->reserved_loss -= amount;
+    if (mgr->reserved_loss < 0) mgr->reserved_loss = 0;
+    pthread_mutex_unlock(&mgr->lock);
 }

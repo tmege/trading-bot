@@ -94,148 +94,6 @@ static paper_position_t *get_or_create_position(tb_paper_exchange_t *pe,
     return p;
 }
 
-/* Execute a simulated fill */
-static void execute_paper_fill(tb_paper_exchange_t *pe, paper_order_t *o,
-                               double fill_px, bool is_taker) {
-    double fee_rate = is_taker ? pe->cfg.taker_fee_rate : pe->cfg.maker_fee_rate;
-    double notional = fill_px * o->size;
-    double fee = notional * fee_rate;
-    double pnl = 0;
-
-    paper_position_t *pos = get_or_create_position(pe, o->coin, o->asset);
-    if (!pos) return;
-
-    double signed_size = (o->side == TB_SIDE_BUY) ? o->size : -o->size;
-
-    if (fabs(pos->size) < 1e-12) {
-        /* New position */
-        pos->size = signed_size;
-        pos->entry_px = fill_px;
-    } else if ((pos->size > 0 && o->side == TB_SIDE_SELL) ||
-               (pos->size < 0 && o->side == TB_SIDE_BUY)) {
-        /* Closing or reducing */
-        double close_size = fmin(fabs(signed_size), fabs(pos->size));
-        if (pos->size > 0)
-            pnl = (fill_px - pos->entry_px) * close_size;
-        else
-            pnl = (pos->entry_px - fill_px) * close_size;
-
-        double remaining = fabs(pos->size) - close_size;
-        if (remaining < 1e-12) {
-            double excess = fabs(signed_size) - close_size;
-            if (excess > 1e-12) {
-                pos->size = (o->side == TB_SIDE_BUY) ? excess : -excess;
-                pos->entry_px = fill_px;
-            } else {
-                pos->size = 0;
-                pos->entry_px = 0;
-            }
-        } else {
-            pos->size = (pos->size > 0) ? remaining : -remaining;
-        }
-        pos->realized_pnl += pnl;
-    } else {
-        /* Adding to position */
-        double old_notional = fabs(pos->size) * pos->entry_px;
-        double new_notional = o->size * fill_px;
-        double total = fabs(pos->size) + o->size;
-        pos->entry_px = (total > 1e-9) ?
-            (old_notional + new_notional) / total : fill_px;
-        pos->size += signed_size;
-    }
-
-    pe->balance += pnl - fee;
-    pe->daily_pnl += pnl;
-    pe->daily_fees += fee;
-
-    /* Build fill struct and notify */
-    tb_fill_t fill = {0};
-    strncpy(fill.coin, o->coin, sizeof(fill.coin) - 1);
-    fill.px = tb_decimal_from_double(fill_px, 6);
-    fill.sz = tb_decimal_from_double(o->size, 6);
-    fill.side = o->side;
-    fill.time_ms = now_ms();
-    fill.closed_pnl = tb_decimal_from_double(pnl, 6);
-    fill.fee = tb_decimal_from_double(fee, 8);
-    fill.oid = o->oid;
-    fill.tid = pe->next_tid++;
-    fill.crossed = is_taker;
-
-    tb_log_info("paper: fill %s %s %.4f @ %.2f pnl=%.4f fee=%.6f",
-                o->side == TB_SIDE_BUY ? "BUY" : "SELL",
-                o->coin, o->size, fill_px, pnl, fee);
-
-    if (pe->fill_cb)
-        pe->fill_cb(&fill, pe->fill_cb_data);
-}
-
-/* Check if any orders should fill at the given mid price */
-static void match_orders(tb_paper_exchange_t *pe, const char *coin, double mid) {
-    for (int i = 0; i < pe->n_orders; i++) {
-        paper_order_t *o = &pe->orders[i];
-        if (!o->active) continue;
-        if (strcmp(o->coin, coin) != 0) continue;
-
-        bool filled = false;
-        double fill_px = o->limit_px;
-        bool is_taker = false;
-
-        if (o->type == TB_ORDER_TRIGGER) {
-            /* Trigger orders: fill when mid crosses trigger_px */
-            if (o->side == TB_SIDE_BUY && mid >= o->trigger_px) {
-                filled = true;
-                fill_px = mid;
-                is_taker = true;
-            }
-            if (o->side == TB_SIDE_SELL && mid <= o->trigger_px) {
-                filled = true;
-                fill_px = mid;
-                is_taker = true;
-            }
-        } else {
-            /* Limit orders: fill when mid crosses limit price */
-            if (o->side == TB_SIDE_BUY && mid <= o->limit_px) {
-                filled = true;
-                fill_px = mid; /* fill at mid (conservative) */
-            }
-            if (o->side == TB_SIDE_SELL && mid >= o->limit_px) {
-                filled = true;
-                fill_px = mid;
-            }
-
-            /* IOC: must fill immediately or cancel */
-            if (o->tif == TB_TIF_IOC) {
-                if (!filled) {
-                    o->active = false;
-                    continue;
-                }
-                is_taker = true;
-            }
-        }
-
-        if (filled) {
-            /* Check reduce_only */
-            if (o->reduce_only) {
-                paper_position_t *pos = find_position(pe, coin);
-                if (!pos || fabs(pos->size) < 1e-12) {
-                    o->active = false;
-                    continue;
-                }
-                if (o->side == TB_SIDE_BUY && pos->size > 0) {
-                    o->active = false;
-                    continue;
-                }
-                if (o->side == TB_SIDE_SELL && pos->size < 0) {
-                    o->active = false;
-                    continue;
-                }
-            }
-
-            execute_paper_fill(pe, o, fill_px, is_taker);
-            o->active = false;
-        }
-    }
-}
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
@@ -267,8 +125,128 @@ void tb_paper_set_fill_cb(tb_paper_exchange_t *pe,
     pe->fill_cb_data = user_data;
 }
 
+/* Queued fill for deferred callback dispatch outside pe->lock */
+#define PAPER_MAX_PENDING_FILLS 32
+typedef struct {
+    tb_fill_t fills[PAPER_MAX_PENDING_FILLS];
+    int       count;
+} pending_fills_t;
+
+/* Match orders, collecting fills into a buffer instead of calling callback inline */
+static void match_orders_deferred(tb_paper_exchange_t *pe, const char *coin,
+                                   double mid, pending_fills_t *pf) {
+    for (int i = 0; i < pe->n_orders; i++) {
+        paper_order_t *o = &pe->orders[i];
+        if (!o->active) continue;
+        if (strcmp(o->coin, coin) != 0) continue;
+
+        bool filled = false;
+        double fill_px = o->limit_px;
+        bool is_taker = false;
+
+        if (o->type == TB_ORDER_TRIGGER) {
+            if (o->side == TB_SIDE_BUY && mid >= o->trigger_px) {
+                filled = true; fill_px = mid; is_taker = true;
+            }
+            if (o->side == TB_SIDE_SELL && mid <= o->trigger_px) {
+                filled = true; fill_px = mid; is_taker = true;
+            }
+        } else {
+            if (o->side == TB_SIDE_BUY && mid <= o->limit_px) {
+                filled = true; fill_px = mid;
+            }
+            if (o->side == TB_SIDE_SELL && mid >= o->limit_px) {
+                filled = true; fill_px = mid;
+            }
+            if (o->tif == TB_TIF_IOC) {
+                if (!filled) { o->active = false; continue; }
+                is_taker = true;
+            }
+        }
+
+        if (filled) {
+            if (o->reduce_only) {
+                paper_position_t *pos = find_position(pe, coin);
+                if (!pos || fabs(pos->size) < 1e-12) { o->active = false; continue; }
+                if (o->side == TB_SIDE_BUY && pos->size > 0) { o->active = false; continue; }
+                if (o->side == TB_SIDE_SELL && pos->size < 0) { o->active = false; continue; }
+            }
+
+            /* Execute fill (updates position/balance internally) */
+            double fee_rate = is_taker ? pe->cfg.taker_fee_rate : pe->cfg.maker_fee_rate;
+            double notional = fill_px * o->size;
+            double fee = notional * fee_rate;
+            double pnl = 0;
+
+            paper_position_t *pos = get_or_create_position(pe, o->coin, o->asset);
+            if (!pos) { o->active = false; continue; }
+
+            double signed_size = (o->side == TB_SIDE_BUY) ? o->size : -o->size;
+
+            if (fabs(pos->size) < 1e-12) {
+                pos->size = signed_size;
+                pos->entry_px = fill_px;
+            } else if ((pos->size > 0 && o->side == TB_SIDE_SELL) ||
+                       (pos->size < 0 && o->side == TB_SIDE_BUY)) {
+                double close_size = fmin(fabs(signed_size), fabs(pos->size));
+                if (pos->size > 0) pnl = (fill_px - pos->entry_px) * close_size;
+                else pnl = (pos->entry_px - fill_px) * close_size;
+
+                double remaining = fabs(pos->size) - close_size;
+                if (remaining < 1e-12) {
+                    double excess = fabs(signed_size) - close_size;
+                    if (excess > 1e-12) {
+                        pos->size = (o->side == TB_SIDE_BUY) ? excess : -excess;
+                        pos->entry_px = fill_px;
+                    } else {
+                        pos->size = 0; pos->entry_px = 0;
+                    }
+                } else {
+                    pos->size = (pos->size > 0) ? remaining : -remaining;
+                }
+                pos->realized_pnl += pnl;
+            } else {
+                double old_notional = fabs(pos->size) * pos->entry_px;
+                double new_notional = o->size * fill_px;
+                double total = fabs(pos->size) + o->size;
+                pos->entry_px = (total > 1e-9) ?
+                    (old_notional + new_notional) / total : fill_px;
+                pos->size += signed_size;
+            }
+
+            pe->balance += pnl - fee;
+            pe->daily_pnl += pnl;
+            pe->daily_fees += fee;
+
+            /* Queue the fill for callback after unlock */
+            if (pf->count < PAPER_MAX_PENDING_FILLS) {
+                tb_fill_t *f = &pf->fills[pf->count++];
+                memset(f, 0, sizeof(*f));
+                snprintf(f->coin, sizeof(f->coin), "%s", o->coin);
+                f->px = tb_decimal_from_double(fill_px, 6);
+                f->sz = tb_decimal_from_double(o->size, 6);
+                f->side = o->side;
+                f->time_ms = now_ms();
+                f->closed_pnl = tb_decimal_from_double(pnl, 6);
+                f->fee = tb_decimal_from_double(fee, 8);
+                f->oid = o->oid;
+                f->tid = pe->next_tid++;
+                f->crossed = is_taker;
+            }
+
+            tb_log_info("paper: fill %s %s %.4f @ %.2f pnl=%.4f fee=%.6f",
+                        o->side == TB_SIDE_BUY ? "BUY" : "SELL",
+                        o->coin, o->size, fill_px, pnl, fee);
+
+            o->active = false;
+        }
+    }
+}
+
 void tb_paper_feed_mid(tb_paper_exchange_t *pe,
                        const char *coin, double mid_price) {
+    pending_fills_t pf = { .count = 0 };
+
     pthread_mutex_lock(&pe->lock);
 
     /* Update unrealized P&L for positions in this coin */
@@ -280,8 +258,8 @@ void tb_paper_feed_mid(tb_paper_exchange_t *pe,
             pos->unrealized_pnl = (pos->entry_px - mid_price) * fabs(pos->size);
     }
 
-    /* Try to match orders */
-    match_orders(pe, coin, mid_price);
+    /* Match orders — fills queued, not dispatched under lock */
+    match_orders_deferred(pe, coin, mid_price, &pf);
 
     /* Recompute total unrealized */
     pe->total_unrealized = 0;
@@ -289,6 +267,13 @@ void tb_paper_feed_mid(tb_paper_exchange_t *pe,
         pe->total_unrealized += pe->positions[i].unrealized_pnl;
 
     pthread_mutex_unlock(&pe->lock);
+
+    /* Fire callbacks AFTER releasing pe->lock to prevent ABBA deadlock
+     * (pe->lock → lua_lock vs lua_lock → pe->lock) */
+    for (int i = 0; i < pf.count; i++) {
+        if (pe->fill_cb)
+            pe->fill_cb(&pf.fills[i], pe->fill_cb_data);
+    }
 }
 
 int tb_paper_place_order(tb_paper_exchange_t *pe,

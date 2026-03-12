@@ -97,12 +97,6 @@ end
 function on_book(book)
     -- book.coin, book.bids[i].price/size, book.asks[i].price/size
 end
-
--- Called when AI advisory sends adjustments (JSON string)
-function on_advisory(json_str)
-    bot.log("info", "advisory received: " .. json_str)
-end
-
 -- Called on graceful shutdown
 function on_shutdown()
     bot.log("info", "strategy shutting down")

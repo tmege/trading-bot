@@ -4,10 +4,11 @@
  * Fetches candles from Hyperliquid for multiple coins and intervals,
  * stores them in data/candle_cache.db for instant backtest access.
  *
- * Usage: ./candle_fetcher [--days N] [--coins ETH,BTC,...] [--intervals 5m,15m,...]
+ * Usage: ./candle_fetcher [--days N] [--coins ETH,BTC,...] [--intervals 5m,15m,...] [--no-binance]
  *
  * Defaults: 5 coins (ETH,BTC,SOL,DOGE,HYPE), all intervals, 4 years (1461 days)
  * Incremental: only fetches candles newer than what's already cached.
+ * Falls back to Binance API when Hyperliquid has no data (e.g. 5m >18 days).
  */
 
 #include "core/types.h"
@@ -15,12 +16,15 @@
 #include "exchange/hl_rest.h"
 
 #include <sqlite3.h>
+#include <curl/curl.h>
+#include <yyjson.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <stdint.h>
 
 /* ── Defaults ──────────────────────────────────────────────────────────── */
 #define DEFAULT_DAYS      1461  /* 4 years */
@@ -29,6 +33,13 @@
 #define BATCH_SIZE        500
 #define RATE_LIMIT_US     200000  /* 200ms between API calls */
 #define MAX_CANDLES_ALLOC 200000
+
+/* ── Binance fallback ─────────────────────────────────────────────────── */
+#define BINANCE_BASE_URL  "https://api.binance.com"
+#define BINANCE_BATCH     1000   /* max per request */
+#define BINANCE_RATE_US   200000 /* 200ms between requests */
+
+static bool g_no_binance = false;
 
 static const char *DEFAULT_COINS[] = {"ETH", "BTC", "SOL", "DOGE", "HYPE", "PUMP", NULL};
 static const char *DEFAULT_INTERVALS[] = {"5m", "15m", "1h", "4h", "1d", NULL};
@@ -136,6 +147,25 @@ static int64_t get_latest_cached(sqlite3 *db, const char *coin, const char *inte
     return latest;
 }
 
+/* ── Get earliest cached candle timestamp ──────────────────────────────── */
+static int64_t get_earliest_cached(sqlite3 *db, const char *coin, const char *interval) {
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT MIN(time_ms) FROM candles WHERE coin=? AND interval=?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return 0;
+
+    sqlite3_bind_text(stmt, 1, coin, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, interval, -1, SQLITE_STATIC);
+
+    int64_t earliest = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+        earliest = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return earliest;
+}
+
 /* ── Get total cached count ────────────────────────────────────────────── */
 static int get_cached_count(sqlite3 *db, const char *coin, const char *interval) {
     sqlite3_stmt *stmt;
@@ -206,61 +236,246 @@ static void update_sync_meta(sqlite3 *db, const char *coin, const char *interval
     sqlite3_finalize(stmt);
 }
 
-/* ── Fetch and store candles for one coin/interval ─────────────────────── */
-static int fetch_and_store(sqlite3 *db, hl_rest_t *rest,
-                            const char *coin, const char *interval,
-                            int n_days) {
-    int64_t candle_ms = interval_to_ms(interval);
-    int64_t now_ms = (int64_t)time(NULL) * 1000;
-    int64_t start_ms = now_ms - (int64_t)n_days * 86400000LL;
+/* ── Binance curl helpers ──────────────────────────────────────────────── */
+typedef struct {
+    char   *data;
+    size_t  size;
+} bn_response_t;
 
-    /* Incremental: start from latest cached candle */
-    int64_t latest = get_latest_cached(db, coin, interval);
-    if (latest > 0) {
-        start_ms = latest + candle_ms;
-        if (start_ms >= now_ms) {
-            int cached = get_cached_count(db, coin, interval);
-            fprintf(stderr, "  %s/%s: up to date (%d candles cached)\n",
-                    coin, interval, cached);
-            return 0;
-        }
+static size_t bn_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    if (nmemb > 0 && size > SIZE_MAX / nmemb) return 0;
+    size_t total = size * nmemb;
+    bn_response_t *buf = (bn_response_t *)userp;
+    if (buf->size + total > 16 * 1024 * 1024) return 0;
+    char *new_data = realloc(buf->data, buf->size + total + 1);
+    if (!new_data) return 0;
+    buf->data = new_data;
+    memcpy(buf->data + buf->size, contents, total);
+    buf->size += total;
+    buf->data[buf->size] = '\0';
+    return total;
+}
+
+static CURL *bn_curl = NULL;
+
+static CURL *bn_get_curl(void) {
+    if (!bn_curl) {
+        bn_curl = curl_easy_init();
+    }
+    return bn_curl;
+}
+
+/* Fetch up to BINANCE_BATCH candles from Binance /api/v3/klines */
+static int binance_get_candles(const char *coin, const char *interval,
+                                int64_t start_ms, int64_t end_ms,
+                                tb_candle_t *out, int *out_count, int max_count) {
+    *out_count = 0;
+
+    /* Build symbol: ETH → ETHUSDT */
+    char symbol[32];
+    snprintf(symbol, sizeof(symbol), "%sUSDT", coin);
+
+    /* Build URL */
+    char url[512];
+    int limit = max_count < BINANCE_BATCH ? max_count : BINANCE_BATCH;
+    snprintf(url, sizeof(url),
+             "%s/api/v3/klines?symbol=%s&interval=%s"
+             "&startTime=%lld&endTime=%lld&limit=%d",
+             BINANCE_BASE_URL, symbol, interval,
+             (long long)start_ms, (long long)end_ms, limit);
+
+    CURL *curl = bn_get_curl();
+    if (!curl) return -1;
+
+    bn_response_t resp = {0};
+    curl_easy_reset(curl);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, bn_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "  Binance curl error: %s\n", curl_easy_strerror(res));
+        free(resp.data);
+        return -1;
     }
 
-    tb_candle_t *candles = calloc(BATCH_SIZE, sizeof(tb_candle_t));
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code != 200) {
+        fprintf(stderr, "  Binance HTTP %ld: %.200s\n", http_code,
+                resp.data ? resp.data : "(null)");
+        free(resp.data);
+        return -1;
+    }
+
+    /* Parse JSON: array of arrays */
+    yyjson_doc *doc = yyjson_read(resp.data, resp.size, 0);
+    free(resp.data);
+    if (!doc) return -1;
+
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    if (!yyjson_is_arr(root)) {
+        yyjson_doc_free(doc);
+        return -1;
+    }
+
+    int n = 0;
+    size_t idx, max_iter;
+    yyjson_val *kline;
+    yyjson_arr_foreach(root, idx, max_iter, kline) {
+        if (n >= max_count) break;
+        if (!yyjson_is_arr(kline) || yyjson_arr_size(kline) < 9) continue;
+
+        const char *s_open  = yyjson_get_str(yyjson_arr_get(kline, 1));
+        const char *s_high  = yyjson_get_str(yyjson_arr_get(kline, 2));
+        const char *s_low   = yyjson_get_str(yyjson_arr_get(kline, 3));
+        const char *s_close = yyjson_get_str(yyjson_arr_get(kline, 4));
+        const char *s_vol   = yyjson_get_str(yyjson_arr_get(kline, 5));
+        if (!s_open || !s_high || !s_low || !s_close || !s_vol) continue;
+
+        tb_candle_t *c = &out[n];
+        c->time_open  = yyjson_get_sint(yyjson_arr_get(kline, 0));
+        c->time_close = yyjson_get_sint(yyjson_arr_get(kline, 6));
+        c->open       = tb_decimal_from_str(s_open);
+        c->high       = tb_decimal_from_str(s_high);
+        c->low        = tb_decimal_from_str(s_low);
+        c->close      = tb_decimal_from_str(s_close);
+        c->volume     = tb_decimal_from_str(s_vol);
+        c->n_trades   = (int)yyjson_get_sint(yyjson_arr_get(kline, 8));
+        n++;
+    }
+
+    yyjson_doc_free(doc);
+    *out_count = n;
+    return 0;
+}
+
+/* Fetch range via Binance with pagination */
+static int binance_fetch_range(sqlite3 *db, const char *coin, const char *interval,
+                                int64_t from_ms, int64_t to_ms) {
+    int64_t candle_ms = interval_to_ms(interval);
+    tb_candle_t *candles = calloc(BINANCE_BATCH, sizeof(tb_candle_t));
     if (!candles) return -1;
 
     int total_fetched = 0;
-    int64_t cursor = start_ms;
+    int64_t cursor = from_ms;
 
-    while (cursor < now_ms) {
+    while (cursor < to_ms) {
         int batch_count = 0;
-        int rc = hl_rest_get_candles(rest, coin, interval,
-                                      cursor, now_ms,
-                                      candles, &batch_count, BATCH_SIZE);
+        int rc = binance_get_candles(coin, interval, cursor, to_ms,
+                                      candles, &batch_count, BINANCE_BATCH);
         if (rc != 0 || batch_count == 0) {
             if (total_fetched > 0) break;
             free(candles);
             return -1;
         }
 
-        /* Store batch */
         insert_candles(db, coin, interval, candles, batch_count);
         total_fetched += batch_count;
 
-        /* Move cursor past last candle */
         cursor = candles[batch_count - 1].time_open + candle_ms + 1;
 
         progress(coin, interval, batch_count, total_fetched);
 
-        /* Rate limit */
-        if (cursor < now_ms) usleep(RATE_LIMIT_US);
+        if (cursor < to_ms) usleep(BINANCE_RATE_US);
+    }
+
+    free(candles);
+    return total_fetched;
+}
+
+/* ── Fetch and store candles for one coin/interval ─────────────────────── */
+/* Fetch a range [from_ms, to_ms) and insert into DB. Returns count fetched. */
+static int fetch_range(sqlite3 *db, hl_rest_t *rest,
+                       const char *coin, const char *interval,
+                       int64_t from_ms, int64_t to_ms) {
+    int64_t candle_ms = interval_to_ms(interval);
+    tb_candle_t *candles = calloc(BATCH_SIZE, sizeof(tb_candle_t));
+    if (!candles) return -1;
+
+    int total_fetched = 0;
+    int64_t cursor = from_ms;
+
+    while (cursor < to_ms) {
+        int batch_count = 0;
+        int rc = hl_rest_get_candles(rest, coin, interval,
+                                      cursor, to_ms,
+                                      candles, &batch_count, BATCH_SIZE);
+        if (rc != 0 || batch_count == 0) {
+            /* First batch returned 0 candles (not error) — HL limit reached */
+            if (total_fetched == 0 && rc == 0 && !g_no_binance) {
+                free(candles);
+                fprintf(stderr, "  %s/%s: Hyperliquid returned 0 candles, "
+                        "falling back to Binance API\n", coin, interval);
+                return binance_fetch_range(db, coin, interval, from_ms, to_ms);
+            }
+            if (total_fetched > 0) break;
+            free(candles);
+            return -1;
+        }
+
+        insert_candles(db, coin, interval, candles, batch_count);
+        total_fetched += batch_count;
+
+        cursor = candles[batch_count - 1].time_open + candle_ms + 1;
+
+        progress(coin, interval, batch_count, total_fetched);
+
+        if (cursor < to_ms) usleep(RATE_LIMIT_US);
+    }
+
+    free(candles);
+    return total_fetched;
+}
+
+static int fetch_and_store(sqlite3 *db, hl_rest_t *rest,
+                            const char *coin, const char *interval,
+                            int n_days) {
+    int64_t now_ms = (int64_t)time(NULL) * 1000;
+    int64_t want_start_ms = now_ms - (int64_t)n_days * 86400000LL;
+
+    int64_t earliest = get_earliest_cached(db, coin, interval);
+    int64_t latest   = get_latest_cached(db, coin, interval);
+    int total_fetched = 0;
+
+    /* Phase 1: Backfill — fetch older candles if cache doesn't go back far enough */
+    if (earliest > 0 && want_start_ms < earliest) {
+        fprintf(stderr, "  %s/%s: backfilling from %lld to %lld\n",
+                coin, interval,
+                (long long)(want_start_ms / 1000),
+                (long long)(earliest / 1000));
+        int bf = fetch_range(db, rest, coin, interval, want_start_ms, earliest);
+        if (bf > 0) total_fetched += bf;
+    }
+
+    /* Phase 2: Forward fill — fetch newer candles from latest cached */
+    int64_t fwd_start = want_start_ms;
+    if (latest > 0) {
+        int64_t candle_ms = interval_to_ms(interval);
+        fwd_start = latest + candle_ms;
+    }
+
+    if (fwd_start < now_ms) {
+        int ff = fetch_range(db, rest, coin, interval, fwd_start, now_ms);
+        if (ff > 0) total_fetched += ff;
+    }
+
+    if (total_fetched == 0 && earliest > 0) {
+        int cached = get_cached_count(db, coin, interval);
+        fprintf(stderr, "  %s/%s: up to date (%d candles cached)\n",
+                coin, interval, cached);
     }
 
     /* Update sync metadata */
     int total_cached = get_cached_count(db, coin, interval);
     update_sync_meta(db, coin, interval, now_ms, total_cached);
 
-    free(candles);
     return total_fetched;
 }
 
@@ -306,6 +521,8 @@ int main(int argc, char *argv[]) {
             parse_list(argv[++i], intervals, MAX_INTERVALS);
         } else if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) {
             db_path = argv[++i];
+        } else if (strcmp(argv[i], "--no-binance") == 0) {
+            g_no_binance = true;
         }
     }
 
@@ -370,6 +587,7 @@ int main(int argc, char *argv[]) {
     printf("\n  ]\n}\n");
 
     hl_rest_destroy(rest);
+    if (bn_curl) curl_easy_cleanup(bn_curl);
     sqlite3_close(db);
     return 0;
 }

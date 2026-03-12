@@ -36,13 +36,21 @@ local config = {
     -- Mean reversion params (low vol regime)
     mr_rsi_oversold   = 40,
     mr_rsi_overbought = 60,
-    mr_sl_pct         = 1.2,
-    mr_tp_pct         = 2.0,
+    mr_sl_atr_mult    = 1.0,    -- SL = 1.0x ATR (MR: tight)
+    mr_tp_atr_mult    = 1.5,    -- TP = 1.5x ATR
+    mr_sl_pct_min     = 0.8,    -- floor
+    mr_sl_pct_max     = 2.0,    -- cap
+    mr_tp_pct_min     = 1.0,    -- floor
 
     -- Trend params (high vol regime)
-    tr_adx_min        = 20,     -- minimum ADX for trend entry (loosened)
-    tr_sl_pct         = 2.0,
-    tr_tp_pct         = 4.0,
+    tr_adx_min        = 25,     -- minimum ADX for trend entry (standard "trend present")
+    tr_rsi_max_long   = 70,     -- skip trend LONG if already overbought
+    tr_rsi_min_short  = 30,     -- skip trend SHORT if already oversold
+    tr_sl_atr_mult    = 1.5,    -- SL = 1.5x ATR (trend: wider)
+    tr_tp_atr_mult    = 3.0,    -- TP = 3.0x ATR
+    tr_sl_pct_min     = 1.2,    -- floor
+    tr_sl_pct_max     = 3.5,    -- cap
+    tr_tp_pct_min     = 2.0,    -- floor
 
     -- Position sizing
     entry_size    = 40.0,
@@ -50,7 +58,7 @@ local config = {
     max_size      = 60.0,
 
     -- Timing
-    check_sec     = 10,
+    check_sec     = 60,          -- 1h TF: no need for faster than 60s
     cooldown_sec  = 120,
     max_hold_sec  = 14400,      -- max hold 4h
 
@@ -85,6 +93,7 @@ local trade_count    = 0
 local win_count      = 0
 local current_regime = "unknown" -- "mean_reversion", "trend", "unknown"
 local entry_regime   = nil       -- regime when position was opened
+local entry_atr      = 0         -- ATR at signal time, for dynamic SL/TP
 
 -- ── Crash protection ──────────────────────────────────────────────────────
 local price_history     = {}      -- {price, time} ring buffer
@@ -168,8 +177,21 @@ local function place_entry(side, mid)
 end
 
 local function place_sl_tp(fill_price, side, regime, pos_size)
-    local sl_pct = regime == "mean_reversion" and config.mr_sl_pct or config.tr_sl_pct
-    local tp_pct = regime == "mean_reversion" and config.mr_tp_pct or config.tr_tp_pct
+    local is_mr = regime == "mean_reversion"
+    local sl_mult   = is_mr and config.mr_sl_atr_mult or config.tr_sl_atr_mult
+    local tp_mult   = is_mr and config.mr_tp_atr_mult or config.tr_tp_atr_mult
+    local sl_min    = is_mr and config.mr_sl_pct_min  or config.tr_sl_pct_min
+    local sl_max    = is_mr and config.mr_sl_pct_max  or config.tr_sl_pct_max
+    local tp_min    = is_mr and config.mr_tp_pct_min  or config.tr_tp_pct_min
+
+    -- ATR-based SL/TP, clamped to min/max
+    local atr_val = entry_atr > 0 and entry_atr or (fill_price * 0.015)  -- fallback 1.5%
+    local sl_pct = (sl_mult * atr_val / fill_price) * 100
+    sl_pct = math.max(sl_min, math.min(sl_max, sl_pct))
+
+    local tp_pct = (tp_mult * atr_val / fill_price) * 100
+    tp_pct = math.max(tp_min, math.max(sl_pct * 1.2, tp_pct))  -- R:R >= 1.2
+
     local sl_price, tp_price
     local size = pos_size
 
@@ -185,8 +207,8 @@ local function place_sl_tp(fill_price, side, regime, pos_size)
         tp_oid = bot.place_trigger(config.coin, "buy", tp_price, size, tp_price, "tp")
     end
 
-    bot.log("info", string.format("%s: SL=$%.2f (%.1f%%), TP=$%.2f (+%.1f%%) [%s]",
-        instance_name, sl_price, sl_pct, tp_price, tp_pct, regime))
+    bot.log("info", string.format("%s: SL=$%.2f (%.1f%% ATR), TP=$%.2f (+%.1f%%) R:R=1:%.1f [%s]",
+        instance_name, sl_price, sl_pct, tp_price, tp_pct, tp_pct / sl_pct, regime))
 end
 
 local function close_position(reason)
@@ -196,14 +218,36 @@ local function close_position(reason)
     if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
 
     local pos = bot.get_position(config.coin)
-    if pos and pos.size ~= 0 then
-        local mid = bot.get_mid_price(config.coin)
-        if mid then
-            local side = pos.size > 0 and "sell" or "buy"
-            bot.place_limit(config.coin, side, mid, math.abs(pos.size),
-                           { tif = "ioc", reduce_only = true })
-            bot.log("info", string.format("%s: CLOSE %s — %s", instance_name, side, reason))
+    if not pos or pos.size == 0 then
+        in_position = false
+        position_side = nil
+        entry_price = 0
+        entry_regime = nil
+        return
+    end
+
+    local mid = bot.get_mid_price(config.coin)
+    if not mid then return end
+
+    local side = pos.size > 0 and "sell" or "buy"
+    local size = math.abs(pos.size)
+
+    local oid = bot.place_limit(config.coin, side, mid, size,
+                                { tif = "ioc", reduce_only = true })
+    if not oid then
+        local aggressive_px = side == "sell" and mid * 0.99 or mid * 1.01
+        oid = bot.place_limit(config.coin, side, aggressive_px, size,
+                              { tif = "ioc", reduce_only = true })
+        if oid then
+            bot.log("warn", string.format("%s: CLOSE %s (retry slippage) — %s",
+                instance_name, side, reason))
+        else
+            bot.log("error", string.format("%s: CLOSE FAILED — %s, retry next tick",
+                instance_name, reason))
+            return
         end
+    else
+        bot.log("info", string.format("%s: CLOSE %s — %s", instance_name, side, reason))
     end
 
     in_position = false
@@ -216,9 +260,9 @@ end
 
 function on_init()
     bot.log("info", string.format(
-        "%s: Adaptive regime [MR: SL=%.1f%%/TP=%.1f%% | TR: SL=%.1f%%/TP=%.1f%%], check=%ds",
-        instance_name, config.mr_sl_pct, config.mr_tp_pct,
-        config.tr_sl_pct, config.tr_tp_pct, config.check_sec))
+        "%s: Adaptive regime [MR: SL=%.1fx/TP=%.1fx ATR | TR: SL=%.1fx/TP=%.1fx ATR], check=%ds",
+        instance_name, config.mr_sl_atr_mult, config.mr_tp_atr_mult,
+        config.tr_sl_atr_mult, config.tr_tp_atr_mult, config.check_sec))
 
     local saved = bot.load_state("enabled")
     if saved == "false" then config.enabled = false end
@@ -230,6 +274,11 @@ function on_init()
 
     local saved_regime = bot.load_state("entry_regime")
     if saved_regime then entry_regime = saved_regime end
+
+    local saved_streak = bot.load_state("losing_streak")
+    if saved_streak then losing_streak = tonumber(saved_streak) or 0 end
+    local saved_pause = bot.load_state("streak_pause_until")
+    if saved_pause then streak_pause_until = tonumber(saved_pause) or 0 end
 
     -- Check existing position
     local pos = bot.get_position(config.coin)
@@ -274,8 +323,11 @@ function on_tick(coin, mid_price)
     local ema12     = ind.ema_12
     local ema26     = ind.ema_26
 
+    local macd_hist = ind.macd_histogram
+    local atr       = ind.atr
+
     if not bb_width or not adx or not rsi or not bb_upper or not bb_lower
-       or not ema12 or not ema26 then
+       or not ema12 or not ema26 or not macd_hist or not atr then
         bot.log("warn", string.format("%s: missing indicator fields", instance_name))
         return
     end
@@ -305,11 +357,31 @@ function on_tick(coin, mid_price)
             return
         end
 
-        -- Close on regime change (transition safety)
-        if entry_regime and current_regime ~= "transition" and current_regime ~= entry_regime then
-            close_position(string.format("regime changed %s → %s", entry_regime, current_regime))
-            last_trade = now
-            return
+        -- Smart regime-change exit: close if profitable or held > 30min
+        if entry_regime and current_regime ~= entry_regime then
+            local unrealized = 0
+            if position_side == "long" then
+                unrealized = (mid_price - entry_price) / entry_price * 100
+            else
+                unrealized = (entry_price - mid_price) / entry_price * 100
+            end
+            local hold_time = now - entry_time
+
+            if unrealized > 0 then
+                close_position(string.format("regime %s→%s (profit +%.2f%%)",
+                    entry_regime, current_regime, unrealized))
+                last_trade = now
+                return
+            elseif hold_time > 1800 then  -- 30 min
+                close_position(string.format("regime %s→%s (held %ds, loss %.2f%%)",
+                    entry_regime, current_regime, hold_time, unrealized))
+                last_trade = now
+                return
+            else
+                bot.log("info", string.format(
+                    "%s: regime changed but holding (pnl=%.2f%%, held=%ds — letting SL/TP handle)",
+                    instance_name, unrealized, hold_time))
+            end
         end
 
         return
@@ -340,6 +412,9 @@ function on_tick(coin, mid_price)
 
     -- Velocity guard (skip entry if price moved too fast)
     if not velocity_check(mid_price, now) then return end
+
+    -- Store ATR for dynamic SL/TP on fill
+    entry_atr = atr
 
     if current_regime == "mean_reversion" then
         -- Mean reversion: BB touch + RSI extreme
@@ -375,8 +450,9 @@ function on_tick(coin, mid_price)
 
     elseif current_regime == "trend" then
         -- Trend following: EMA12 vs EMA26 cross + ADX confirmation
-        -- LONG: ema_12 > ema_26 + adx > threshold
-        if ema12 > ema26 and adx > config.tr_adx_min then
+        -- LONG: ema_12 > ema_26 + adx > threshold + MACD confirms + RSI not overbought
+        if ema12 > ema26 and adx > config.tr_adx_min
+           and macd_hist > 0 and rsi < config.tr_rsi_max_long then
             bot.log("info", string.format(
                 "%s: TREND LONG — EMA12 $%.2f > EMA26 $%.2f, ADX=%.1f",
                 instance_name, ema12, ema26, adx))
@@ -390,8 +466,9 @@ function on_tick(coin, mid_price)
             return
         end
 
-        -- SHORT: ema_12 < ema_26 + adx > threshold
-        if ema12 < ema26 and adx > config.tr_adx_min then
+        -- SHORT: ema_12 < ema_26 + adx > threshold + MACD confirms + RSI not oversold
+        if ema12 < ema26 and adx > config.tr_adx_min
+           and macd_hist < 0 and rsi > config.tr_rsi_min_short then
             bot.log("info", string.format(
                 "%s: TREND SHORT — EMA12 $%.2f < EMA26 $%.2f, ADX=%.1f",
                 instance_name, ema12, ema26, adx))
@@ -440,6 +517,10 @@ function on_fill(fill)
 
     bot.save_state("trade_count", tostring(trade_count))
     bot.save_state("win_count", tostring(win_count))
+    bot.save_state("losing_streak", tostring(losing_streak))
+    if losing_streak >= MAX_LOSING_STREAK then
+        bot.save_state("streak_pause_until", tostring(streak_pause_until))
+    end
 
     if fill.oid == sl_oid then
         bot.log("info", string.format("%s: SL hit — pnl=%.4f (win rate: %d/%d = %.0f%%)",
@@ -483,30 +564,6 @@ function on_timer()
         if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
     end
 end
-
-function on_advisory(json_str)
-    bot.log("info", instance_name .. ": advisory: " .. json_str)
-
-    local section = json_str:match('"' .. instance_name .. '"%s*:%s*(%b{})')
-    if not section then return end
-
-    local pause = section:match('"pause"%s*:%s*(true)')
-    local resume = section:match('"pause"%s*:%s*(false)')
-
-    if pause then
-        config.enabled = false
-        bot.save_state("enabled", "false")
-        if in_position then close_position("advisory pause") end
-        bot.log("warn", instance_name .. ": PAUSED by advisory")
-    end
-
-    if resume and not config.enabled then
-        config.enabled = true
-        bot.save_state("enabled", "true")
-        bot.log("info", instance_name .. ": RESUMED by advisory")
-    end
-end
-
 function on_shutdown()
     bot.log("info", string.format("%s: shutdown — %d trades, %d wins (%.0f%%), last regime=%s",
         instance_name, trade_count, win_count,
@@ -515,6 +572,7 @@ function on_shutdown()
     bot.save_state("enabled", tostring(config.enabled))
     bot.save_state("trade_count", tostring(trade_count))
     bot.save_state("win_count", tostring(win_count))
+    bot.save_state("losing_streak", tostring(losing_streak))
 
     if in_position then
         bot.log("info", instance_name .. ": position open, SL/TP on exchange")

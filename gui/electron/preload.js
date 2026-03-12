@@ -41,10 +41,14 @@ contextBridge.exposeInMainWorld('api', {
 
   // Database queries
   db: {
-    positions:  ()  => ipcRenderer.invoke('db:positions'),
-    trades:     (n) => ipcRenderer.invoke('db:trades', n),
-    dailyPnl:   ()  => ipcRenderer.invoke('db:dailyPnl'),
-    account:    ()  => ipcRenderer.invoke('db:account'),
+    positions:      ()       => ipcRenderer.invoke('db:positions'),
+    trades:         (n)      => ipcRenderer.invoke('db:trades', n),
+    dailyPnl:       ()       => ipcRenderer.invoke('db:dailyPnl'),
+    account:        ()       => ipcRenderer.invoke('db:account'),
+    filteredTrades: (params) => ipcRenderer.invoke('db:filteredTrades', params),
+    tradeFilters:   ()       => ipcRenderer.invoke('db:tradeFilters'),
+    equityCurve:    ()       => ipcRenderer.invoke('db:equityCurve'),
+    strategyPnl:    ()       => ipcRenderer.invoke('db:strategyPnl'),
   },
 
   // Logs
@@ -68,6 +72,11 @@ contextBridge.exposeInMainWorld('api', {
       const listener = (_e, data) => cb(data);
       ipcRenderer.on('ws:user', listener);
       return () => ipcRenderer.removeListener('ws:user', listener);
+    },
+    onStatus: (cb) => {
+      const listener = (_e, data) => cb(data);
+      ipcRenderer.on('ws:status', listener);
+      return () => ipcRenderer.removeListener('ws:status', listener);
     },
   },
 

@@ -25,8 +25,8 @@ local config = {
     bb_std        = 2.0,
 
     -- Entry conditions (widened for more signals)
-    rsi_oversold  = 40,          -- buy when RSI < this at lower BB
-    rsi_overbought = 60,         -- short when RSI > this at upper BB
+    rsi_oversold  = 35,          -- buy when RSI < this at lower BB (was 40, tightened)
+    rsi_overbought = 65,         -- short when RSI > this at upper BB (was 60, tightened)
     bb_touch_pct  = 0.5,         -- price within 0.5% of BB = "touching"
 
     -- Position sizing (split across coins: $40 each)
@@ -35,19 +35,21 @@ local config = {
     max_size      = 60.0,        -- hard cap
 
     -- Exit targets
-    tp_mid_bb     = true,        -- take profit at middle BB (conservative)
-    tp_upper_bb   = false,       -- or take profit at opposite BB (aggressive)
-    tp_pct        = 3.0,         -- max TP if BB target not reached
-    sl_pct        = 1.5,         -- tight stop loss
+    tp_mid_bb     = true,        -- take profit at BB target (graduated: 60% to opposite band, min mid-BB)
+    tp_pct        = 2.0,         -- hard cap TP trigger on exchange (was 3.0, unreachable for MR)
+    sl_atr_mult   = 1.2,         -- SL = 1.2x ATR (ATR-based, adapts to volatility)
+    sl_pct_min    = 0.8,         -- SL floor (never below 0.8%)
+    sl_pct_max    = 2.5,         -- SL cap (never above 2.5%)
 
     -- Timing
     check_sec     = 5,           -- check every 5s (fast scalping)
     cooldown_sec  = 60,          -- 1 min between scalps
-    max_hold_sec  = 7200,        -- max hold 2h (force close if stuck)
+    max_hold_sec  = 2700,        -- max hold 45min (3 candle periods — scalp failed after this)
 
     -- Filter
     min_bb_width  = 1.0,         -- minimum BB width % (skip if too tight = no vol)
     max_bb_width  = 8.0,         -- skip if BB too wide (trending, not ranging)
+    use_htf_filter = true,       -- 1h EMA trend filter: don't scalp against the trend
 
     enabled       = true,
 }
@@ -78,6 +80,7 @@ local entry_placed_at = 0
 local ENTRY_TIMEOUT   = 60        -- cancel unfilled ALO after 60s
 local trade_count    = 0
 local win_count      = 0
+local entry_atr      = 0         -- ATR at signal time, for dynamic SL
 
 -- ── Crash protection ──────────────────────────────────────────────────────
 local price_history     = {}      -- {price, time} ring buffer
@@ -122,6 +125,17 @@ local function near_band(price, band, pct)
 end
 
 local function place_entry(side, mid)
+    -- Skip if opposing position exists on this coin (from another strategy)
+    local existing = bot.get_position(config.coin)
+    if existing and existing.size ~= 0 then
+        local ex_side = existing.size > 0 and "long" or "short"
+        if ex_side ~= side then
+            bot.log("info", string.format("%s: SKIP — opposing %s position on %s",
+                instance_name, ex_side, config.coin))
+            return nil
+        end
+    end
+
     -- Cancel any existing pending entry first
     if entry_oid then
         bot.cancel(config.coin, entry_oid)
@@ -147,25 +161,31 @@ local function place_entry(side, mid)
 end
 
 local function place_sl_tp(fill_price, side, pos_size)
+    -- ATR-based SL, clamped to min/max
+    local atr_val = entry_atr > 0 and entry_atr or (fill_price * 0.015)  -- fallback 1.5%
+    local sl_pct = (config.sl_atr_mult * atr_val / fill_price) * 100
+    sl_pct = math.max(config.sl_pct_min, math.min(config.sl_pct_max, sl_pct))
+
+    -- Hard TP = max of config.tp_pct or 1.5x SL (safety net, mid-BB exit handles most closes)
+    local tp_pct = math.max(config.tp_pct, sl_pct * 1.5)
+
     local sl_price, tp_price
     local size = pos_size
 
     if side == "long" then
-        sl_price = fill_price * (1 - config.sl_pct / 100)
-        tp_price = fill_price * (1 + config.tp_pct / 100)
-
+        sl_price = fill_price * (1 - sl_pct / 100)
+        tp_price = fill_price * (1 + tp_pct / 100)
         sl_oid = bot.place_trigger(config.coin, "sell", sl_price, size, sl_price, "sl")
         tp_oid = bot.place_trigger(config.coin, "sell", tp_price, size, tp_price, "tp")
     else
-        sl_price = fill_price * (1 + config.sl_pct / 100)
-        tp_price = fill_price * (1 - config.tp_pct / 100)
-
+        sl_price = fill_price * (1 + sl_pct / 100)
+        tp_price = fill_price * (1 - tp_pct / 100)
         sl_oid = bot.place_trigger(config.coin, "buy", sl_price, size, sl_price, "sl")
         tp_oid = bot.place_trigger(config.coin, "buy", tp_price, size, tp_price, "tp")
     end
 
-    bot.log("info", string.format("%s: SL=$%.2f (%.1f%%), TP=$%.2f (+%.1f%%)",
-        instance_name, sl_price, config.sl_pct, tp_price, config.tp_pct))
+    bot.log("info", string.format("%s: SL=$%.2f (%.1f%% ATR), TP=$%.2f (+%.1f%%)",
+        instance_name, sl_price, sl_pct, tp_price, tp_pct))
 end
 
 local function close_position(reason)
@@ -175,14 +195,35 @@ local function close_position(reason)
     if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
 
     local pos = bot.get_position(config.coin)
-    if pos and pos.size ~= 0 then
-        local mid = bot.get_mid_price(config.coin)
-        if mid then
-            local side = pos.size > 0 and "sell" or "buy"
-            bot.place_limit(config.coin, side, mid, math.abs(pos.size),
-                           { tif = "ioc", reduce_only = true })
-            bot.log("info", string.format("%s: CLOSE %s — %s", instance_name, side, reason))
+    if not pos or pos.size == 0 then
+        in_position = false
+        position_side = nil
+        entry_price = 0
+        return
+    end
+
+    local mid = bot.get_mid_price(config.coin)
+    if not mid then return end
+
+    local side = pos.size > 0 and "sell" or "buy"
+    local size = math.abs(pos.size)
+
+    local oid = bot.place_limit(config.coin, side, mid, size,
+                                { tif = "ioc", reduce_only = true })
+    if not oid then
+        local aggressive_px = side == "sell" and mid * 0.99 or mid * 1.01
+        oid = bot.place_limit(config.coin, side, aggressive_px, size,
+                              { tif = "ioc", reduce_only = true })
+        if oid then
+            bot.log("warn", string.format("%s: CLOSE %s (retry slippage) — %s",
+                instance_name, side, reason))
+        else
+            bot.log("error", string.format("%s: CLOSE FAILED — %s, retry next tick",
+                instance_name, reason))
+            return
         end
+    else
+        bot.log("info", string.format("%s: CLOSE %s — %s", instance_name, side, reason))
     end
 
     in_position = false
@@ -194,8 +235,9 @@ end
 
 function on_init()
     bot.log("info", string.format(
-        "%s: BB(%d,%.1f), SL=%.1f%%, TP=%.1f%%, interval=%ds",
-        instance_name, config.bb_period, config.bb_std, config.sl_pct, config.tp_pct, config.check_sec))
+        "%s: BB(%d,%.1f), SL=%.1fxATR [%.1f-%.1f%%], TP=%.1f%%, interval=%ds",
+        instance_name, config.bb_period, config.bb_std, config.sl_atr_mult,
+        config.sl_pct_min, config.sl_pct_max, config.tp_pct, config.check_sec))
 
     local saved = bot.load_state("enabled")
     if saved == "false" then config.enabled = false end
@@ -204,6 +246,11 @@ function on_init()
     if saved_trades then trade_count = tonumber(saved_trades) or 0 end
     local saved_wins = bot.load_state("win_count")
     if saved_wins then win_count = tonumber(saved_wins) or 0 end
+
+    local saved_streak = bot.load_state("losing_streak")
+    if saved_streak then losing_streak = tonumber(saved_streak) or 0 end
+    local saved_pause = bot.load_state("streak_pause_until")
+    if saved_pause then streak_pause_until = tonumber(saved_pause) or 0 end
 
     -- Check existing position
     local pos = bot.get_position(config.coin)
@@ -243,18 +290,25 @@ function on_tick(coin, mid_price)
             tp_oid = nil
         end
 
-        -- Check if price reached mid BB (conservative exit)
+        -- Graduated BB target: 60% of entry→opposite band, minimum mid-BB
         if in_position and config.tp_mid_bb then
-            local ind = bot.get_indicators(config.coin, "15m", 30, mid_price)
-            if ind and ind.bb_middle then
-                if position_side == "long" and mid_price >= ind.bb_middle then
-                    close_position("reached mid BB")
-                    last_trade = now
-                    return
-                elseif position_side == "short" and mid_price <= ind.bb_middle then
-                    close_position("reached mid BB")
-                    last_trade = now
-                    return
+            local ind = bot.get_indicators(config.coin, "15m", 50, mid_price)
+            if ind and ind.bb_middle and ind.bb_upper and ind.bb_lower then
+                local target
+                if position_side == "long" then
+                    target = math.max(entry_price + (ind.bb_upper - entry_price) * 0.6, ind.bb_middle)
+                    if mid_price >= target then
+                        close_position(string.format("BB target ($%.2f >= $%.2f)", mid_price, target))
+                        last_trade = now
+                        return
+                    end
+                elseif position_side == "short" then
+                    target = math.min(entry_price - (entry_price - ind.bb_lower) * 0.6, ind.bb_middle)
+                    if mid_price <= target then
+                        close_position(string.format("BB target ($%.2f <= $%.2f)", mid_price, target))
+                        last_trade = now
+                        return
+                    end
                 end
             end
         end
@@ -287,7 +341,7 @@ function on_tick(coin, mid_price)
     if not velocity_check(mid_price, now) then return end
 
     -- Get indicators
-    local ind = bot.get_indicators(config.coin, "15m", 30, mid_price)
+    local ind = bot.get_indicators(config.coin, "15m", 50, mid_price)
     if not ind then
         bot.log("warn", instance_name .. ": get_indicators returned nil")
         return
@@ -297,12 +351,17 @@ function on_tick(coin, mid_price)
     local bb_upper = ind.bb_upper
     local bb_lower = ind.bb_lower
     local bb_mid = ind.bb_middle
+    local atr = ind.atr
 
     if not rsi or not bb_upper or not bb_lower or not bb_mid then
-        bot.log("warn", string.format("%s: missing fields — rsi=%s bb_upper=%s bb_lower=%s bb_mid=%s valid=%s",
-            instance_name, tostring(rsi), tostring(bb_upper), tostring(bb_lower), tostring(bb_mid), tostring(ind.valid)))
+        bot.log("warn", string.format("%s: missing fields — rsi=%s bb=%s/%s/%s",
+            instance_name, tostring(rsi), tostring(bb_upper), tostring(bb_lower),
+            tostring(bb_mid)))
         return
     end
+
+    -- Store ATR for dynamic SL on fill (fallback if nil)
+    entry_atr = atr or 0
 
     -- Check BB width filter
     local width = bb_width_pct(bb_upper, bb_lower, bb_mid)
@@ -317,11 +376,28 @@ function on_tick(coin, mid_price)
         return
     end
 
+    -- Higher-TF trend filter: only block scalps against STRONG 1h trends (ADX > 30)
+    -- Mild trends are fine for mean reversion — only block when momentum is overwhelming
+    local htf_trend = "neutral"
+    if config.use_htf_filter then
+        local htf = bot.get_indicators(config.coin, "1h", 50, mid_price)
+        if htf and htf.ema_12 and htf.ema_26 and htf.adx then
+            if htf.ema_12 > htf.ema_26 and htf.adx > 30 then
+                htf_trend = "strong_bullish"
+            elseif htf.ema_12 < htf.ema_26 and htf.adx > 30 then
+                htf_trend = "strong_bearish"
+            end
+        end
+    end
+
     -- LONG: price at or below lower BB + RSI oversold
-    if mid_price <= bb_lower * (1 + config.bb_touch_pct / 100) and rsi < config.rsi_oversold then
+    -- Note: no MACD filter — mean reversion enters AGAINST momentum by design
+    -- HTF filter: only block if strong 1h downtrend (htf_adx > 30 + bearish)
+    if mid_price <= bb_lower * (1 + config.bb_touch_pct / 100) and rsi < config.rsi_oversold
+       and htf_trend ~= "strong_bearish" then
         bot.log("info", string.format(
-            "%s: LOWER BB touch ($%.2f <= $%.2f) + RSI=%.0f → LONG",
-            instance_name, mid_price, bb_lower, rsi))
+            "%s: LOWER BB touch ($%.2f <= $%.2f) + RSI=%.0f htf=%s → LONG",
+            instance_name, mid_price, bb_lower, rsi, htf_trend))
         local oid = place_entry("long", mid_price)
         if oid then
             last_trade = now
@@ -331,10 +407,11 @@ function on_tick(coin, mid_price)
     end
 
     -- SHORT: price at or above upper BB + RSI overbought
-    if mid_price >= bb_upper * (1 - config.bb_touch_pct / 100) and rsi > config.rsi_overbought then
+    if mid_price >= bb_upper * (1 - config.bb_touch_pct / 100) and rsi > config.rsi_overbought
+       and htf_trend ~= "strong_bullish" then
         bot.log("info", string.format(
-            "%s: UPPER BB touch ($%.2f >= $%.2f) + RSI=%.0f → SHORT",
-            instance_name, mid_price, bb_upper, rsi))
+            "%s: UPPER BB touch ($%.2f >= $%.2f) + RSI=%.0f htf=%s → SHORT",
+            instance_name, mid_price, bb_upper, rsi, htf_trend))
         local oid = place_entry("short", mid_price)
         if oid then
             last_trade = now
@@ -377,6 +454,10 @@ function on_fill(fill)
 
     bot.save_state("trade_count", tostring(trade_count))
     bot.save_state("win_count", tostring(win_count))
+    bot.save_state("losing_streak", tostring(losing_streak))
+    if losing_streak >= MAX_LOSING_STREAK then
+        bot.save_state("streak_pause_until", tostring(streak_pause_until))
+    end
 
     if fill.oid == sl_oid then
         bot.log("info", string.format("%s: SL hit — pnl=%.4f (win rate: %d/%d = %.0f%%)",
@@ -418,31 +499,6 @@ function on_timer()
         if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
     end
 end
-
-function on_advisory(json_str)
-    bot.log("info", instance_name .. ": advisory: " .. json_str)
-
-    -- Only parse our own section (e.g. "bb_scalp_15m_eth": { ... })
-    local section = json_str:match('"' .. instance_name .. '"%s*:%s*(%b{})')
-    if not section then return end
-
-    local pause = section:match('"pause"%s*:%s*(true)')
-    local resume = section:match('"pause"%s*:%s*(false)')
-
-    if pause then
-        config.enabled = false
-        bot.save_state("enabled", "false")
-        if in_position then close_position("advisory pause") end
-        bot.log("warn", instance_name .. ": PAUSED by advisory")
-    end
-
-    if resume and not config.enabled then
-        config.enabled = true
-        bot.save_state("enabled", "true")
-        bot.log("info", instance_name .. ": RESUMED by advisory")
-    end
-end
-
 function on_shutdown()
     bot.log("info", string.format("%s: shutdown — %d trades, %d wins (%.0f%%)",
         instance_name, trade_count, win_count,
@@ -450,6 +506,7 @@ function on_shutdown()
     bot.save_state("enabled", tostring(config.enabled))
     bot.save_state("trade_count", tostring(trade_count))
     bot.save_state("win_count", tostring(win_count))
+    bot.save_state("losing_streak", tostring(losing_streak))
 
     if in_position then
         bot.log("info", instance_name .. ": position open, SL/TP on exchange")

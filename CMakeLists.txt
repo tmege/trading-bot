@@ -108,7 +108,6 @@ set(TB_SOURCES
     src/data/twitter_sentiment.c
     src/data/fear_greed.c
     src/data/data_manager.c
-    src/data/ai_advisor.c
     src/report/dashboard.c
     src/report/report_gen.c
     src/backtest/backtest_engine.c
@@ -234,26 +233,6 @@ if(TB_BUILD_TESTS)
         ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
     )
     add_test(NAME test_data COMMAND test_data)
-
-    add_executable(test_advisor tests/test_advisor.c ${TB_LIB_SOURCES})
-    target_include_directories(test_advisor PRIVATE
-        ${CMAKE_SOURCE_DIR}/src
-        ${LUA_INCLUDE_DIRS}
-        ${LWS_INCLUDE_DIRS}
-        ${SECP256K1_INCLUDE_DIRS}
-        ${MSGPACK_INCLUDE_DIRS}
-        ${SQLITE3_INCLUDE_DIRS}
-    )
-    target_link_libraries(test_advisor PRIVATE
-        yyjson CURL::libcurl OpenSSL::SSL OpenSSL::Crypto Threads::Threads
-        ${LUA_LIBRARIES} ${LWS_LIBRARIES} ${SECP256K1_LIBRARIES}
-        ${MSGPACK_LIBRARIES} ${SQLITE3_LIBRARIES}
-    )
-    target_link_directories(test_advisor PRIVATE
-        ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
-        ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
-    )
-    add_test(NAME test_advisor COMMAND test_advisor)
 
     add_executable(test_indicators tests/test_indicators.c src/strategy/indicators.c src/core/logging.c)
     target_include_directories(test_indicators PRIVATE ${CMAKE_SOURCE_DIR}/src)

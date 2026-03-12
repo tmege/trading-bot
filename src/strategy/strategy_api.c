@@ -182,7 +182,17 @@ static int api_place_limit(lua_State *L) {
 
     tb_order_request_t *order = &submit.order;
     snprintf(order->coin, sizeof(order->coin), "%s", coin);
-    order->side = (strcmp(side_str, "sell") == 0) ? TB_SIDE_SELL : TB_SIDE_BUY;
+    tb_side_t side;
+    if (strcmp(side_str, "buy") == 0) {
+        side = TB_SIDE_BUY;
+    } else if (strcmp(side_str, "sell") == 0) {
+        side = TB_SIDE_SELL;
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, "invalid side (must be 'buy' or 'sell')");
+        return 2;
+    }
+    order->side = side;
     order->price = tb_decimal_from_double(price, 6);
     order->size = tb_decimal_from_double(size, 6);
     order->type = TB_ORDER_LIMIT;
@@ -260,16 +270,26 @@ static int api_place_trigger(lua_State *L) {
 
     tb_order_request_t *order = &submit.order;
     snprintf(order->coin, sizeof(order->coin), "%s", coin);
-    order->side = (strcmp(side_str, "sell") == 0) ? TB_SIDE_SELL : TB_SIDE_BUY;
+    tb_side_t side;
+    if (strcmp(side_str, "buy") == 0) {
+        side = TB_SIDE_BUY;
+    } else if (strcmp(side_str, "sell") == 0) {
+        side = TB_SIDE_SELL;
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, "invalid side (must be 'buy' or 'sell')");
+        return 2;
+    }
+    order->side = side;
 
     /* Slippage guard: isMarket=true still needs a limit price guardrail.
        Without slack, any slippage past triggerPx prevents the fill.
-       Use 10% margin (same as Hyperliquid Python SDK). */
+       Use 2% margin to avoid catastrophic fills in flash crashes. */
     double limit_px = price;
     if (order->side == TB_SIDE_SELL) {
-        limit_px = trigger_px * 0.90;
+        limit_px = trigger_px * 0.98;
     } else {
-        limit_px = trigger_px * 1.10;
+        limit_px = trigger_px * 1.02;
     }
     order->price = tb_decimal_from_double(limit_px, 6);
     order->size = tb_decimal_from_double(size, 6);
@@ -461,6 +481,7 @@ static int api_get_candles(lua_State *L) {
     const char *interval = luaL_optstring(L, 2, "1h");
     if (!is_safe_json_value(interval, 4)) interval = "1h";
     int req_count = (int)luaL_optinteger(L, 3, 100);
+    if (req_count < 1) req_count = 1;
     if (req_count > 500) req_count = 500;
 
     /* Fetch recent candles */
@@ -579,6 +600,7 @@ static int api_load_state(lua_State *L) {
         return 1;
     }
     lua_getfield(L, -1, key);
+    lua_remove(L, -2);
     return 1;
 }
 
@@ -894,7 +916,7 @@ static const luaL_Reg bot_funcs[] = {
     {"get_macro",       api_get_macro},
     {"get_sentiment",   api_get_sentiment},
     {"get_fear_greed",  api_get_fear_greed},
-    {"get_indicators",  api_get_indicators},
+    {"get_indicators",      api_get_indicators},
     {NULL, NULL}
 };
 

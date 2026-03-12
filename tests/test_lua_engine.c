@@ -144,10 +144,6 @@ static void test_callbacks(void) {
         "    state.timers = state.timers + 1\n"
         "end\n"
         "\n"
-        "function on_advisory(json)\n"
-        "    bot.save_state('advisory', json)\n"
-        "end\n"
-        "\n"
         "function on_shutdown()\n"
         "    bot.save_state('shutdown', 'true')\n"
         "end\n"
@@ -194,10 +190,6 @@ static void test_callbacks(void) {
     /* on_timer */
     tb_lua_engine_on_timer(engine);
     ASSERT(strategy_is_ok(engine, "callback_test"), "on_timer: strategy still loaded");
-
-    /* on_advisory */
-    tb_lua_engine_on_advisory(engine, "{\"action\":\"adjust_grid\"}");
-    ASSERT(strategy_is_ok(engine, "callback_test"), "on_advisory: strategy still loaded");
 
     /* on_shutdown */
     tb_lua_engine_on_shutdown(engine);

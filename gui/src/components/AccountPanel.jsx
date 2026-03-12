@@ -15,7 +15,7 @@ export default function AccountPanel({ account }) {
   return (
     <div className="bg-surface-card border border-surface-border rounded-lg p-4">
       <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Account</h3>
-      <div className="grid grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <div>
           <div className="flex items-center gap-1.5 mb-1">
             <Wallet size={14} className="text-accent" />

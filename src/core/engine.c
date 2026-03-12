@@ -10,7 +10,6 @@
 #include "risk/risk_manager.h"
 #include "strategy/lua_engine.h"
 #include "data/data_manager.h"
-#include "data/ai_advisor.h"
 #include "report/dashboard.h"
 #include <stdlib.h>
 #include <string.h>
@@ -48,9 +47,6 @@ struct tb_engine {
 
     /* Data feeds */
     tb_data_mgr_t           *data_mgr;
-
-    /* AI advisory */
-    tb_ai_advisor_t         *ai_advisor;
 
     /* Dashboard */
     tb_dashboard_t          *dashboard;
@@ -111,7 +107,6 @@ void tb_engine_destroy(tb_engine_t *engine) {
 
     /* Wipe all secrets from config before freeing */
     engine_secure_wipe(engine->cfg.private_key_hex, sizeof(engine->cfg.private_key_hex));
-    engine_secure_wipe(engine->cfg.claude_api_key, sizeof(engine->cfg.claude_api_key));
     engine_secure_wipe(engine->cfg.macro_api_key, sizeof(engine->cfg.macro_api_key));
     engine_secure_wipe(engine->cfg.wallet_address, sizeof(engine->cfg.wallet_address));
 
@@ -185,7 +180,8 @@ int tb_engine_start(tb_engine_t *engine) {
     }
 
     if (hl_ws_subscribe_all_mids(engine->ws) != 0) {
-        tb_log_warn("failed to subscribe to allMids");
+        tb_log_error("failed to subscribe to allMids");
+        goto fail;
     }
     tb_log_info("WebSocket connected and subscribed to allMids");
 
@@ -294,25 +290,7 @@ int tb_engine_start(tb_engine_t *engine) {
         tb_log_warn("data manager creation failed (continuing without)");
     }
 
-    /* 10. AI advisor (optional — needs claude_api_key) */
-    engine->ai_advisor = NULL;
-    if (cfg->claude_api_key[0]) {
-        engine->ai_advisor = tb_ai_advisor_create(cfg, engine->db);
-        if (engine->ai_advisor) {
-            tb_ai_advisor_set_lua_engine(engine->ai_advisor, engine->lua_engine);
-            if (tb_ai_advisor_start(engine->ai_advisor) != 0) {
-                tb_log_warn("failed to start AI advisor");
-            } else {
-                tb_log_info("AI advisor started (model=%s)", cfg->claude_model);
-            }
-        } else {
-            tb_log_warn("AI advisor creation failed (continuing without)");
-        }
-    } else {
-        tb_log_info("AI advisor disabled (no API key)");
-    }
-
-    /* 11. Dashboard */
+    /* 10. Dashboard */
     engine->dashboard = tb_dashboard_create(500);
     if (engine->dashboard) {
         if (tb_dashboard_start(engine->dashboard) != 0) {
@@ -324,7 +302,7 @@ int tb_engine_start(tb_engine_t *engine) {
         tb_log_warn("dashboard creation failed");
     }
 
-    /* 12. Timer thread — periodic tasks */
+    /* 11. Timer thread — periodic tasks */
     engine->running = true;
     engine->timer_running = true;
     if (pthread_create(&engine->timer_thread, NULL, engine_timer_thread,
@@ -346,6 +324,7 @@ fail:
 /* ── Stop: reverse shutdown ────────────────────────────────────────────────── */
 
 void tb_engine_stop(tb_engine_t *engine) {
+    if (!engine) return;
     tb_log_info("engine stopping...");
     engine->running = false;
 
@@ -370,14 +349,6 @@ void tb_engine_stop(tb_engine_t *engine) {
         tb_dashboard_destroy(engine->dashboard);
         engine->dashboard = NULL;
         tb_log_info("dashboard stopped");
-    }
-
-    /* AI advisor */
-    if (engine->ai_advisor) {
-        tb_ai_advisor_stop(engine->ai_advisor);
-        tb_ai_advisor_destroy(engine->ai_advisor);
-        engine->ai_advisor = NULL;
-        tb_log_info("AI advisor stopped");
     }
 
     /* Lua shutdown */
@@ -507,7 +478,7 @@ static void engine_on_paper_fill(const tb_fill_t *fill, void *userdata) {
 static void engine_on_order_fill(const tb_fill_t *fill, const char *strategy,
                                   void *userdata) {
     tb_engine_t *engine = (tb_engine_t *)userdata;
-    if (!engine->running) return;
+    if (!engine || !engine->running) return;
 
     /* Notify Lua strategies of live fills */
     if (engine->lua_engine) {
@@ -563,11 +534,6 @@ static void engine_update_dashboard(tb_engine_t *engine) {
                                       data.strategies, &data.n_strategies);
     }
 
-    /* Advisory */
-    if (engine->ai_advisor) {
-        data.last_advisory_ms = tb_ai_advisor_last_call_time(engine->ai_advisor);
-    }
-
     /* System */
     data.uptime_sec = (int64_t)time(NULL) - engine->start_time;
     data.paper_mode = engine->cfg.paper_trading;
@@ -575,58 +541,11 @@ static void engine_update_dashboard(tb_engine_t *engine) {
     tb_dashboard_update(engine->dashboard, &data);
 }
 
-/* ── Update AI advisor context from current engine state ───────────────────── */
-
-static void engine_update_advisory_context(tb_engine_t *engine) {
-    if (!engine->ai_advisor) return;
-
-    tb_advisory_context_t ctx;
-    memset(&ctx, 0, sizeof(ctx));
-
-    /* Account */
-    if (engine->paper) {
-        ctx.account_value = tb_paper_get_account_value(engine->paper);
-        ctx.daily_pnl     = tb_paper_get_daily_pnl(engine->paper);
-    } else {
-        ctx.account_value = tb_pos_tracker_account_value(&engine->pos_tracker);
-        ctx.daily_pnl     = tb_pos_tracker_daily_pnl(&engine->pos_tracker);
-    }
-    ctx.daily_fees  = tb_pos_tracker_daily_fees(&engine->pos_tracker);
-    ctx.daily_trades = tb_pos_tracker_daily_trades(&engine->pos_tracker);
-
-    /* Positions */
-    tb_pos_tracker_get_all(&engine->pos_tracker,
-                           ctx.positions, &ctx.n_positions);
-
-    /* Macro / sentiment / fear & greed */
-    if (engine->data_mgr) {
-        ctx.macro      = tb_data_mgr_get_macro(engine->data_mgr);
-        ctx.sentiment  = tb_data_mgr_get_sentiment(engine->data_mgr);
-        ctx.fear_greed = tb_data_mgr_get_fear_greed(engine->data_mgr);
-    }
-
-    /* Strategies — copy from tb_strategy_info_t to advisory struct */
-    if (engine->lua_engine) {
-        tb_strategy_info_t strats[TB_MAX_STRATEGIES];
-        int n_strats = TB_MAX_STRATEGIES;
-        tb_lua_engine_get_strategies(engine->lua_engine, strats, &n_strats);
-        ctx.n_strategies = n_strats;
-        for (int i = 0; i < ctx.n_strategies; i++) {
-            snprintf(ctx.strategies[i].name, sizeof(ctx.strategies[i].name),
-                     "%s", strats[i].name);
-            ctx.strategies[i].enabled = strats[i].enabled;
-        }
-    }
-
-    tb_ai_advisor_update_context(engine->ai_advisor, &ctx);
-}
-
 /* ── Timer thread ──────────────────────────────────────────────────────────── */
 
 static void *engine_timer_thread(void *arg) {
     tb_engine_t *engine = (tb_engine_t *)arg;
     int tick = 0;
-    bool initial_advisory_done = false;
     char last_date[12] = {0};
 
     /* Initialize last_date to today */
@@ -649,19 +568,6 @@ static void *engine_timer_thread(void *arg) {
                 tb_lua_engine_on_timer(engine->lua_engine);
                 tb_lua_engine_check_reload(engine->lua_engine);
             }
-        }
-
-        /* Every 30 seconds: update AI advisor context */
-        if (tick % 30 == 0 && engine->ai_advisor) {
-            engine_update_advisory_context(engine);
-        }
-
-        /* First advisory call 15s after startup (let market data arrive) */
-        if (!initial_advisory_done && tick == 15 && engine->ai_advisor) {
-            tb_log_info("triggering initial AI advisory call...");
-            engine_update_advisory_context(engine);
-            tb_ai_advisor_call_now(engine->ai_advisor);
-            initial_advisory_done = true;
         }
 
         /* Every 60 seconds: check for UTC date rollover */

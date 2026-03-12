@@ -178,14 +178,35 @@ local function close_position(reason)
     if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
 
     local pos = bot.get_position(config.coin)
-    if pos and pos.size ~= 0 then
-        local mid = bot.get_mid_price(config.coin)
-        if mid then
-            local side = pos.size > 0 and "sell" or "buy"
-            bot.place_limit(config.coin, side, mid, math.abs(pos.size),
-                           { tif = "ioc", reduce_only = true })
-            bot.log("info", string.format("%s: CLOSE %s — %s", instance_name, side, reason))
+    if not pos or pos.size == 0 then
+        in_position = false
+        position_side = nil
+        entry_price = 0
+        return
+    end
+
+    local mid = bot.get_mid_price(config.coin)
+    if not mid then return end
+
+    local side = pos.size > 0 and "sell" or "buy"
+    local size = math.abs(pos.size)
+
+    local oid = bot.place_limit(config.coin, side, mid, size,
+                                { tif = "ioc", reduce_only = true })
+    if not oid then
+        local aggressive_px = side == "sell" and mid * 0.99 or mid * 1.01
+        oid = bot.place_limit(config.coin, side, aggressive_px, size,
+                              { tif = "ioc", reduce_only = true })
+        if oid then
+            bot.log("warn", string.format("%s: CLOSE %s (retry slippage) — %s",
+                instance_name, side, reason))
+        else
+            bot.log("error", string.format("%s: CLOSE FAILED — %s, retry next tick",
+                instance_name, reason))
+            return
         end
+    else
+        bot.log("info", string.format("%s: CLOSE %s — %s", instance_name, side, reason))
     end
 
     in_position = false
@@ -208,6 +229,8 @@ function on_init()
     if saved_trades then trade_count = tonumber(saved_trades) or 0 end
     local saved_wins = bot.load_state("win_count")
     if saved_wins then win_count = tonumber(saved_wins) or 0 end
+    local saved_streak = bot.load_state("losing_streak")
+    if saved_streak then losing_streak = tonumber(saved_streak) or 0 end
 
     local saved_closed = bot.load_state("closed_histogram")
     if saved_closed then closed_histogram = tonumber(saved_closed) end
@@ -391,6 +414,7 @@ function on_fill(fill)
 
     bot.save_state("trade_count", tostring(trade_count))
     bot.save_state("win_count", tostring(win_count))
+    bot.save_state("losing_streak", tostring(losing_streak))
 
     if fill.oid == sl_oid then
         bot.log("info", string.format("%s: SL hit — pnl=%.4f (win rate: %d/%d = %.0f%%)",
@@ -432,30 +456,6 @@ function on_timer()
         if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
     end
 end
-
-function on_advisory(json_str)
-    bot.log("info", instance_name .. ": advisory: " .. json_str)
-
-    local section = json_str:match('"' .. instance_name .. '"%s*:%s*(%b{})')
-    if not section then return end
-
-    local pause = section:match('"pause"%s*:%s*(true)')
-    local resume = section:match('"pause"%s*:%s*(false)')
-
-    if pause then
-        config.enabled = false
-        bot.save_state("enabled", "false")
-        if in_position then close_position("advisory pause") end
-        bot.log("warn", instance_name .. ": PAUSED by advisory")
-    end
-
-    if resume and not config.enabled then
-        config.enabled = true
-        bot.save_state("enabled", "true")
-        bot.log("info", instance_name .. ": RESUMED by advisory")
-    end
-end
-
 function on_shutdown()
     bot.log("info", string.format("%s: shutdown — %d trades, %d wins (%.0f%%)",
         instance_name, trade_count, win_count,

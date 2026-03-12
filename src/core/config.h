@@ -29,12 +29,6 @@ typedef struct {
     char     strategy_coins[8][TB_MAX_STRATEGY_COINS][16];
     int      n_strategy_coins[8];
 
-    /* AI Advisory */
-    char     claude_api_key[256];     /* from env TB_CLAUDE_API_KEY */
-    char     claude_model[64];
-    int      advisory_hour_morning;   /* UTC */
-    int      advisory_hour_evening;   /* UTC */
-
     /* Data sources */
     char     macro_api_key[256];      /* from env TB_MACRO_API_KEY */
 

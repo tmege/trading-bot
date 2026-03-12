@@ -200,6 +200,111 @@ module.exports = function registerDbIPC(ipcMain, projectRoot) {
     }
   });
 
+  // ── Filtered trades with pagination ────────────────────────────────────
+  ipcMain.handle('db:filteredTrades', async (_event, params = {}) => {
+    const conn = getDb(projectRoot);
+    if (!conn) return { ok: true, trades: [], total: 0, dbError };
+
+    try {
+      const { coin, strategy, startMs, endMs, limit = 50, offset = 0 } = params;
+      const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
+      const safeOffset = Math.max(0, Number(offset) || 0);
+
+      const conditions = [];
+      const binds = [];
+
+      if (coin && /^[A-Z]{2,10}$/.test(coin)) {
+        conditions.push('coin = ?');
+        binds.push(coin);
+      }
+      if (strategy && typeof strategy === 'string' && strategy.length < 100) {
+        conditions.push('strategy = ?');
+        binds.push(strategy);
+      }
+      if (startMs && Number.isFinite(Number(startMs))) {
+        conditions.push('timestamp_ms >= ?');
+        binds.push(Number(startMs));
+      }
+      if (endMs && Number.isFinite(Number(endMs))) {
+        conditions.push('timestamp_ms <= ?');
+        binds.push(Number(endMs));
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const countRow = conn.prepare(`SELECT COUNT(*) as total FROM trades ${where}`).get(...binds);
+      const rows = conn.prepare(
+        `SELECT id, timestamp_ms, coin, side, price, size, fee, pnl, strategy
+         FROM trades ${where} ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?`
+      ).all(...binds, safeLimit, safeOffset);
+
+      return { ok: true, trades: rows, total: countRow.total };
+    } catch (err) {
+      return { ok: true, trades: [], total: 0, dbError: err.message };
+    }
+  });
+
+  // ── Trade filter options ──────────────────────────────────────────────
+  ipcMain.handle('db:tradeFilters', async () => {
+    const conn = getDb(projectRoot);
+    if (!conn) return { ok: true, coins: [], strategies: [] };
+
+    try {
+      const coins = conn.prepare('SELECT DISTINCT coin FROM trades ORDER BY coin').all().map(r => r.coin);
+      const strategies = conn.prepare('SELECT DISTINCT strategy FROM trades WHERE strategy IS NOT NULL ORDER BY strategy').all().map(r => r.strategy);
+      return { ok: true, coins, strategies };
+    } catch (_) {
+      return { ok: true, coins: [], strategies: [] };
+    }
+  });
+
+  // ── Equity curve (cumulative daily PnL) ───────────────────────────────
+  ipcMain.handle('db:equityCurve', async () => {
+    const conn = getDb(projectRoot);
+    if (!conn) return { ok: true, curve: [] };
+
+    try {
+      const rows = conn.prepare(
+        `SELECT date, realized_pnl, fees_paid
+         FROM daily_pnl ORDER BY date ASC LIMIT 90`
+      ).all();
+
+      let equity = 100;
+      const curve = rows.map(r => {
+        equity += (parseFloat(r.realized_pnl) || 0) - (parseFloat(r.fees_paid) || 0);
+        return {
+          time_ms: new Date(r.date).getTime(),
+          equity,
+        };
+      });
+
+      return { ok: true, curve };
+    } catch (_) {
+      return { ok: true, curve: [] };
+    }
+  });
+
+  // ── Strategy P&L aggregation ──────────────────────────────────────────
+  ipcMain.handle('db:strategyPnl', async () => {
+    const conn = getDb(projectRoot);
+    if (!conn) return { ok: true, pnl: {} };
+
+    try {
+      const rows = conn.prepare(
+        `SELECT strategy, SUM(CAST(pnl AS REAL)) as total_pnl, COUNT(*) as trades
+         FROM trades WHERE strategy IS NOT NULL GROUP BY strategy`
+      ).all();
+
+      const pnl = {};
+      for (const r of rows) {
+        pnl[r.strategy] = { totalPnl: r.total_pnl || 0, trades: r.trades || 0 };
+      }
+      return { ok: true, pnl };
+    } catch (_) {
+      return { ok: true, pnl: {} };
+    }
+  });
+
   ipcMain.handle('db:account', async () => {
     const conn = getDb(projectRoot);
     const hl = await fetchHyperliquid(projectRoot);

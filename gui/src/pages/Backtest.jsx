@@ -4,8 +4,9 @@ import StatsTable from '../components/StatsTable';
 import EquityCurve from '../components/EquityCurve';
 import TradeLog from '../components/TradeLog';
 import CoinComparison from '../components/CoinComparison';
+import ComparisonChart from '../components/ComparisonChart';
 import useBacktest from '../hooks/useBacktest';
-import { Loader2, Trophy, Trash2 } from 'lucide-react';
+import { Loader2, Trophy, Trash2, GitCompare, X } from 'lucide-react';
 
 const VERDICT_COLORS = {
   DEPLOYABLE:   'text-profit border-profit/30 bg-profit/10',
@@ -21,9 +22,10 @@ function formatReturn(pct) {
   return `${pct.toFixed(1)}%`;
 }
 
-export default function Backtest() {
+export default function Backtest({ activeCoins }) {
   const { results, progress, running, error, run } = useBacktest();
   const [history, setHistory] = useState([]);
+  const [comparisons, setComparisons] = useState([]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -35,12 +37,18 @@ export default function Backtest() {
   useEffect(() => { loadHistory(); }, [loadHistory]);
   useEffect(() => { if (results && !running) loadHistory(); }, [results, running, loadHistory]);
 
-  // Show first result details (or the one selected)
+  function addToCompare(result) {
+    if (comparisons.length >= 3) return;
+    const label = `${result.config?.coin || '?'} ${(result.config?.strategy || '').replace('.lua', '')}`;
+    setComparisons(prev => [...prev, { label, equityCurve: result.equity_curve, stats: result.stats }]);
+  }
+
+  // Show first result details
   const firstResult = results?.[0];
 
   return (
     <div className="flex-1 overflow-auto p-4 space-y-4">
-      <BacktestForm onRun={run} running={running} />
+      <BacktestForm onRun={run} running={running} activeCoins={activeCoins} />
 
       {/* Progress indicator */}
       {running && progress && (
@@ -69,14 +77,25 @@ export default function Backtest() {
       {/* Results */}
       {firstResult && !firstResult.error && (
         <>
-          {/* Verdict banner */}
-          <div className={`border rounded-lg p-3 text-center font-bold text-lg ${
+          {/* Verdict banner + compare button */}
+          <div className={`border rounded-lg p-3 flex items-center justify-between ${
             VERDICT_COLORS[firstResult.verdict] || 'text-gray-500'
           }`}>
-            {firstResult.verdict}
-            <span className="text-sm font-normal ml-3 opacity-70">
-              {firstResult.config?.coin} | {firstResult.config?.n_days}d | {firstResult.config?.interval}
-            </span>
+            <div>
+              <span className="font-bold text-lg">{firstResult.verdict}</span>
+              <span className="text-sm font-normal ml-3 opacity-70">
+                {firstResult.config?.coin} | {firstResult.config?.n_days}d | {firstResult.config?.interval}
+              </span>
+            </div>
+            {firstResult.equity_curve && comparisons.length < 3 && (
+              <button
+                onClick={() => addToCompare(firstResult)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-surface-bg border border-surface-border rounded-lg hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                <GitCompare size={12} />
+                Add to Compare ({comparisons.length}/3)
+              </button>
+            )}
           </div>
 
           {/* Multi-coin comparison */}
@@ -105,6 +124,71 @@ export default function Backtest() {
           {r.coin}: {r.error}
         </div>
       ))}
+
+      {/* ── Strategy Comparison ──────────────────────────────────────────── */}
+      {comparisons.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-2">
+              <GitCompare size={12} />
+              Comparison ({comparisons.length}/3)
+            </h3>
+            <button
+              onClick={() => setComparisons([])}
+              className="flex items-center gap-1 text-[10px] text-gray-600 hover:text-loss"
+            >
+              <X size={10} /> Clear
+            </button>
+          </div>
+
+          {comparisons.length >= 2 && (
+            <>
+              <ComparisonChart comparisons={comparisons} />
+
+              {/* Comparison table */}
+              <div className="bg-surface-card border border-surface-border rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-gray-500 text-left border-b border-surface-border">
+                      <th className="px-3 py-2">Strategy</th>
+                      <th className="px-3 py-2 text-right">Return</th>
+                      <th className="px-3 py-2 text-right">Sharpe</th>
+                      <th className="px-3 py-2 text-right">Max DD</th>
+                      <th className="px-3 py-2 text-right">Win Rate</th>
+                      <th className="px-3 py-2 text-right">Trades</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comparisons.map((c, i) => {
+                      const s = c.stats || {};
+                      return (
+                        <tr key={i} className="border-t border-surface-border/50">
+                          <td className="px-3 py-2 text-gray-300">{c.label}</td>
+                          <td className={`px-3 py-2 text-right font-mono ${(s.return_pct || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                            {(s.return_pct || 0) >= 0 ? '+' : ''}{(s.return_pct || 0).toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-gray-300">
+                            {(s.sharpe || 0).toFixed(2)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-gray-400">
+                            {(s.max_drawdown || 0).toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-gray-400">
+                            {(s.win_rate || 0).toFixed(0)}%
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-gray-400">
+                            {s.total_trades || 0}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Backtest History Leaderboard ──────────────────────────────── */}
       {history.length > 0 && (

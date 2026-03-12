@@ -1,15 +1,41 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Settings as SettingsIcon, ToggleLeft, ToggleRight, Plus, X, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Settings as SettingsIcon, ToggleLeft, ToggleRight, Plus, X, RefreshCw, AlertTriangle } from 'lucide-react';
 import SyncPanel from '../components/SyncPanel';
+import ConfirmModal from '../components/ConfirmModal';
 
 const POPULAR_COINS = ['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP', 'AVAX', 'ARB', 'OP', 'MATIC', 'LINK', 'UNI', 'AAVE', 'MKR', 'SNX', 'PEPE', 'WIF', 'BONK', 'JUP', 'TIA', 'SEI', 'SUI', 'APT', 'INJ', 'FTM', 'NEAR', 'ATOM', 'DOT', 'ADA', 'XRP', 'LTC', 'BCH'];
 
-export default function Settings({ paperMode, onPaperModeChange }) {
+const COIN_RE = /^[A-Z]{2,10}$/;
+
+export default function Settings({ paperMode, onPaperModeChange, botStatus, addToast, closeModalRef }) {
   const [config, setConfig] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [addingCoin, setAddingCoin] = useState(null); // index of strategy being edited
+  const [addingCoin, setAddingCoin] = useState(null);
   const [newCoin, setNewCoin] = useState('');
+  const [showLiveConfirm, setShowLiveConfirm] = useState(false);
+  const [needsRestart, setNeedsRestart] = useState(false);
+  const prevRunning = useRef(null);
+
+  // Input validation states
+  const [coinError, setCoinError] = useState('');
+  const [riskErrors, setRiskErrors] = useState({});
+
+  // Register modal close callback
+  useEffect(() => {
+    if (closeModalRef) {
+      closeModalRef.current = () => setShowLiveConfirm(false);
+      return () => { closeModalRef.current = null; };
+    }
+  }, [closeModalRef]);
+
+  // Clear needsRestart when bot restarts (stopped → running transition)
+  useEffect(() => {
+    if (prevRunning.current === false && botStatus?.running === true) {
+      setNeedsRestart(false);
+    }
+    prevRunning.current = botStatus?.running ?? false;
+  }, [botStatus?.running]);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -20,7 +46,7 @@ export default function Settings({ paperMode, onPaperModeChange }) {
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
 
-  async function saveConfig(updated) {
+  async function saveConfig(updated, flagRestart = true) {
     setSaving(true);
     setSaved(false);
     try {
@@ -28,6 +54,7 @@ export default function Settings({ paperMode, onPaperModeChange }) {
       if (res.ok) {
         setConfig(updated);
         setSaved(true);
+        if (flagRestart) setNeedsRestart(true);
         setTimeout(() => setSaved(false), 2000);
       }
     } catch (_) {}
@@ -42,7 +69,6 @@ export default function Settings({ paperMode, onPaperModeChange }) {
 
     const idx = entry.coins.indexOf(coin);
     if (idx !== -1) {
-      // Don't allow removing the last coin
       if (entry.coins.length <= 1) return;
       entry.coins.splice(idx, 1);
     } else {
@@ -54,6 +80,13 @@ export default function Settings({ paperMode, onPaperModeChange }) {
   function addCoin(stratIdx) {
     if (!config || !newCoin.trim()) return;
     const coin = newCoin.trim().toUpperCase();
+
+    if (!COIN_RE.test(coin)) {
+      setCoinError('2-10 uppercase letters only');
+      return;
+    }
+    setCoinError('');
+
     const updated = JSON.parse(JSON.stringify(config));
     const entry = updated.strategies.active[stratIdx];
     if (!entry.coins) entry.coins = [];
@@ -77,6 +110,34 @@ export default function Settings({ paperMode, onPaperModeChange }) {
     saveConfig(updated);
   }
 
+  function handlePaperToggle() {
+    if (!config) return;
+    const isPaper = !!config.mode?.paper_trading;
+
+    if (isPaper) {
+      // Paper → Live: show confirmation
+      setShowLiveConfirm(true);
+    } else {
+      // Live → Paper: safe, no confirmation needed
+      const updated = JSON.parse(JSON.stringify(config));
+      if (!updated.mode) updated.mode = {};
+      updated.mode.paper_trading = true;
+      saveConfig(updated);
+      if (onPaperModeChange) onPaperModeChange(true);
+      if (addToast) addToast('info', 'Switched to PAPER mode. Restart bot to apply.');
+    }
+  }
+
+  function confirmLiveSwitch() {
+    setShowLiveConfirm(false);
+    const updated = JSON.parse(JSON.stringify(config));
+    if (!updated.mode) updated.mode = {};
+    updated.mode.paper_trading = false;
+    saveConfig(updated);
+    if (onPaperModeChange) onPaperModeChange(false);
+    if (addToast) addToast('warning', 'Switched to LIVE mode. Restart bot to apply.');
+  }
+
   if (!config) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
@@ -88,8 +149,19 @@ export default function Settings({ paperMode, onPaperModeChange }) {
   const active = config.strategies?.active || [];
 
   return (
-    <div className="flex-1 overflow-auto p-6">
+    <div className={`flex-1 overflow-auto p-6 ${saving ? 'opacity-75 pointer-events-none' : ''}`}>
       <div className="max-w-2xl mx-auto">
+        {/* Confirm Paper → Live modal */}
+        <ConfirmModal
+          open={showLiveConfirm}
+          title="Switch to LIVE trading?"
+          message="This will enable real orders on Hyperliquid with real money at risk. Make sure you understand the risks before proceeding."
+          confirmLabel="Switch to LIVE"
+          confirmVariant="danger"
+          onConfirm={confirmLiveSwitch}
+          onCancel={() => setShowLiveConfirm(false)}
+        />
+
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -105,10 +177,18 @@ export default function Settings({ paperMode, onPaperModeChange }) {
           </button>
         </div>
 
+        {/* Restart notice */}
+        {needsRestart && (
+          <div className="mb-4 px-3 py-2 bg-yellow-400/10 border border-yellow-400/30 rounded-lg text-xs text-yellow-400 flex items-center gap-2">
+            <AlertTriangle size={14} />
+            Restart the bot to apply configuration changes.
+          </div>
+        )}
+
         {/* Save indicator */}
         {saved && (
           <div className="mb-4 px-3 py-2 bg-profit/10 border border-profit/30 rounded-lg text-xs text-profit">
-            Configuration saved. Restart the bot to apply changes.
+            Configuration saved.
           </div>
         )}
 
@@ -198,14 +278,21 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                               onSubmit={(e) => { e.preventDefault(); addCoin(stratIdx); }}
                               className="flex items-center gap-1"
                             >
-                              <input
-                                autoFocus
-                                value={newCoin}
-                                onChange={e => setNewCoin(e.target.value)}
-                                placeholder="COIN"
-                                maxLength={10}
-                                className="w-20 px-2 py-1 bg-surface-bg border border-accent/50 rounded text-[11px] text-white placeholder-gray-600 outline-none focus:border-accent"
-                              />
+                              <div>
+                                <input
+                                  autoFocus
+                                  value={newCoin}
+                                  onChange={e => { setNewCoin(e.target.value); setCoinError(''); }}
+                                  placeholder="COIN"
+                                  maxLength={10}
+                                  className={`w-20 px-2 py-1 bg-surface-bg border rounded text-[11px] text-white placeholder-gray-600 outline-none ${
+                                    coinError ? 'border-loss' : 'border-accent/50 focus:border-accent'
+                                  }`}
+                                />
+                                {coinError && (
+                                  <div className="text-[9px] text-loss mt-0.5">{coinError}</div>
+                                )}
+                              </div>
                               <button
                                 type="submit"
                                 className="px-2 py-1 bg-accent/20 text-accent rounded text-[11px] hover:bg-accent/30"
@@ -214,7 +301,7 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => { setAddingCoin(null); setNewCoin(''); }}
+                                onClick={() => { setAddingCoin(null); setNewCoin(''); setCoinError(''); }}
                                 className="px-1 py-1 text-gray-500 hover:text-white"
                               >
                                 <X size={12} />
@@ -272,30 +359,46 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                 { key: 'emergency_close_pct',  label: 'Emergency close',     unit: '%', step: 1, min: 1, max: 40 },
                 { key: 'max_position_pct',     label: 'Max position size',   unit: '%', step: 10, min: 10, max: 500 },
                 { key: 'max_leverage',         label: 'Max leverage',        unit: 'x', step: 1, min: 1, max: 10 },
-              ].map(({ key, label, unit, step, min, max }) => (
-                <div key={key}>
-                  <label className="text-[10px] text-gray-500 uppercase block mb-1">{label}</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      className="w-20 bg-surface-bg border border-surface-border rounded px-2 py-1 text-xs text-white font-mono text-right"
-                      value={config.risk?.[key] ?? ''}
-                      step={step}
-                      min={min}
-                      max={max}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (isNaN(val) || val < min || val > max) return;
-                        const updated = JSON.parse(JSON.stringify(config));
-                        if (!updated.risk) updated.risk = {};
-                        updated.risk[key] = val;
-                        saveConfig(updated);
-                      }}
-                    />
-                    <span className="text-xs text-gray-500">{unit}</span>
+              ].map(({ key, label, unit, step, min, max }) => {
+                const hasError = !!riskErrors[key];
+                return (
+                  <div key={key}>
+                    <label className="text-[10px] text-gray-500 uppercase block mb-1">{label}</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        className={`w-20 bg-surface-bg border rounded px-2 py-1 text-xs text-white font-mono text-right ${
+                          hasError ? 'border-loss' : 'border-surface-border'
+                        }`}
+                        value={config.risk?.[key] ?? ''}
+                        step={step}
+                        min={min}
+                        max={max}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (isNaN(val)) {
+                            setRiskErrors(prev => ({ ...prev, [key]: `Enter a number` }));
+                            return;
+                          }
+                          if (val < min || val > max) {
+                            setRiskErrors(prev => ({ ...prev, [key]: `${min}-${max}` }));
+                            return;
+                          }
+                          setRiskErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
+                          const updated = JSON.parse(JSON.stringify(config));
+                          if (!updated.risk) updated.risk = {};
+                          updated.risk[key] = val;
+                          saveConfig(updated);
+                        }}
+                      />
+                      <span className="text-xs text-gray-500">{unit}</span>
+                    </div>
+                    {hasError && (
+                      <div className="text-[9px] text-loss mt-0.5">{riskErrors[key]}</div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <p className="text-[10px] text-gray-600 mt-3">
               All limits scale automatically with your account balance.
@@ -330,13 +433,7 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                 </p>
               </div>
               <button
-                onClick={() => {
-                  const updated = JSON.parse(JSON.stringify(config));
-                  if (!updated.mode) updated.mode = {};
-                  updated.mode.paper_trading = !updated.mode.paper_trading;
-                  saveConfig(updated);
-                  if (onPaperModeChange) onPaperModeChange(updated.mode.paper_trading);
-                }}
+                onClick={handlePaperToggle}
                 className="shrink-0 ml-4"
               >
                 {config.mode?.paper_trading ? (
@@ -360,7 +457,7 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                     value={config.mode?.paper_initial_balance ?? 100}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value);
-                      if (isNaN(val) || val < 0) return;
+                      if (isNaN(val) || val < 10 || val > 100000) return;
                       const updated = JSON.parse(JSON.stringify(config));
                       if (!updated.mode) updated.mode = {};
                       updated.mode.paper_initial_balance = val;
@@ -368,7 +465,7 @@ export default function Settings({ paperMode, onPaperModeChange }) {
                     }}
                     className="w-32 px-3 py-1.5 bg-surface-bg border border-yellow-500/30 rounded-lg text-sm text-white font-mono outline-none focus:border-yellow-400"
                   />
-                  <span className="text-xs text-gray-600">Restart bot to apply</span>
+                  <span className="text-xs text-gray-600">10 - 100,000</span>
                 </div>
               </div>
             )}

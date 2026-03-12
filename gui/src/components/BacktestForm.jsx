@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Loader2 } from 'lucide-react';
 
-const ALL_COINS = ['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP'];
+const DEFAULT_COINS = ['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP'];
 const INTERVALS = ['5m', '15m', '1h', '4h', '1d'];
 
 function toLocalDate(d) {
@@ -12,10 +12,11 @@ function daysBetween(a, b) {
   return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
 
-export default function BacktestForm({ onRun, running }) {
+export default function BacktestForm({ onRun, running, activeCoins }) {
+  const ALL_COINS = activeCoins && activeCoins.length > 0 ? activeCoins : DEFAULT_COINS;
   const [strategies, setStrategies] = useState([]);
   const [strategy, setStrategy] = useState('');
-  const [multiCoin, setMultiCoin] = useState(false);
+  const [selectedCoins, setSelectedCoins] = useState(['ETH', 'BTC']);
   const [interval, setInterval] = useState('1h');
 
   // Date pickers — default: last 30 days
@@ -46,10 +47,15 @@ export default function BacktestForm({ onRun, running }) {
     load();
   }, []);
 
-  const currentStrat = strategies.find(s => s.file === strategy);
-  const stratCoins = currentStrat?.coins || [];
-  const stratCoin = stratCoins[0] || null;
-  const coins = multiCoin ? ALL_COINS : stratCoins.length > 0 ? stratCoins : ['ETH'];
+  function toggleCoin(coin) {
+    setSelectedCoins(prev => {
+      if (prev.includes(coin)) {
+        if (prev.length <= 1) return prev; // minimum 1 coin
+        return prev.filter(c => c !== coin);
+      }
+      return [...prev, coin];
+    });
+  }
 
   // Compute nDays and endDaysAgo from dates
   const start = new Date(startDate);
@@ -60,7 +66,7 @@ export default function BacktestForm({ onRun, running }) {
 
   function handleStrategyChange(file) {
     setStrategy(file);
-    setMultiCoin(false);
+    setSelectedCoins(['ETH', 'BTC']);
     // Auto-detect interval from strategy filename (e.g. bb_scalp_15m.lua → 15m)
     const base = file.replace(/\.lua$/, '');
     const lastSeg = base.split('_').pop();
@@ -73,7 +79,7 @@ export default function BacktestForm({ onRun, running }) {
     e.preventDefault();
     onRun({
       strategy,
-      coins,
+      coins: selectedCoins,
       nDays,
       endDaysAgo,
       interval,
@@ -141,42 +147,28 @@ export default function BacktestForm({ onRun, running }) {
         </div>
       </div>
 
-      {/* Coin display + multi-coin toggle */}
-      <div className="mb-4 flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">Coins:</span>
-          {stratCoins.length > 0 ? (
-            <div className="flex gap-1">
-              {stratCoins.map(c => (
-                <span key={c} className="px-2 py-0.5 bg-accent/20 text-accent border border-accent/30 rounded text-xs font-medium">
-                  {c}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <span className="text-xs text-gray-600">unknown</span>
-          )}
-        </div>
-
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={multiCoin}
-            onChange={e => setMultiCoin(e.target.checked)}
-            className="rounded border-surface-border bg-surface-bg text-accent focus:ring-accent"
-          />
-          <span className="text-xs text-gray-400">All coins comparison</span>
-        </label>
-
-        {multiCoin && (
-          <div className="flex gap-1.5">
-            {ALL_COINS.map(c => (
-              <span key={c} className="px-2 py-0.5 bg-accent/10 text-accent/80 rounded text-xs">
+      {/* Coin selector pills */}
+      <div className="mb-4 flex items-center gap-2">
+        <span className="text-xs text-gray-400">Coins:</span>
+        <div className="flex gap-1.5">
+          {ALL_COINS.map(c => {
+            const active = selectedCoins.includes(c);
+            return (
+              <button
+                key={c}
+                type="button"
+                onClick={() => toggleCoin(c)}
+                className={`px-2.5 py-0.5 rounded text-xs font-medium transition-colors ${
+                  active
+                    ? 'bg-accent/20 text-accent border border-accent/30'
+                    : 'bg-surface-bg text-gray-500 border border-surface-border cursor-pointer hover:border-accent/30'
+                }`}
+              >
                 {c}
-              </span>
-            ))}
-          </div>
-        )}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <button
@@ -185,7 +177,7 @@ export default function BacktestForm({ onRun, running }) {
         className="flex items-center gap-2 px-4 py-2 bg-accent/20 text-accent border border-accent/30 rounded-lg text-sm font-medium hover:bg-accent/30 transition-colors disabled:opacity-50"
       >
         {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-        {running ? 'Running...' : `Run Backtest${multiCoin ? ' (5 coins)' : ''}`}
+        {running ? 'Running...' : `Run Backtest (${selectedCoins.length} coin${selectedCoins.length > 1 ? 's' : ''})`}
       </button>
     </form>
   );

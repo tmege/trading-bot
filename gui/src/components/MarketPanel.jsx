@@ -116,8 +116,8 @@ function MarketPhaseWidget({ macro }) {
 }
 
 /* ── Main component ──────────────────────────────────────────────────────── */
-export default function MarketPanel({ marketData }) {
-  const prices = usePrices();
+export default function MarketPanel({ marketData, activeCoins }) {
+  const { prices, stale } = usePrices(activeCoins);
   const macro = marketData;
   const prevPrices = useRef({});
   const [flashes, setFlashes] = useState({});
@@ -148,14 +148,16 @@ export default function MarketPanel({ marketData }) {
         <span className="flex items-center gap-2">
           Crypto
           <span className="ml-auto flex items-center gap-1">
-            <span className={`w-1.5 h-1.5 rounded-full ${Object.keys(prices).length > 0 ? 'bg-profit animate-pulse' : 'bg-gray-600'}`} />
-            <span className="text-[10px] text-gray-600">{Object.keys(prices).length > 0 ? 'LIVE' : 'offline'}</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${Object.keys(prices).length > 0 && !stale ? 'bg-profit animate-pulse' : stale ? 'bg-yellow-400' : 'bg-gray-600'}`} />
+            <span className="text-[10px] text-gray-600">
+              {Object.keys(prices).length > 0 && !stale ? 'LIVE' : stale ? 'stale' : 'offline'}
+            </span>
           </span>
         </span>
       }>
         {/* Live prices (WebSocket) */}
         {Object.keys(prices).length > 0 && (
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
+          <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-3 ${stale ? 'opacity-50' : ''}`}>
             {Object.entries(prices).map(([coin, price]) => {
               const flash = flashes[coin];
               const flashBg = flash === 'up' ? 'bg-profit/10' : flash === 'down' ? 'bg-loss/10' : 'bg-surface-bg';

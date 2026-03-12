@@ -16,6 +16,17 @@ typedef struct {
     double      slippage_bps;      /* simulated slippage in basis points */
 } tb_backtest_config_t;
 
+/* ── Per-trade log entry ───────────────────────────────────────────────── */
+typedef struct {
+    int64_t time_ms;
+    char    side[8];
+    double  price;
+    double  size;
+    double  pnl;
+    double  fee;
+    double  balance_after;
+} tb_bt_trade_t;
+
 /* ── Backtest results ──────────────────────────────────────────────────── */
 typedef struct {
     /* P&L */
@@ -49,24 +60,17 @@ typedef struct {
     int     n_candles;
     int     n_days;
 
-    /* Per-trade log */
-    struct {
-        int64_t time_ms;
-        char    side[8];
-        double  price;
-        double  size;
-        double  pnl;
-        double  fee;
-        double  balance_after;
-    } trades[4096];
+    /* Per-trade log (dynamically allocated) */
+    tb_bt_trade_t *trades;
     int n_trade_log;
+    int trade_cap;
 
     /* Equity curve (sampled daily) */
     struct {
         int64_t time_ms;
         double  equity;
         double  drawdown;
-    } equity_curve[1000];
+    } equity_curve[2000];
     int n_equity_points;
 } tb_backtest_result_t;
 
@@ -87,5 +91,8 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out);
 
 /* Print results to stdout. */
 void tb_backtest_print_results(const tb_backtest_result_t *r);
+
+/* Free dynamically allocated trade log. Safe to call on zeroed struct. */
+void tb_backtest_result_cleanup(tb_backtest_result_t *r);
 
 #endif /* TB_BACKTEST_ENGINE_H */

@@ -71,7 +71,15 @@ static void *lua_mem_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     }
     void *new_ptr = realloc(ptr, nsize);
     if (new_ptr) {
-        tracker->used += nsize - osize;
+        if (nsize >= osize) {
+            tracker->used += nsize - osize;
+        } else {
+            size_t diff = osize - nsize;
+            if (diff <= tracker->used)
+                tracker->used -= diff;
+            else
+                tracker->used = 0;
+        }
     }
     return new_ptr;
 }
@@ -295,6 +303,7 @@ void tb_lua_engine_destroy(tb_lua_engine_t *engine) {
 }
 
 void tb_lua_engine_set_context(tb_lua_engine_t *engine, tb_lua_ctx_t *ctx) {
+    pthread_mutex_lock(&engine->lock);
     engine->shared_ctx = ctx;
 
     /* Update context in already-loaded strategies */
@@ -305,6 +314,7 @@ void tb_lua_engine_set_context(tb_lua_engine_t *engine, tb_lua_ctx_t *ctx) {
             tb_strategy_api_set_context(engine->slots[i].L, &engine->slots[i].ctx);
         }
     }
+    pthread_mutex_unlock(&engine->lock);
 }
 
 int tb_lua_engine_load_strategies(tb_lua_engine_t *engine) {
@@ -314,8 +324,11 @@ int tb_lua_engine_load_strategies(tb_lua_engine_t *engine) {
     int loaded = 0;
 
     if (cfg && cfg->n_active_strategies > 0) {
+        /* Clamp to prevent out-of-bounds access on config arrays */
+        int n_active = cfg->n_active_strategies;
+        if (n_active > 8) n_active = 8;
         /* Load only active strategies from config */
-        for (int i = 0; i < cfg->n_active_strategies && engine->n_strategies < TB_MAX_STRATEGIES; i++) {
+        for (int i = 0; i < n_active && engine->n_strategies < TB_MAX_STRATEGIES; i++) {
             /* Path traversal protection: reject filenames with path separators */
             const char *fname = cfg->active_strategies[i];
             if (strchr(fname, '/') || strchr(fname, '\\') || strstr(fname, "..")) {
@@ -422,8 +435,14 @@ int tb_lua_engine_check_reload(tb_lua_engine_t *engine) {
                 lua_getglobal(slot->L, "on_init");
                 if (lua_isfunction(slot->L, -1)) {
                     if (lua_pcall(slot->L, 0, 0, 0) != LUA_OK) {
+                        const char *errmsg = lua_tostring(slot->L, -1);
+                        if (errmsg && strstr(errmsg, "instruction limit")) {
+                            tb_log_warn("lua: %s disabled — instruction limit exceeded in on_init (reload)",
+                                        slot->name);
+                            slot->enabled = false;
+                        }
                         tb_log_error("lua: %s on_init error after reload: %s",
-                                    slot->name, lua_tostring(slot->L, -1));
+                                    slot->name, errmsg ? errmsg : "(unknown)");
                         lua_pop(slot->L, 1);
                     }
                 } else {
@@ -450,6 +469,20 @@ int tb_lua_engine_check_reload(tb_lua_engine_t *engine) {
     lua_sethook((slot)->L, lua_instruction_hook, LUA_MASKCOUNT, LUA_MAX_INSTRUCTIONS); \
 } while(0)
 
+/* Check pcall result and disable strategy if instruction limit was hit
+ * (prevents pcall-based bypass of the instruction hook) */
+#define CHECK_PCALL_ERROR(slot, func_name) do { \
+    const char *_errmsg = lua_tostring((slot)->L, -1); \
+    if (_errmsg && strstr(_errmsg, "instruction limit")) { \
+        tb_log_warn("lua: %s disabled — instruction limit exceeded in %s", \
+                    (slot)->name, func_name); \
+        (slot)->enabled = false; \
+    } \
+    tb_log_error("lua: %s %s error: %s", (slot)->name, func_name, \
+                 _errmsg ? _errmsg : "(unknown)"); \
+    lua_pop((slot)->L, 1); \
+} while(0)
+
 void tb_lua_engine_on_init(tb_lua_engine_t *engine) {
     pthread_mutex_lock(&engine->lock);
     for (int i = 0; i < engine->n_strategies; i++) {
@@ -457,9 +490,7 @@ void tb_lua_engine_on_init(tb_lua_engine_t *engine) {
         CALL_LUA_VOID(slot, "on_init");
 
         if (lua_pcall(slot->L, 0, 0, 0) != LUA_OK) {
-            tb_log_error("lua: %s on_init error: %s",
-                        slot->name, lua_tostring(slot->L, -1));
-            lua_pop(slot->L, 1);
+            CHECK_PCALL_ERROR(slot, "on_init");
         }
     }
     pthread_mutex_unlock(&engine->lock);
@@ -474,9 +505,7 @@ void tb_lua_engine_on_tick(tb_lua_engine_t *engine, const char *coin, double mid
         lua_pushstring(slot->L, coin);
         lua_pushnumber(slot->L, mid_price);
         if (lua_pcall(slot->L, 2, 0, 0) != LUA_OK) {
-            tb_log_error("lua: %s on_tick error: %s",
-                        slot->name, lua_tostring(slot->L, -1));
-            lua_pop(slot->L, 1);
+            CHECK_PCALL_ERROR(slot, "on_tick");
         }
     }
     pthread_mutex_unlock(&engine->lock);
@@ -521,9 +550,7 @@ void tb_lua_engine_on_fill(tb_lua_engine_t *engine, const tb_fill_t *fill,
         lua_setfield(slot->L, -2, "oid");
 
         if (lua_pcall(slot->L, 1, 0, 0) != LUA_OK) {
-            tb_log_error("lua: %s on_fill error: %s",
-                        slot->name, lua_tostring(slot->L, -1));
-            lua_pop(slot->L, 1);
+            CHECK_PCALL_ERROR(slot, "on_fill");
         }
     }
     pthread_mutex_unlock(&engine->lock);
@@ -536,9 +563,7 @@ void tb_lua_engine_on_timer(tb_lua_engine_t *engine) {
         CALL_LUA_VOID(slot, "on_timer");
 
         if (lua_pcall(slot->L, 0, 0, 0) != LUA_OK) {
-            tb_log_error("lua: %s on_timer error: %s",
-                        slot->name, lua_tostring(slot->L, -1));
-            lua_pop(slot->L, 1);
+            CHECK_PCALL_ERROR(slot, "on_timer");
         }
     }
     pthread_mutex_unlock(&engine->lock);
@@ -581,25 +606,7 @@ void tb_lua_engine_on_book(tb_lua_engine_t *engine, const tb_book_t *book) {
         lua_setfield(slot->L, -2, "asks");
 
         if (lua_pcall(slot->L, 1, 0, 0) != LUA_OK) {
-            tb_log_error("lua: %s on_book error: %s",
-                        slot->name, lua_tostring(slot->L, -1));
-            lua_pop(slot->L, 1);
-        }
-    }
-    pthread_mutex_unlock(&engine->lock);
-}
-
-void tb_lua_engine_on_advisory(tb_lua_engine_t *engine, const char *json_adjustments) {
-    pthread_mutex_lock(&engine->lock);
-    for (int i = 0; i < engine->n_strategies; i++) {
-        tb_strategy_slot_t *slot = &engine->slots[i];
-        CALL_LUA_VOID(slot, "on_advisory");
-
-        lua_pushstring(slot->L, json_adjustments);
-        if (lua_pcall(slot->L, 1, 0, 0) != LUA_OK) {
-            tb_log_error("lua: %s on_advisory error: %s",
-                        slot->name, lua_tostring(slot->L, -1));
-            lua_pop(slot->L, 1);
+            CHECK_PCALL_ERROR(slot, "on_book");
         }
     }
     pthread_mutex_unlock(&engine->lock);
@@ -612,9 +619,7 @@ void tb_lua_engine_on_shutdown(tb_lua_engine_t *engine) {
         CALL_LUA_VOID(slot, "on_shutdown");
 
         if (lua_pcall(slot->L, 0, 0, 0) != LUA_OK) {
-            tb_log_error("lua: %s on_shutdown error: %s",
-                        slot->name, lua_tostring(slot->L, -1));
-            lua_pop(slot->L, 1);
+            CHECK_PCALL_ERROR(slot, "on_shutdown");
         }
     }
     pthread_mutex_unlock(&engine->lock);
@@ -624,6 +629,8 @@ void tb_lua_engine_on_shutdown(tb_lua_engine_t *engine) {
 
 int tb_lua_engine_get_strategies(const tb_lua_engine_t *engine,
                                   tb_strategy_info_t *out, int *count) {
+    pthread_mutex_lock(&((tb_lua_engine_t *)engine)->lock);
+
     int n = engine->n_strategies;
     if (n > *count) n = *count;
 
@@ -636,6 +643,8 @@ int tb_lua_engine_get_strategies(const tb_lua_engine_t *engine,
     }
 
     *count = n;
+
+    pthread_mutex_unlock(&((tb_lua_engine_t *)engine)->lock);
     return 0;
 }
 

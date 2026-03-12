@@ -40,11 +40,15 @@ static bool rate_limiter_acquire(rate_limiter_t *rl, int weight) {
     if (elapsed >= 60000) {
         rl->tokens = rl->max_tokens;
         rl->last_refill_ms = now;
-    } else {
+    } else if (elapsed > 0) {
         int refill = (int)(elapsed * rl->max_tokens / 60000);
-        rl->tokens += refill;
-        if (rl->tokens > rl->max_tokens) rl->tokens = rl->max_tokens;
-        rl->last_refill_ms = now;
+        if (refill > 0) {
+            rl->tokens += refill;
+            if (rl->tokens > rl->max_tokens) rl->tokens = rl->max_tokens;
+            /* Advance only by the time consumed, not to now — prevents token loss */
+            int64_t consumed_ms = (int64_t)refill * 60000 / rl->max_tokens;
+            rl->last_refill_ms += consumed_ms;
+        }
     }
 
     if (rl->tokens >= weight) {
@@ -154,6 +158,7 @@ static int post_json(hl_rest_t *rest, const char *endpoint,
     curl_easy_setopt(rest->curl, CURLOPT_WRITEDATA, resp);
     curl_easy_setopt(rest->curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(rest->curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(rest->curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(rest->curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(rest->curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
@@ -201,6 +206,15 @@ static yyjson_doc *info_request(hl_rest_t *rest, const char *body, int weight) {
     return doc;
 }
 
+static bool is_safe_json_str(const char *s) {
+    if (!s) return false;
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\' || (unsigned char)*s < 0x20)
+            return false;
+    }
+    return true;
+}
+
 /* ── Info endpoints ────────────────────────────────────────────────────────── */
 
 int hl_rest_get_meta(hl_rest_t *rest, tb_asset_meta_t *out_assets, int *out_count) {
@@ -222,6 +236,7 @@ int hl_rest_get_all_mids(hl_rest_t *rest, tb_mid_t *out_mids, int *out_count) {
 }
 
 int hl_rest_get_l2_book(hl_rest_t *rest, const char *coin, tb_book_t *out_book) {
+    if (!is_safe_json_str(coin)) return -1;
     char body[128];
     snprintf(body, sizeof(body), "{\"type\":\"l2Book\",\"coin\":\"%s\"}", coin);
 
@@ -237,6 +252,7 @@ int hl_rest_get_candles(hl_rest_t *rest, const char *coin, const char *interval,
                         int64_t start_ms, int64_t end_ms,
                         tb_candle_t *out_candles, int *out_count,
                         int max_count) {
+    if (!is_safe_json_str(coin) || !is_safe_json_str(interval)) return -1;
     char body[256];
     snprintf(body, sizeof(body),
              "{\"type\":\"candleSnapshot\",\"req\":{\"coin\":\"%s\","
@@ -253,6 +269,7 @@ int hl_rest_get_candles(hl_rest_t *rest, const char *coin, const char *interval,
 }
 
 int hl_rest_get_account(hl_rest_t *rest, const char *user_addr, tb_account_t *out) {
+    if (!is_safe_json_str(user_addr)) return -1;
     char body[128];
     snprintf(body, sizeof(body),
              "{\"type\":\"clearinghouseState\",\"user\":\"%s\"}", user_addr);
@@ -268,6 +285,7 @@ int hl_rest_get_account(hl_rest_t *rest, const char *user_addr, tb_account_t *ou
 int hl_rest_get_open_orders(hl_rest_t *rest, const char *user_addr,
                             tb_order_t *out_orders, int *out_count,
                             int max_count) {
+    if (!is_safe_json_str(user_addr)) return -1;
     char body[128];
     snprintf(body, sizeof(body),
              "{\"type\":\"openOrders\",\"user\":\"%s\"}", user_addr);
@@ -284,6 +302,7 @@ int hl_rest_get_open_orders(hl_rest_t *rest, const char *user_addr,
 int hl_rest_get_user_fills(hl_rest_t *rest, const char *user_addr,
                            tb_fill_t *out_fills, int *out_count,
                            int max_count) {
+    if (!is_safe_json_str(user_addr)) return -1;
     char body[128];
     snprintf(body, sizeof(body),
              "{\"type\":\"userFills\",\"user\":\"%s\"}", user_addr);
@@ -303,11 +322,13 @@ static int exchange_request(hl_rest_t *rest,
                             const uint8_t *msgpack_data, size_t msgpack_len,
                             const char *action_json,
                             yyjson_doc **out_doc) {
-    /* Nonce in milliseconds — Hyperliquid rejects microsecond-scale nonces.
-     * Atomic counter ensures uniqueness if multiple orders within same ms. */
-    static _Atomic uint64_t g_nonce_counter = 0;
-    uint64_t nonce = (uint64_t)now_ms() +
-                     atomic_fetch_add(&g_nonce_counter, 1) % 100;
+    static _Atomic uint64_t g_last_nonce = 0;
+    uint64_t now = (uint64_t)now_ms();
+    uint64_t expected = atomic_load(&g_last_nonce);
+    uint64_t nonce;
+    do {
+        nonce = (now > expected) ? now : expected + 1;
+    } while (!atomic_compare_exchange_weak(&g_last_nonce, &expected, nonce));
 
     /* Sign */
     hl_signature_t sig;

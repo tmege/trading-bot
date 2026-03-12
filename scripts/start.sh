@@ -58,11 +58,6 @@ if [ "$PAPER_MODE" = "False" ] || [ "$PAPER_MODE" = "false" ]; then
     fi
 fi
 
-# Optional vars warnings
-if [ -z "${TB_CLAUDE_API_KEY:-}" ]; then
-    echo -e "${YELLOW}Warning: TB_CLAUDE_API_KEY not set — AI advisory disabled${NC}"
-fi
-
 # Check if already running
 if [ -f "$PID_FILE" ]; then
     old_pid=$(cat "$PID_FILE")

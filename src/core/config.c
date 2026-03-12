@@ -161,20 +161,6 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
         cfg->n_active_strategies = 0;
     }
 
-    /* AI Advisory section */
-    yyjson_val *ai = yyjson_obj_get(root, "ai_advisory");
-    if (ai) {
-        json_str(ai, "model", cfg->claude_model, sizeof(cfg->claude_model),
-                 "claude-haiku-4-5-20251001");
-        cfg->advisory_hour_morning = json_int(ai, "morning_hour_utc", 8);
-        cfg->advisory_hour_evening = json_int(ai, "evening_hour_utc", 20);
-    } else {
-        snprintf(cfg->claude_model, sizeof(cfg->claude_model),
-                 "claude-haiku-4-5-20251001");
-        cfg->advisory_hour_morning = 8;
-        cfg->advisory_hour_evening = 20;
-    }
-
     /* Database section */
     yyjson_val *db = yyjson_obj_get(root, "database");
     if (db) {
@@ -215,8 +201,6 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
                            sizeof(cfg->private_key_hex), creds_required);
     rc |= load_env_secret("TB_WALLET_ADDRESS", cfg->wallet_address,
                            sizeof(cfg->wallet_address), creds_required);
-    rc |= load_env_secret("TB_CLAUDE_API_KEY", cfg->claude_api_key,
-                           sizeof(cfg->claude_api_key), false);
     rc |= load_env_secret("TB_MACRO_API_KEY", cfg->macro_api_key,
                            sizeof(cfg->macro_api_key), false);
 
@@ -258,7 +242,4 @@ void tb_config_dump(const tb_config_t *cfg) {
                 cfg->paper_trading ? "true" : "false",
                 cfg->paper_initial_balance);
     tb_log_info("CONFIG: db_path=%s", cfg->db_path);
-    tb_log_info("CONFIG: claude_model=%s", cfg->claude_model);
-    tb_log_info("CONFIG: claude_api_key=%s",
-                cfg->claude_api_key[0] ? "***set***" : "(not set)");
 }

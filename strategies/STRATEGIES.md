@@ -11,11 +11,10 @@ Chaque strategie suit le meme pattern :
 
 - **COIN global** injecte par le moteur C avant chargement (fallback `"ETH"`)
 - **Instance name** : `{strategie}_{coin}` (ex: `triple_confirm_15m_eth`)
-- **6 callbacks** : `on_init`, `on_tick`, `on_fill`, `on_timer`, `on_advisory`, `on_shutdown`
+- **5 callbacks** : `on_init`, `on_tick`, `on_fill`, `on_timer`, `on_shutdown`
 - **Entry IOC** : slippage 0.1% (`price * 1.001` buy, `* 0.999` sell)
 - **SL/TP** : trigger orders reduce-only sur l'exchange
 - **Etat persistant** : `trade_count`, `win_count`, `enabled` via `save_state`/`load_state`
-- **Advisory** : pause/resume par section JSON specifique a l'instance
 - **Position recovery** : detecte les positions existantes au redemarrage
 - **Max hold time** : fermeture forcee si la position est tenue trop longtemps
 - **Sizing** : $40 par trade, cap $60, levier variable selon la strategie

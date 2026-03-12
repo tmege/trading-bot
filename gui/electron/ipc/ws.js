@@ -32,16 +32,23 @@ module.exports = function registerWsIPC(ipcMain, projectRoot, getWindow) {
     }
   }
 
+  function emitStatus(status) {
+    const win = getWindow();
+    send(win, 'ws:status', { status });
+  }
+
   function connect() {
     if (ws) {
       try { ws.close(); } catch (_) {}
     }
 
+    emitStatus('reconnecting');
     walletAddress = readWallet();
     ws = new WebSocket('wss://api.hyperliquid.xyz/ws');
 
     ws.on('open', () => {
       console.log('[ws] connected to Hyperliquid');
+      emitStatus('connected');
 
       // Subscribe to all mid prices
       ws.send(JSON.stringify({
@@ -79,17 +86,20 @@ module.exports = function registerWsIPC(ipcMain, projectRoot, getWindow) {
 
     ws.on('close', () => {
       console.log('[ws] disconnected, reconnecting in 3s');
+      emitStatus('disconnected');
       scheduleReconnect();
     });
 
     ws.on('error', (err) => {
       console.error('[ws] error:', err.message);
+      emitStatus('disconnected');
       scheduleReconnect();
     });
   }
 
   function scheduleReconnect() {
     if (reconnectTimer) return;
+    emitStatus('reconnecting');
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();

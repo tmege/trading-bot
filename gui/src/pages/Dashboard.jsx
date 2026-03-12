@@ -1,13 +1,29 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import BotControls from '../components/BotControls';
 import AccountPanel from '../components/AccountPanel';
 import PositionTable from '../components/PositionTable';
 import OrderTable from '../components/OrderTable';
+import EquityCurve from '../components/EquityCurve';
 import LogViewer from '../components/LogViewer';
 import useLiveData from '../hooks/useLiveData';
 
 export default function Dashboard({ botStatus, paperMode }) {
-  const { positions, trades, account } = useLiveData();
+  const { positions, account } = useLiveData();
+  const [equityCurve, setEquityCurve] = useState(null);
+
+  const fetchEquity = useCallback(async () => {
+    try {
+      if (!window.api?.db?.equityCurve) return;
+      const res = await window.api.db.equityCurve();
+      if (res.ok && res.curve?.length > 0) setEquityCurve(res.curve);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    fetchEquity();
+    const id = setInterval(fetchEquity, 60000);
+    return () => clearInterval(id);
+  }, [fetchEquity]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -32,9 +48,14 @@ export default function Dashboard({ botStatus, paperMode }) {
       <div className="flex-1 p-4 overflow-auto space-y-4">
         <AccountPanel account={account} />
 
-        <div className="grid grid-cols-2 gap-4">
+        {/* Equity curve */}
+        {equityCurve && (
+          <EquityCurve data={equityCurve} title="Portfolio Equity" />
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <PositionTable positions={positions} />
-          <OrderTable trades={trades} />
+          <OrderTable />
         </div>
 
         <LogViewer />

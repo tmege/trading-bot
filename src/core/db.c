@@ -47,19 +47,19 @@ static const char *SCHEMA_SQL =
     "  updated_ms    INTEGER"
     ");"
 
-    /* AI advisory call log */
-    "CREATE TABLE IF NOT EXISTS advisory_log ("
-    "  id            INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "  timestamp_ms  INTEGER NOT NULL,"
-    "  prompt_text   TEXT,"
-    "  response_text TEXT,"
-    "  adjustments   TEXT"
+    /* OID → strategy mapping (survives reconciliation + restart) */
+    "CREATE TABLE IF NOT EXISTS order_strategy_map ("
+    "  oid       INTEGER PRIMARY KEY,"
+    "  strategy  TEXT NOT NULL,"
+    "  coin      TEXT,"
+    "  created_ms INTEGER"
     ");"
 
     /* Indices for common queries */
     "CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(timestamp_ms);"
     "CREATE INDEX IF NOT EXISTS idx_trades_coin ON trades(coin);"
-    "CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);";
+    "CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);"
+    "CREATE INDEX IF NOT EXISTS idx_osm_created ON order_strategy_map(created_ms);";
 
 int tb_db_open(sqlite3 **db, const char *db_path) {
     /* Ensure parent directory exists */

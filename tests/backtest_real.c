@@ -110,7 +110,8 @@ typedef struct {
 } bnh_result_t;
 
 static bnh_result_t compute_buy_and_hold(const tb_candle_t *candles, int n,
-                                          double initial_balance, int leverage) {
+                                          double initial_balance, int leverage,
+                                          const char *interval) {
     bnh_result_t r = {0};
     if (n < 2) return r;
 
@@ -159,8 +160,15 @@ static bnh_result_t compute_buy_and_hold(const tb_candle_t *candles, int n,
         double std = sqrt(var > 0 ? var : 0);
         double downside_std = sqrt(sum_neg2 / count);
 
-        r.sharpe = std > 0 ? (mean / std) * sqrt(8760.0) : 0;
-        r.sortino = downside_std > 0 ? (mean / downside_std) * sqrt(8760.0) : 0;
+        /* Annualize based on candle interval */
+        double periods_per_year = 8760.0; /* 1h default */
+        if (strcmp(interval, "5m") == 0)       periods_per_year = 105120.0;
+        else if (strcmp(interval, "15m") == 0) periods_per_year = 35040.0;
+        else if (strcmp(interval, "4h") == 0)  periods_per_year = 2190.0;
+        else if (strcmp(interval, "1d") == 0)  periods_per_year = 365.0;
+        double ann = sqrt(periods_per_year);
+        r.sharpe = std > 0 ? (mean / std) * ann : 0;
+        r.sortino = downside_std > 0 ? (mean / downside_std) * ann : 0;
     }
 
     free(daily_ret);
@@ -388,11 +396,11 @@ int main(int argc, char *argv[]) {
 
     /* ── Step 3: Buy & Hold benchmarks ─────────────────────────────────── */
     bnh_result_t bnh_full = compute_buy_and_hold(candles, n_candles,
-                                                  INITIAL_BALANCE, MAX_LEVERAGE);
+                                                  INITIAL_BALANCE, MAX_LEVERAGE, "1h");
     bnh_result_t bnh_is = compute_buy_and_hold(is_candles, is_count,
-                                                INITIAL_BALANCE, MAX_LEVERAGE);
+                                                INITIAL_BALANCE, MAX_LEVERAGE, "1h");
     bnh_result_t bnh_oos = compute_buy_and_hold(oos_candles, oos_count,
-                                                 INITIAL_BALANCE, MAX_LEVERAGE);
+                                                 INITIAL_BALANCE, MAX_LEVERAGE, "1h");
 
     /* ── Step 4: Run backtests for each strategy ───────────────────────── */
     for (int s = 0; STRATEGIES[s].name; s++) {

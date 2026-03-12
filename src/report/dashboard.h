@@ -40,9 +40,6 @@ typedef struct {
     tb_strategy_info_t   strategies[TB_MAX_STRATEGIES];
     int                  n_strategies;
 
-    /* Advisory */
-    int64_t          last_advisory_ms;
-
     /* System */
     int64_t          uptime_sec;
     bool             paper_mode;

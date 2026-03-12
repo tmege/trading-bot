@@ -7,12 +7,13 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <time.h>
+#include <stdatomic.h>
 
 struct tb_dashboard {
     tb_dashboard_data_t data;
     pthread_mutex_t     lock;
     pthread_t           thread;
-    bool                running;
+    _Atomic bool        running;
     bool                started;
     int                 refresh_ms;
 };
@@ -138,14 +139,6 @@ void tb_dashboard_render(const tb_dashboard_data_t *d) {
                    d->strategies[i].name,
                    d->strategies[i].enabled ? "ACTIVE" : "PAUSED");
         }
-    }
-
-    /* ── Advisory ─────────────────────────────────────────────────────── */
-    if (d->last_advisory_ms > 0) {
-        int64_t ago = (int64_t)time(NULL) - d->last_advisory_ms / 1000;
-        char ago_str[32];
-        format_time(ago, ago_str, sizeof(ago_str));
-        printf(C_DIM "  Last advisory: %s ago" C_RESET "\n", ago_str);
     }
 
     print_line();

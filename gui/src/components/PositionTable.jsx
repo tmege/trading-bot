@@ -20,6 +20,7 @@ export default function PositionTable({ positions }) {
             <th className="text-right pb-2">Size</th>
             <th className="text-right pb-2">Entry</th>
             <th className="text-right pb-2">uPnL</th>
+            <th className="text-right pb-2">ROI%</th>
             <th className="text-right pb-2">Lev</th>
           </tr>
         </thead>
@@ -30,6 +31,11 @@ export default function PositionTable({ positions }) {
             const sizeNum = parseFloat(p.size || '0');
             const side = sizeNum >= 0 ? 'LONG' : 'SHORT';
             const sideColor = sizeNum >= 0 ? 'text-profit' : 'text-loss';
+
+            // ROI% = unrealized_pnl / |entry_px * size| * 100
+            const notional = Math.abs(parseFloat(p.entry_px || '0') * sizeNum);
+            const roi = notional > 0 ? (pnl / notional) * 100 : 0;
+            const roiColor = roi >= 0 ? 'text-profit' : 'text-loss';
 
             return (
               <tr key={p.coin} className="border-t border-surface-border">
@@ -45,6 +51,9 @@ export default function PositionTable({ positions }) {
                 </td>
                 <td className={`text-right py-2 font-medium ${pnlColor}`}>
                   {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}$
+                </td>
+                <td className={`text-right py-2 font-medium font-mono ${roiColor}`}>
+                  {roi >= 0 ? '+' : ''}{roi.toFixed(2)}%
                 </td>
                 <td className="text-right py-2 text-gray-500">
                   {p.leverage || '-'}x

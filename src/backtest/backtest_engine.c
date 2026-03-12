@@ -76,6 +76,22 @@ struct tb_backtest_engine {
 
     /* Trade log */
     tb_backtest_result_t *result;
+
+    /* Running stat accumulators (not capped by trade log size) */
+    int    stat_total;
+    int    stat_wins;
+    int    stat_losses;
+    double stat_gross_profit;
+    double stat_gross_loss;
+    double stat_max_win;
+    double stat_max_loss;
+    /* Welford online algo for Sharpe variance */
+    double stat_sum_ret;
+    double stat_sum_ret_m2;     /* sum of squared deviations from running mean */
+    double stat_sum_neg_sq;     /* for Sortino downside deviation */
+    /* Daily P&L tracking (resets at UTC day boundary like live) */
+    int64_t current_day;        /* current UTC day number */
+    double  day_start_equity;   /* equity at start of current day */
 };
 
 /* ── Forward declarations for Lua API ──────────────────────────────────── */
@@ -97,20 +113,51 @@ static int bt_lua_load_state(lua_State *L);
 static int bt_lua_get_macro(lua_State *L);
 static int bt_lua_get_sentiment(lua_State *L);
 static int bt_lua_get_fear_greed(lua_State *L);
-
 /* ── Record a trade ────────────────────────────────────────────────────── */
 static void record_trade(tb_backtest_engine_t *bt, const char *side,
                          double price, double size, double pnl, double fee) {
     tb_backtest_result_t *r = bt->result;
-    if (r->n_trade_log < 4096) {
+    /* Grow trade log dynamically */
+    if (r->n_trade_log >= r->trade_cap) {
+        int new_cap = r->trade_cap == 0 ? 4096 : r->trade_cap * 2;
+        tb_bt_trade_t *new_trades = realloc(r->trades, (size_t)new_cap * sizeof(tb_bt_trade_t));
+        if (new_trades) {
+            r->trades = new_trades;
+            r->trade_cap = new_cap;
+        }
+    }
+    if (r->n_trade_log < r->trade_cap) {
         int i = r->n_trade_log++;
         r->trades[i].time_ms = bt->current_time;
-        strncpy(r->trades[i].side, side, 7);
+        snprintf(r->trades[i].side, sizeof(r->trades[i].side), "%s", side);
         r->trades[i].price = price;
         r->trades[i].size = size;
         r->trades[i].pnl = pnl;
         r->trades[i].fee = fee;
         r->trades[i].balance_after = bt->balance;
+    }
+
+    /* Accumulate stats only on closing trades (pnl != 0).
+     * Entry fills have pnl=0 and would dilute win rate, Sharpe, Sortino. */
+    if (pnl != 0) {
+        bt->stat_total++;
+        if (pnl > 0) {
+            bt->stat_wins++;
+            bt->stat_gross_profit += pnl;
+            if (pnl > bt->stat_max_win) bt->stat_max_win = pnl;
+        } else {
+            bt->stat_losses++;
+            bt->stat_gross_loss += -pnl;
+            if (pnl < bt->stat_max_loss) bt->stat_max_loss = pnl;
+        }
+        /* Welford online algorithm for Sharpe variance */
+        double ret = bt->cfg.initial_balance > 0 ? pnl / bt->cfg.initial_balance : 0;
+        int n = bt->stat_total; /* already incremented above */
+        double old_mean = (n > 1) ? bt->stat_sum_ret / (n - 1) : 0.0;
+        bt->stat_sum_ret += ret;
+        double new_mean = bt->stat_sum_ret / n;
+        bt->stat_sum_ret_m2 += (ret - old_mean) * (ret - new_mean);
+        if (ret < 0) bt->stat_sum_neg_sq += ret * ret;
     }
 }
 
@@ -235,12 +282,15 @@ static void check_order_fills(tb_backtest_engine_t *bt,
             if (o->side == TB_SIDE_SELL && high >= o->price)
                 filled = true;
 
-            /* IOC orders fill at current mid if not immediately fillable */
+            /* IOC orders: fill at market price (current_mid) if within limit */
             if (o->tif == TB_TIF_IOC) {
-                if (o->side == TB_SIDE_BUY && bt->current_mid <= o->price)
+                if (o->side == TB_SIDE_BUY && bt->current_mid <= o->price) {
                     filled = true;
-                else if (o->side == TB_SIDE_SELL && bt->current_mid >= o->price)
+                    fill_price = bt->current_mid;
+                } else if (o->side == TB_SIDE_SELL && bt->current_mid >= o->price) {
                     filled = true;
+                    fill_price = bt->current_mid;
+                }
 
                 if (!filled) {
                     o->active = false; /* IOC cancelled */
@@ -439,9 +489,17 @@ static int bt_lua_place_limit(lua_State *L) {
     double price = luaL_checknumber(L, 3);
     double size = luaL_checknumber(L, 4);
 
-    tb_side_t side = (strcmp(side_str, "BUY") == 0 || strcmp(side_str, "buy") == 0 ||
-                      strcmp(side_str, "B") == 0)
-                     ? TB_SIDE_BUY : TB_SIDE_SELL;
+    tb_side_t side;
+    if (strcmp(side_str, "BUY") == 0 || strcmp(side_str, "buy") == 0 ||
+        strcmp(side_str, "B") == 0)
+        side = TB_SIDE_BUY;
+    else if (strcmp(side_str, "SELL") == 0 || strcmp(side_str, "sell") == 0 ||
+             strcmp(side_str, "A") == 0 || strcmp(side_str, "S") == 0)
+        side = TB_SIDE_SELL;
+    else {
+        lua_pushnil(L);
+        return 1;
+    }
 
     tb_tif_t tif = TB_TIF_GTC;
     bool reduce_only = false;
@@ -468,6 +526,17 @@ static int bt_lua_place_limit(lua_State *L) {
         return 1;
     }
 
+    /* Enforce max leverage (skip for reduce_only orders) */
+    if (!reduce_only && bt->cfg.max_leverage > 0 && bt->balance > 0) {
+        double existing_notional = fabs(bt->position_size) * bt->entry_price;
+        double new_notional = price * size;
+        double max_notional = bt->balance * bt->cfg.max_leverage;
+        if (existing_notional + new_notional > max_notional * 1.05) {
+            lua_pushnil(L);
+            return 1;
+        }
+    }
+
     bt->orders[slot] = (bt_order_t){
         .oid = bt->next_oid++,
         .side = side,
@@ -491,9 +560,17 @@ static int bt_lua_place_trigger(lua_State *L) {
     double trigger_px = luaL_checknumber(L, 3);
     double size = luaL_checknumber(L, 4);
 
-    tb_side_t side = (strcmp(side_str, "BUY") == 0 || strcmp(side_str, "buy") == 0 ||
-                      strcmp(side_str, "B") == 0)
-                     ? TB_SIDE_BUY : TB_SIDE_SELL;
+    tb_side_t side;
+    if (strcmp(side_str, "BUY") == 0 || strcmp(side_str, "buy") == 0 ||
+        strcmp(side_str, "B") == 0)
+        side = TB_SIDE_BUY;
+    else if (strcmp(side_str, "SELL") == 0 || strcmp(side_str, "sell") == 0 ||
+             strcmp(side_str, "A") == 0 || strcmp(side_str, "S") == 0)
+        side = TB_SIDE_SELL;
+    else {
+        lua_pushnil(L);
+        return 1;
+    }
 
     bool reduce_only = false;
     if (lua_istable(L, 5)) {
@@ -602,7 +679,8 @@ static int bt_lua_get_account_value(lua_State *L) {
 
 static int bt_lua_get_daily_pnl(lua_State *L) {
     tb_backtest_engine_t *bt = get_bt(L);
-    lua_pushnumber(L, bt->total_pnl - bt->total_fees);
+    double equity = bt->balance + bt->unrealized_pnl;
+    lua_pushnumber(L, equity - bt->day_start_equity);
     return 1;
 }
 
@@ -666,6 +744,7 @@ static int bt_lua_get_indicators(lua_State *L) {
     free(inputs);
 
     lua_newtable(L);
+    lua_pushboolean(L, n >= 200 ? 1 : 0);  lua_setfield(L, -2, "valid");
     lua_pushnumber(L, snap.sma_20);   lua_setfield(L, -2, "sma_20");
     lua_pushnumber(L, snap.sma_50);   lua_setfield(L, -2, "sma_50");
     lua_pushnumber(L, snap.sma_200);  lua_setfield(L, -2, "sma_200");
@@ -673,6 +752,7 @@ static int bt_lua_get_indicators(lua_State *L) {
     lua_pushnumber(L, snap.ema_26);   lua_setfield(L, -2, "ema_26");
     lua_pushnumber(L, snap.rsi_14);   lua_setfield(L, -2, "rsi_14");
     lua_pushnumber(L, snap.macd_line);      lua_setfield(L, -2, "macd_line");
+    lua_pushnumber(L, snap.macd_line);      lua_setfield(L, -2, "macd");
     lua_pushnumber(L, snap.macd_signal);    lua_setfield(L, -2, "macd_signal");
     lua_pushnumber(L, snap.macd_histogram); lua_setfield(L, -2, "macd_histogram");
     lua_pushnumber(L, snap.bb_upper);  lua_setfield(L, -2, "bb_upper");
@@ -727,12 +807,12 @@ static int bt_lua_get_indicators(lua_State *L) {
     lua_pushnumber(L, snap.atr_14);    lua_setfield(L, -2, "atr");
     lua_pushnumber(L, snap.bb_middle); lua_setfield(L, -2, "bb_mid");
 
-    lua_pushboolean(L, snap.above_sma_200);     lua_setfield(L, -2, "above_sma_200");
+    lua_pushboolean(L, snap.above_sma_200);     lua_setfield(L, -2, "above_sma200");
     lua_pushboolean(L, snap.golden_cross);      lua_setfield(L, -2, "golden_cross");
     lua_pushboolean(L, snap.rsi_oversold);      lua_setfield(L, -2, "rsi_oversold");
     lua_pushboolean(L, snap.rsi_overbought);    lua_setfield(L, -2, "rsi_overbought");
     lua_pushboolean(L, snap.bb_squeeze);        lua_setfield(L, -2, "bb_squeeze");
-    lua_pushboolean(L, snap.macd_bullish_cross);lua_setfield(L, -2, "macd_bullish_cross");
+    lua_pushboolean(L, snap.macd_bullish_cross);lua_setfield(L, -2, "macd_bullish");
     lua_pushboolean(L, snap.adx_trending);      lua_setfield(L, -2, "adx_trending");
     lua_pushboolean(L, snap.kc_squeeze);        lua_setfield(L, -2, "kc_squeeze");
     lua_pushboolean(L, snap.ichi_bullish);      lua_setfield(L, -2, "ichi_bullish");
@@ -776,6 +856,7 @@ static int bt_lua_load_state(lua_State *L) {
     lua_getfield(bt->L, LUA_REGISTRYINDEX, regkey);
     return 1;
 }
+
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
@@ -896,6 +977,25 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
         /* Check order fills (use high/low of candle) */
         check_order_fills(bt, high, low);
 
+        /* Recalculate unrealized P&L after fills (fills may have changed position) */
+        if (bt->position_size != 0) {
+            if (bt->position_size > 0)
+                bt->unrealized_pnl = (close - bt->entry_price) * bt->position_size;
+            else
+                bt->unrealized_pnl = (bt->entry_price - close) * fabs(bt->position_size);
+        } else {
+            bt->unrealized_pnl = 0;
+        }
+
+        /* Track daily equity reset (like live pos_tracker) */
+        {
+            int64_t day = bt->current_time / (86400LL * 1000);
+            if (day != bt->current_day) {
+                bt->current_day = day;
+                bt->day_start_equity = bt->balance + bt->unrealized_pnl;
+            }
+        }
+
         /* Periodic GC to keep memory reasonable (no hard limit since
            backtests run fork-isolated — OS reclaims everything on exit) */
         if (i % 1000 == 0) {
@@ -938,7 +1038,7 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
 
         /* Record equity curve (daily) */
         int64_t day = bt->current_time / (86400LL * 1000);
-        if (day != last_equity_day && out->n_equity_points < 1000) {
+        if (day != last_equity_day && out->n_equity_points < 2000) {
             int ei = out->n_equity_points++;
             out->equity_curve[ei].time_ms = bt->current_time;
             out->equity_curve[ei].equity = equity;
@@ -974,31 +1074,17 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
     out->max_drawdown = max_dd;
     out->max_drawdown_pct = max_dd_pct;
 
-    /* Trade stats */
-    double gross_profit = 0, gross_loss = 0;
-    double sum_returns = 0;
-    double sum_neg_sq = 0;
-    int n_returns = 0;
+    /* Trade stats — from running accumulators (not capped by trade log) */
+    out->total_trades    = bt->stat_total;
+    out->winning_trades  = bt->stat_wins;
+    out->losing_trades   = bt->stat_losses;
+    out->max_win         = bt->stat_max_win;
+    out->max_loss        = bt->stat_max_loss;
 
-    for (int i = 0; i < out->n_trade_log; i++) {
-        double pnl = out->trades[i].pnl;
-        if (pnl > 0) {
-            out->winning_trades++;
-            gross_profit += pnl;
-            if (pnl > out->max_win) out->max_win = pnl;
-        } else if (pnl < 0) {
-            out->losing_trades++;
-            gross_loss += -pnl;
-            if (pnl < out->max_loss) out->max_loss = pnl;
-        }
-        /* For Sharpe/Sortino, use per-trade return */
-        double ret = out->start_balance > 0 ? pnl / out->start_balance : 0;
-        sum_returns += ret;
-        if (ret < 0) sum_neg_sq += ret * ret;
-        n_returns++;
-    }
+    double gross_profit  = bt->stat_gross_profit;
+    double gross_loss    = bt->stat_gross_loss;
+    int    n_returns     = bt->stat_total;
 
-    out->total_trades = out->n_trade_log;
     if (out->total_trades > 0)
         out->win_rate = (double)out->winning_trades / out->total_trades * 100.0;
     if (gross_loss > 0)
@@ -1010,21 +1096,15 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
     if (out->losing_trades > 0)
         out->avg_loss = -gross_loss / out->losing_trades;
 
-    /* Sharpe & Sortino (annualized) */
+    /* Sharpe & Sortino (annualized) — from Welford online accumulators */
     if (n_returns > 1 && out->n_days > 0) {
-        double mean_ret = sum_returns / n_returns;
-        double sum_sq = 0;
-        for (int i = 0; i < out->n_trade_log; i++) {
-            double ret = out->start_balance > 0 ?
-                out->trades[i].pnl / out->start_balance : 0;
-            sum_sq += (ret - mean_ret) * (ret - mean_ret);
-        }
-        double std_dev = sqrt(sum_sq / (n_returns - 1));
+        double mean_ret = bt->stat_sum_ret / n_returns;
+        double std_dev = sqrt(bt->stat_sum_ret_m2 / (n_returns - 1));
         double ann_factor = sqrt(365.0 / out->n_days * n_returns);
         if (std_dev > 0)
             out->sharpe_ratio = mean_ret / std_dev * ann_factor;
 
-        double downside_dev = sqrt(sum_neg_sq / n_returns);
+        double downside_dev = sqrt(bt->stat_sum_neg_sq / n_returns);
         if (downside_dev > 0)
             out->sortino_ratio = mean_ret / downside_dev * ann_factor;
         else if (mean_ret > 0)
@@ -1072,4 +1152,13 @@ void tb_backtest_print_results(const tb_backtest_result_t *r) {
 
     for (int i = 0; i < LINE_W; i++) printf(C_DIM "─" C_RESET);
     printf("\n\n");
+}
+
+void tb_backtest_result_cleanup(tb_backtest_result_t *r) {
+    if (r) {
+        free(r->trades);
+        r->trades = NULL;
+        r->n_trade_log = 0;
+        r->trade_cap = 0;
+    }
 }

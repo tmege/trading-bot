@@ -11,11 +11,17 @@
 
 /* ── Order tracking ────────────────────────────────────────────────────────── */
 #define MAX_OPEN_ORDERS 256
+#define OID_CACHE_SIZE  2048
 
 typedef struct {
     tb_order_t order;
     char       strategy[64];
 } tracked_order_t;
+
+typedef struct {
+    uint64_t oid;
+    char     strategy[64];
+} oid_cache_entry_t;
 
 struct tb_order_mgr {
     hl_rest_t              *rest;
@@ -45,8 +51,17 @@ struct tb_order_mgr {
     _Atomic bool            running;
     int                     recon_interval_sec;
 
+    /* OID → strategy cache (survives reconciliation removal) */
+    oid_cache_entry_t       oid_cache[OID_CACHE_SIZE];
+    int                     oid_cache_idx;
+
     /* Prepared statements for trade logging */
     sqlite3_stmt           *stmt_insert_trade;
+
+    /* Prepared statements for OID → strategy persistent map */
+    sqlite3_stmt           *stmt_insert_oid_strat;
+    sqlite3_stmt           *stmt_find_oid_strat;
+    sqlite3_stmt           *stmt_cleanup_oid_strat;
 };
 
 /* ── SQLite trade logging ──────────────────────────────────────────────────── */
@@ -61,6 +76,33 @@ static int prepare_statements(tb_order_mgr_t *mgr) {
         tb_log_error("failed to prepare trade insert: %s", sqlite3_errmsg(mgr->db));
         return -1;
     }
+
+    /* OID → strategy persistent map */
+    const char *sql_ins_oid =
+        "INSERT OR REPLACE INTO order_strategy_map (oid, strategy, coin, created_ms) "
+        "VALUES (?, ?, ?, ?)";
+    rc = sqlite3_prepare_v2(mgr->db, sql_ins_oid, -1, &mgr->stmt_insert_oid_strat, NULL);
+    if (rc != SQLITE_OK) {
+        tb_log_error("failed to prepare oid_strat insert: %s", sqlite3_errmsg(mgr->db));
+        return -1;
+    }
+
+    const char *sql_find_oid =
+        "SELECT strategy FROM order_strategy_map WHERE oid = ?";
+    rc = sqlite3_prepare_v2(mgr->db, sql_find_oid, -1, &mgr->stmt_find_oid_strat, NULL);
+    if (rc != SQLITE_OK) {
+        tb_log_error("failed to prepare oid_strat find: %s", sqlite3_errmsg(mgr->db));
+        return -1;
+    }
+
+    const char *sql_clean_oid =
+        "DELETE FROM order_strategy_map WHERE created_ms < ?";
+    rc = sqlite3_prepare_v2(mgr->db, sql_clean_oid, -1, &mgr->stmt_cleanup_oid_strat, NULL);
+    if (rc != SQLITE_OK) {
+        tb_log_error("failed to prepare oid_strat cleanup: %s", sqlite3_errmsg(mgr->db));
+        return -1;
+    }
+
     return 0;
 }
 
@@ -95,9 +137,32 @@ static void log_trade_to_db(tb_order_mgr_t *mgr, const tb_fill_t *fill,
     }
 }
 
+/* ── Cache OID → strategy (ring buffer + SQLite) ──────────────────────────── */
+static void cache_oid_strategy(tb_order_mgr_t *mgr, uint64_t oid,
+                                const char *strategy, const char *coin) {
+    /* 1. Ring buffer (fast, single-writer so no lock needed) */
+    int idx = mgr->oid_cache_idx % OID_CACHE_SIZE;
+    mgr->oid_cache[idx].oid = oid;
+    snprintf(mgr->oid_cache[idx].strategy, sizeof(mgr->oid_cache[idx].strategy),
+             "%s", strategy);
+    mgr->oid_cache_idx++;
+
+    /* 2. SQLite persistent table */
+    if (mgr->stmt_insert_oid_strat) {
+        sqlite3_stmt *s = mgr->stmt_insert_oid_strat;
+        sqlite3_reset(s);
+        sqlite3_bind_int64(s, 1, (int64_t)oid);
+        sqlite3_bind_text(s, 2, strategy, -1, SQLITE_STATIC);
+        sqlite3_bind_text(s, 3, coin, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(s, 4, (int64_t)time(NULL) * 1000);
+        sqlite3_step(s);
+    }
+}
+
 /* ── Find strategy name for an order (copies into caller buffer) ───────────── */
 static bool find_strategy_for_oid(tb_order_mgr_t *mgr, uint64_t oid,
                                    char *out, size_t out_len) {
+    /* 1. Check main tracking array (active orders) */
     pthread_rwlock_rdlock(&mgr->orders_lock);
     for (int i = 0; i < mgr->n_orders; i++) {
         if (mgr->orders[i].order.oid == oid) {
@@ -107,6 +172,29 @@ static bool find_strategy_for_oid(tb_order_mgr_t *mgr, uint64_t oid,
         }
     }
     pthread_rwlock_unlock(&mgr->orders_lock);
+
+    /* 2. Check ring buffer cache (survives reconciliation removal) */
+    for (int i = 0; i < OID_CACHE_SIZE; i++) {
+        if (mgr->oid_cache[i].oid == oid) {
+            snprintf(out, out_len, "%s", mgr->oid_cache[i].strategy);
+            return true;
+        }
+    }
+
+    /* 3. Check SQLite persistent table (survives restart) */
+    if (mgr->stmt_find_oid_strat) {
+        sqlite3_reset(mgr->stmt_find_oid_strat);
+        sqlite3_bind_int64(mgr->stmt_find_oid_strat, 1, (int64_t)oid);
+        if (sqlite3_step(mgr->stmt_find_oid_strat) == SQLITE_ROW) {
+            const char *s = (const char *)sqlite3_column_text(
+                mgr->stmt_find_oid_strat, 0);
+            if (s) {
+                snprintf(out, out_len, "%s", s);
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -305,7 +393,10 @@ tb_order_mgr_t *tb_order_mgr_create(hl_rest_t *rest, hl_ws_t *ws,
 void tb_order_mgr_destroy(tb_order_mgr_t *mgr) {
     if (!mgr) return;
     tb_order_mgr_stop(mgr);
-    if (mgr->stmt_insert_trade) sqlite3_finalize(mgr->stmt_insert_trade);
+    if (mgr->stmt_insert_trade)     sqlite3_finalize(mgr->stmt_insert_trade);
+    if (mgr->stmt_insert_oid_strat) sqlite3_finalize(mgr->stmt_insert_oid_strat);
+    if (mgr->stmt_find_oid_strat)   sqlite3_finalize(mgr->stmt_find_oid_strat);
+    if (mgr->stmt_cleanup_oid_strat) sqlite3_finalize(mgr->stmt_cleanup_oid_strat);
     pthread_rwlock_destroy(&mgr->orders_lock);
     free(mgr);
     tb_log_info("order manager destroyed");
@@ -444,6 +535,9 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
     }
     if (rc != 0) return -1;
 
+    /* Cache OID → strategy (survives reconciliation + restart) */
+    cache_oid_strategy(mgr, oid, submit->strategy_name, coin);
+
     /* Track the order locally */
     pthread_rwlock_wrlock(&mgr->orders_lock);
     if (mgr->n_orders < MAX_OPEN_ORDERS) {
@@ -580,17 +674,20 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
 
 int tb_order_mgr_get_open_orders(tb_order_mgr_t *mgr, const char *coin,
                                   tb_order_t *out, int *count) {
+    int max_out = *count;
     pthread_rwlock_rdlock(&mgr->orders_lock);
     int n = 0;
     for (int i = 0; i < mgr->n_orders; i++) {
         bool match = (coin == NULL || coin[0] == '\0' ||
                       strcmp(mgr->orders[i].order.coin, coin) == 0);
-        if (match && out) {
-            out[n] = mgr->orders[i].order;
+        if (match) {
+            if (out && n < max_out) {
+                out[n] = mgr->orders[i].order;
+            }
+            n++;
         }
-        if (match) n++;
     }
-    *count = n;
+    *count = (n < max_out) ? n : max_out;
     pthread_rwlock_unlock(&mgr->orders_lock);
     return 0;
 }
@@ -659,6 +756,14 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
 
         tb_log_debug("reconciled: %d local orders, %d on exchange",
                      local_count, n_exchange);
+    }
+
+    /* Cleanup old OID → strategy entries (> 24h) */
+    if (mgr->stmt_cleanup_oid_strat) {
+        sqlite3_reset(mgr->stmt_cleanup_oid_strat);
+        int64_t cutoff = ((int64_t)time(NULL) - 86400) * 1000;
+        sqlite3_bind_int64(mgr->stmt_cleanup_oid_strat, 1, cutoff);
+        sqlite3_step(mgr->stmt_cleanup_oid_strat);
     }
 
     /* Check emergency close */
