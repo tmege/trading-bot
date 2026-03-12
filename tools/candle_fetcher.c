@@ -1,19 +1,18 @@
 /*
  * Candle Fetcher — Pre-download historical candles to local SQLite cache
  *
- * Fetches candles from Hyperliquid for multiple coins and intervals,
+ * Fetches candles from Binance for multiple coins and intervals,
  * stores them in data/candle_cache.db for instant backtest access.
  *
- * Usage: ./candle_fetcher [--days N] [--coins ETH,BTC,...] [--intervals 5m,15m,...] [--no-binance]
+ * Usage: ./candle_fetcher [--days N] [--coins ETH,BTC,...] [--intervals 5m,15m,...]
  *
- * Defaults: 5 coins (ETH,BTC,SOL,DOGE,HYPE), all intervals, 4 years (1461 days)
+ * Defaults: 6 coins (ETH,BTC,SOL,DOGE,HYPE,PUMP), all intervals, 4 years (1461 days)
  * Incremental: only fetches candles newer than what's already cached.
- * Falls back to Binance API when Hyperliquid has no data (e.g. 5m >18 days).
+ * Uses Binance /api/v3/klines — no API key required.
  */
 
 #include "core/types.h"
 #include "core/logging.h"
-#include "exchange/hl_rest.h"
 
 #include <sqlite3.h>
 #include <curl/curl.h>
@@ -38,8 +37,6 @@
 #define BINANCE_BASE_URL  "https://api.binance.com"
 #define BINANCE_BATCH     1000   /* max per request */
 #define BINANCE_RATE_US   200000 /* 200ms between requests */
-
-static bool g_no_binance = false;
 
 static const char *DEFAULT_COINS[] = {"ETH", "BTC", "SOL", "DOGE", "HYPE", "PUMP", NULL};
 static const char *DEFAULT_INTERVALS[] = {"5m", "15m", "1h", "4h", "1d", NULL};
@@ -357,8 +354,8 @@ static int binance_get_candles(const char *coin, const char *interval,
 }
 
 /* Fetch range via Binance with pagination */
-static int binance_fetch_range(sqlite3 *db, const char *coin, const char *interval,
-                                int64_t from_ms, int64_t to_ms) {
+static int fetch_range(sqlite3 *db, const char *coin, const char *interval,
+                       int64_t from_ms, int64_t to_ms) {
     int64_t candle_ms = interval_to_ms(interval);
     tb_candle_t *candles = calloc(BINANCE_BATCH, sizeof(tb_candle_t));
     if (!candles) return -1;
@@ -390,51 +387,7 @@ static int binance_fetch_range(sqlite3 *db, const char *coin, const char *interv
     return total_fetched;
 }
 
-/* ── Fetch and store candles for one coin/interval ─────────────────────── */
-/* Fetch a range [from_ms, to_ms) and insert into DB. Returns count fetched. */
-static int fetch_range(sqlite3 *db, hl_rest_t *rest,
-                       const char *coin, const char *interval,
-                       int64_t from_ms, int64_t to_ms) {
-    int64_t candle_ms = interval_to_ms(interval);
-    tb_candle_t *candles = calloc(BATCH_SIZE, sizeof(tb_candle_t));
-    if (!candles) return -1;
-
-    int total_fetched = 0;
-    int64_t cursor = from_ms;
-
-    while (cursor < to_ms) {
-        int batch_count = 0;
-        int rc = hl_rest_get_candles(rest, coin, interval,
-                                      cursor, to_ms,
-                                      candles, &batch_count, BATCH_SIZE);
-        if (rc != 0 || batch_count == 0) {
-            /* First batch returned 0 candles (not error) — HL limit reached */
-            if (total_fetched == 0 && rc == 0 && !g_no_binance) {
-                free(candles);
-                fprintf(stderr, "  %s/%s: Hyperliquid returned 0 candles, "
-                        "falling back to Binance API\n", coin, interval);
-                return binance_fetch_range(db, coin, interval, from_ms, to_ms);
-            }
-            if (total_fetched > 0) break;
-            free(candles);
-            return -1;
-        }
-
-        insert_candles(db, coin, interval, candles, batch_count);
-        total_fetched += batch_count;
-
-        cursor = candles[batch_count - 1].time_open + candle_ms + 1;
-
-        progress(coin, interval, batch_count, total_fetched);
-
-        if (cursor < to_ms) usleep(RATE_LIMIT_US);
-    }
-
-    free(candles);
-    return total_fetched;
-}
-
-static int fetch_and_store(sqlite3 *db, hl_rest_t *rest,
+static int fetch_and_store(sqlite3 *db,
                             const char *coin, const char *interval,
                             int n_days) {
     int64_t now_ms = (int64_t)time(NULL) * 1000;
@@ -450,7 +403,7 @@ static int fetch_and_store(sqlite3 *db, hl_rest_t *rest,
                 coin, interval,
                 (long long)(want_start_ms / 1000),
                 (long long)(earliest / 1000));
-        int bf = fetch_range(db, rest, coin, interval, want_start_ms, earliest);
+        int bf = fetch_range(db, coin, interval, want_start_ms, earliest);
         if (bf > 0) total_fetched += bf;
     }
 
@@ -462,7 +415,7 @@ static int fetch_and_store(sqlite3 *db, hl_rest_t *rest,
     }
 
     if (fwd_start < now_ms) {
-        int ff = fetch_range(db, rest, coin, interval, fwd_start, now_ms);
+        int ff = fetch_range(db, coin, interval, fwd_start, now_ms);
         if (ff > 0) total_fetched += ff;
     }
 
@@ -521,22 +474,12 @@ int main(int argc, char *argv[]) {
             parse_list(argv[++i], intervals, MAX_INTERVALS);
         } else if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) {
             db_path = argv[++i];
-        } else if (strcmp(argv[i], "--no-binance") == 0) {
-            g_no_binance = true;
         }
     }
 
     /* Open cache DB */
     sqlite3 *db = open_cache_db(db_path);
     if (!db) return 1;
-
-    /* Create REST client (no signer needed for /info endpoints) */
-    hl_rest_t *rest = hl_rest_create("https://api.hyperliquid.xyz", NULL, true);
-    if (!rest) {
-        fprintf(stderr, "ERROR: cannot create REST client\n");
-        sqlite3_close(db);
-        return 1;
-    }
 
     /* Count work */
     int n_coins = 0, n_intervals = 0;
@@ -555,7 +498,7 @@ int main(int argc, char *argv[]) {
             done++;
             fprintf(stderr, "\n[%d/%d] %s / %s\n", done, total_jobs, coins[c], intervals[v]);
 
-            int fetched = fetch_and_store(db, rest, coins[c], intervals[v], n_days);
+            int fetched = fetch_and_store(db, coins[c], intervals[v], n_days);
             if (fetched < 0) {
                 fprintf(stderr, "  WARNING: failed to fetch %s/%s\n", coins[c], intervals[v]);
             } else {
@@ -586,7 +529,6 @@ int main(int argc, char *argv[]) {
     }
     printf("\n  ]\n}\n");
 
-    hl_rest_destroy(rest);
     if (bn_curl) curl_easy_cleanup(bn_curl);
     sqlite3_close(db);
     return 0;

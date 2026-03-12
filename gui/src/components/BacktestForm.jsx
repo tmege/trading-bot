@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Loader2 } from 'lucide-react';
 
-const DEFAULT_COINS = ['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP'];
 const INTERVALS = ['5m', '15m', '1h', '4h', '1d'];
 
 function toLocalDate(d) {
@@ -12,11 +11,11 @@ function daysBetween(a, b) {
   return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
 
-export default function BacktestForm({ onRun, running, activeCoins }) {
-  const ALL_COINS = activeCoins && activeCoins.length > 0 ? activeCoins : DEFAULT_COINS;
+export default function BacktestForm({ onRun, running }) {
   const [strategies, setStrategies] = useState([]);
   const [strategy, setStrategy] = useState('');
-  const [selectedCoins, setSelectedCoins] = useState(['ETH', 'BTC']);
+  const [availableCoins, setAvailableCoins] = useState([]);
+  const [selectedCoins, setSelectedCoins] = useState([]);
   const [interval, setInterval] = useState('1h');
 
   // Date pickers — default: last 30 days
@@ -25,22 +24,33 @@ export default function BacktestForm({ onRun, running, activeCoins }) {
   const [startDate, setStartDate] = useState(thirtyAgo);
   const [endDate, setEndDate] = useState(today);
 
+  // Load strategies + available coins (3+ years of cache data)
   useEffect(() => {
     async function load() {
       try {
-        const res = await window.api.strategies.list();
-        if (res.ok) {
-          setStrategies(res.strategies);
-          if (res.strategies.length > 0 && !strategy) {
-            const first = res.strategies[0].file;
+        const [stratRes, coinRes] = await Promise.all([
+          window.api.strategies.list(),
+          window.api.db.backtestCoins ? window.api.db.backtestCoins() : Promise.resolve({ ok: false }),
+        ]);
+
+        if (stratRes.ok) {
+          setStrategies(stratRes.strategies);
+          if (stratRes.strategies.length > 0 && !strategy) {
+            const first = stratRes.strategies[0].file;
             setStrategy(first);
-            // Auto-detect interval from first strategy
             const base = first.replace(/\.lua$/, '');
             const lastSeg = base.split('_').pop();
             if (INTERVALS.includes(lastSeg)) {
               setInterval(lastSeg);
             }
           }
+        }
+
+        if (coinRes.ok && coinRes.coins.length > 0) {
+          const coins = coinRes.coins.map(c => c.coin);
+          setAvailableCoins(coinRes.coins);
+          // Pre-select first 2 coins
+          setSelectedCoins(coins.slice(0, 2));
         }
       } catch (_) {}
     }
@@ -50,7 +60,7 @@ export default function BacktestForm({ onRun, running, activeCoins }) {
   function toggleCoin(coin) {
     setSelectedCoins(prev => {
       if (prev.includes(coin)) {
-        if (prev.length <= 1) return prev; // minimum 1 coin
+        if (prev.length <= 1) return prev;
         return prev.filter(c => c !== coin);
       }
       return [...prev, coin];
@@ -66,8 +76,7 @@ export default function BacktestForm({ onRun, running, activeCoins }) {
 
   function handleStrategyChange(file) {
     setStrategy(file);
-    setSelectedCoins(['ETH', 'BTC']);
-    // Auto-detect interval from strategy filename (e.g. bb_scalp_15m.lua → 15m)
+    // Keep current selected coins (they're all valid since they have 3+ years)
     const base = file.replace(/\.lua$/, '');
     const lastSeg = base.split('_').pop();
     if (INTERVALS.includes(lastSeg)) {
@@ -147,24 +156,31 @@ export default function BacktestForm({ onRun, running, activeCoins }) {
         </div>
       </div>
 
-      {/* Coin selector pills */}
-      <div className="mb-4 flex items-center gap-2">
-        <span className="text-xs text-gray-400">Coins:</span>
-        <div className="flex gap-1.5">
-          {ALL_COINS.map(c => {
-            const active = selectedCoins.includes(c);
+      {/* Coin selector pills — only coins with 3+ years of data */}
+      <div className="mb-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs text-gray-400">Coins:</span>
+          {availableCoins.length === 0 && (
+            <span className="text-[10px] text-gray-600">No coins with 3+ years of cached data</span>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {availableCoins.map(({ coin, years }) => {
+            const active = selectedCoins.includes(coin);
             return (
               <button
-                key={c}
+                key={coin}
                 type="button"
-                onClick={() => toggleCoin(c)}
+                onClick={() => toggleCoin(coin)}
+                title={`${years} years of data`}
                 className={`px-2.5 py-0.5 rounded text-xs font-medium transition-colors ${
                   active
                     ? 'bg-accent/20 text-accent border border-accent/30'
                     : 'bg-surface-bg text-gray-500 border border-surface-border cursor-pointer hover:border-accent/30'
                 }`}
               >
-                {c}
+                {coin}
+                <span className="ml-1 text-[9px] opacity-60">{years}y</span>
               </button>
             );
           })}
@@ -173,7 +189,7 @@ export default function BacktestForm({ onRun, running, activeCoins }) {
 
       <button
         type="submit"
-        disabled={running || !strategy || nDays < 1}
+        disabled={running || !strategy || nDays < 1 || selectedCoins.length === 0}
         className="flex items-center gap-2 px-4 py-2 bg-accent/20 text-accent border border-accent/30 rounded-lg text-sm font-medium hover:bg-accent/30 transition-colors disabled:opacity-50"
       >
         {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Settings as SettingsIcon, ToggleLeft, ToggleRight, Plus, X, RefreshCw, AlertTriangle } from 'lucide-react';
-import SyncPanel from '../components/SyncPanel';
+import { Settings as SettingsIcon, ToggleLeft, ToggleRight, Plus, X, AlertTriangle } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 
 const POPULAR_COINS = ['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP', 'AVAX', 'ARB', 'OP', 'MATIC', 'LINK', 'UNI', 'AAVE', 'MKR', 'SNX', 'PEPE', 'WIF', 'BONK', 'JUP', 'TIA', 'SEI', 'SUI', 'APT', 'INJ', 'FTM', 'NEAR', 'ATOM', 'DOT', 'ADA', 'XRP', 'LTC', 'BCH'];
@@ -163,18 +162,9 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
         />
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <SettingsIcon size={20} className="text-accent" />
-            <h1 className="text-lg font-semibold text-white">Settings</h1>
-          </div>
-          <button
-            onClick={loadConfig}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-400 hover:text-white border border-surface-border rounded-lg hover:bg-surface-hover transition-colors"
-          >
-            <RefreshCw size={12} />
-            Reload
-          </button>
+        <div className="flex items-center gap-3 mb-6">
+          <SettingsIcon size={20} className="text-accent" />
+          <h1 className="text-lg font-semibold text-white">Settings</h1>
         </div>
 
         {/* Restart notice */}
@@ -341,12 +331,6 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
               ))}
             </div>
           )}
-        </section>
-
-        {/* Market Data Cache */}
-        <section className="mb-8">
-          <h2 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Market Data</h2>
-          <SyncPanel />
         </section>
 
         {/* Risk Parameters (editable, %-based) */}

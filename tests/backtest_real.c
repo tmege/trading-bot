@@ -1,7 +1,7 @@
 /*
  * Real Data Backtest — Quantitative Analysis
  *
- * Fetches real ETH candles from Hyperliquid and runs walk-forward
+ * Loads real ETH candles from SQLite cache and runs walk-forward
  * backtests with proper quant metrics:
  * - In-sample (60%) / Out-of-sample (40%) split
  * - Sharpe, Sortino, Max Drawdown
@@ -12,9 +12,9 @@
 
 #include "core/types.h"
 #include "core/logging.h"
-#include "exchange/hl_rest.h"
 #include "backtest/backtest_engine.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,48 +57,52 @@ static const strategy_t STRATEGIES[] = {
     { NULL, NULL }
 };
 
-/* ── Fetch real candles from Hyperliquid ────────────────────────────────── */
+/* ── Load candles from SQLite cache (no network) ───────────────────────── */
+#define CACHE_DB_PATH "./data/candle_cache.db"
+
 static int fetch_real_candles(const char *coin, int n_days, int end_days_ago,
                                tb_candle_t *out, int max) {
-    /* Create REST client (no signer needed for /info endpoints) */
-    hl_rest_t *rest = hl_rest_create("https://api.hyperliquid.xyz", NULL, true);
-    if (!rest) {
-        fprintf(stderr, "ERROR: cannot create REST client\n");
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(CACHE_DB_PATH, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        fprintf(stderr, "ERROR: cannot open cache %s\n", CACHE_DB_PATH);
         return -1;
     }
 
     int64_t now_s = (int64_t)time(NULL);
     int64_t end_ms = (now_s - (int64_t)end_days_ago * 86400) * 1000;
     int64_t start_ms = (end_ms / 1000 - (int64_t)n_days * 86400) * 1000;
+    int64_t candle_ms = 3600000LL; /* 1h */
 
-    int total = 0;
-
-    /* Paginate: Hyperliquid returns max ~500 candles per request */
-    int64_t cursor = start_ms;
-    while (cursor < end_ms && total < max) {
-        int batch_count = 0;
-        int rc = hl_rest_get_candles(rest, coin, "1h",
-                                      cursor, end_ms,
-                                      &out[total], &batch_count,
-                                      max - total);
-        if (rc != 0 || batch_count == 0) {
-            if (total > 0) break;  /* partial data is OK */
-            fprintf(stderr, "ERROR: failed to fetch candles (rc=%d)\n", rc);
-            hl_rest_destroy(rest);
-            return -1;
-        }
-
-        total += batch_count;
-
-        /* Move cursor past last candle */
-        cursor = out[total - 1].time_open + 3600001LL;
-
-        /* Rate limit: be polite */
-        if (cursor < end_ms) usleep(200000);  /* 200ms */
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT time_ms, open, high, low, close, volume FROM candles "
+        "WHERE coin=? AND interval='1h' AND time_ms>=? AND time_ms<=? "
+        "ORDER BY time_ms ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        sqlite3_close(db);
+        return -1;
     }
 
-    hl_rest_destroy(rest);
-    return total;
+    sqlite3_bind_text(stmt, 1, coin, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, start_ms);
+    sqlite3_bind_int64(stmt, 3, end_ms);
+
+    int n = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && n < max) {
+        out[n].time_open = sqlite3_column_int64(stmt, 0);
+        out[n].time_close = out[n].time_open + candle_ms;
+        out[n].open   = tb_decimal_from_double(sqlite3_column_double(stmt, 1), 8);
+        out[n].high   = tb_decimal_from_double(sqlite3_column_double(stmt, 2), 8);
+        out[n].low    = tb_decimal_from_double(sqlite3_column_double(stmt, 3), 8);
+        out[n].close  = tb_decimal_from_double(sqlite3_column_double(stmt, 4), 8);
+        out[n].volume = tb_decimal_from_double(sqlite3_column_double(stmt, 5), 8);
+        n++;
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return n;
 }
 
 /* ── Buy & Hold benchmark ──────────────────────────────────────────────── */
@@ -335,7 +339,7 @@ int main(int argc, char *argv[]) {
 
     printf("\n%s", C_BOLD);
     printf("╔══════════════════════════════════════════════════════════════════════╗\n");
-    printf("║         BACKTEST QUANTITATIF — DONNEES REELLES HYPERLIQUID         ║\n");
+    printf("║         BACKTEST QUANTITATIF — DONNEES REELLES (CACHE)              ║\n");
     printf("║  Coin: %s | Periode: %d jours | Balance: $%.0f | Levier: %dx        ║\n",
            COIN, n_days, INITIAL_BALANCE, MAX_LEVERAGE);
     printf("║  Fees: maker %.1fbps, taker %.1fbps, slippage %.1fbps               ║\n",
@@ -350,7 +354,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* ── Step 1: Fetch real candles ─────────────────────────────────────── */
-    printf("%sFetching %d days of %s 1h candles from Hyperliquid...%s\n",
+    printf("%sLoading %d days of %s 1h candles from cache...%s\n",
            C_DIM, n_days, COIN, C_RESET);
 
     tb_candle_t *candles = calloc((size_t)max_candles, sizeof(tb_candle_t));
@@ -362,7 +366,7 @@ int main(int argc, char *argv[]) {
     int n_candles = fetch_real_candles(COIN, n_days, end_days_ago,
                                        candles, max_candles);
     if (n_candles < 100) {
-        fprintf(stderr, "ERROR: only got %d candles (need 100+)\n", n_candles);
+        fprintf(stderr, "ERROR: only got %d candles (need 100+) — run candle_fetcher to download data\n", n_candles);
         free(candles);
         return 1;
     }

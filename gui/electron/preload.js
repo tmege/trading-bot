@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('api', {
     tradeFilters:   ()       => ipcRenderer.invoke('db:tradeFilters'),
     equityCurve:    ()       => ipcRenderer.invoke('db:equityCurve'),
     strategyPnl:    ()       => ipcRenderer.invoke('db:strategyPnl'),
+    backtestCoins:  ()       => ipcRenderer.invoke('db:backtestCoins'),
   },
 
   // Logs

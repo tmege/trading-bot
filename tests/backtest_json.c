@@ -10,7 +10,6 @@
 
 #include "core/types.h"
 #include "core/logging.h"
-#include "exchange/hl_rest.h"
 #include "backtest/backtest_engine.h"
 
 #include <yyjson.h>
@@ -87,61 +86,19 @@ static int load_from_cache(const char *coin, const char *interval,
     return n;
 }
 
-/* ── Fetch candles from Hyperliquid API (fallback) ────────────────────── */
-static int fetch_from_api(const char *coin, const char *interval,
-                           int64_t start_ms, int64_t end_ms,
-                           tb_candle_t *out, int max) {
-    hl_rest_t *rest = hl_rest_create("https://api.hyperliquid.xyz", NULL, true);
-    if (!rest) return -1;
-
-    int64_t candle_ms = 3600000LL;
-    if (strcmp(interval, "5m") == 0)  candle_ms = 300000LL;
-    if (strcmp(interval, "15m") == 0) candle_ms = 900000LL;
-    if (strcmp(interval, "4h") == 0)  candle_ms = 14400000LL;
-    if (strcmp(interval, "1d") == 0)  candle_ms = 86400000LL;
-
-    int total = 0;
-    int64_t cursor = start_ms;
-
-    while (cursor < end_ms && total < max) {
-        int batch_count = 0;
-        int rc = hl_rest_get_candles(rest, coin, interval,
-                                      cursor, end_ms,
-                                      &out[total], &batch_count,
-                                      max - total);
-        if (rc != 0 || batch_count == 0) {
-            if (total > 0) break;
-            hl_rest_destroy(rest);
-            return -1;
-        }
-
-        total += batch_count;
-        cursor = out[total - 1].time_open + candle_ms + 1;
-        if (cursor < end_ms) usleep(200000);
-    }
-
-    hl_rest_destroy(rest);
-    return total;
-}
-
-/* ── Fetch candles: cache first, API fallback ─────────────────────────── */
+/* ── Fetch candles from cache only (no network) ───────────────────────── */
 static int fetch_candles(const char *coin, int n_days, int end_days_ago,
                          const char *interval, tb_candle_t *out, int max) {
     int64_t now_s = (int64_t)time(NULL);
     int64_t end_ms = (now_s - (int64_t)end_days_ago * 86400) * 1000;
     int64_t start_ms = (end_ms / 1000 - (int64_t)n_days * 86400) * 1000;
 
-    /* Try cache first */
     int n = load_from_cache(coin, interval, start_ms, end_ms, out, max);
-    if (n >= 50) {
+    if (n >= 0) {
         fprintf(stderr, "{\"status\":\"cache\",\"detail\":\"%s %d candles from cache\"}\n",
                 coin, n);
-        return n;
     }
-
-    /* Fallback to API */
-    fprintf(stderr, "{\"status\":\"fetching\",\"detail\":\"%s from API\"}\n", coin);
-    return fetch_from_api(coin, interval, start_ms, end_ms, out, max);
+    return n;
 }
 
 /* ── Buy & Hold benchmark ─────────────────────────────────────────────── */
@@ -437,7 +394,7 @@ int main(int argc, char *argv[]) {
     int n_candles = fetch_candles(coin, n_days, end_days_ago, interval,
                                    candles, max_candles);
     if (n_candles < 50) {
-        fprintf(stderr, "{\"status\":\"error\",\"detail\":\"only got %d candles\"}\n",
+        fprintf(stderr, "{\"status\":\"error\",\"detail\":\"only got %d candles — run candle_fetcher to download data\"}\n",
                 n_candles);
         free(candles);
         return 1;

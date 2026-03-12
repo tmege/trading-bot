@@ -159,6 +159,20 @@ async function fetchHyperliquid(projectRoot) {
   return cachedAccount;
 }
 
+// Candle cache DB (separate from trading_bot.db)
+let cacheDb = null;
+function getCacheDb(projectRoot) {
+  if (cacheDb) return cacheDb;
+  if (!Database) return null;
+  const dbPath = path.join(projectRoot, 'data', 'candle_cache.db');
+  try {
+    cacheDb = new Database(dbPath, { readonly: true, fileMustExist: true });
+    return cacheDb;
+  } catch (_) {
+    return null;
+  }
+}
+
 module.exports = function registerDbIPC(ipcMain, projectRoot) {
   const emptyAccount = {
     dailyPnl: 0, dailyFees: 0, dailyTrades: 0, totalTrades: 0, balance: 0,
@@ -302,6 +316,37 @@ module.exports = function registerDbIPC(ipcMain, projectRoot) {
       return { ok: true, pnl };
     } catch (_) {
       return { ok: true, pnl: {} };
+    }
+  });
+
+  // ── Backtest-eligible coins (3+ years of data) ────────────────────────
+  const MIN_YEARS = 3;
+  ipcMain.handle('db:backtestCoins', async () => {
+    const cc = getCacheDb(projectRoot);
+    if (!cc) return { ok: true, coins: [] };
+
+    try {
+      const rows = cc.prepare(
+        `SELECT coin, MIN(time_ms) as earliest, MAX(time_ms) as latest
+         FROM candles
+         GROUP BY coin`
+      ).all();
+
+      const minSpanMs = MIN_YEARS * 365.25 * 24 * 3600 * 1000;
+      const coins = [];
+      for (const r of rows) {
+        const span = r.latest - r.earliest;
+        if (span >= minSpanMs) {
+          coins.push({
+            coin: r.coin,
+            years: +(span / (365.25 * 24 * 3600 * 1000)).toFixed(1),
+          });
+        }
+      }
+      coins.sort((a, b) => a.coin.localeCompare(b.coin));
+      return { ok: true, coins };
+    } catch (_) {
+      return { ok: true, coins: [] };
     }
   });
 

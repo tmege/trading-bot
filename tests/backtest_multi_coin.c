@@ -12,9 +12,9 @@
 
 #include "core/types.h"
 #include "core/logging.h"
-#include "exchange/hl_rest.h"
 #include "backtest/backtest_engine.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,35 +84,52 @@ static int create_temp_strategy(const char *coin, char *out_path, size_t path_le
     return 0;
 }
 
-/* ── Fetch real candles ─────────────────────────────────────────────────── */
+/* ── Load candles from SQLite cache (no network) ───────────────────────── */
+#define CACHE_DB_PATH "./data/candle_cache.db"
+
 static int fetch_candles(const char *coin, int n_days, int end_days_ago,
                           tb_candle_t *out, int max) {
-    hl_rest_t *rest = hl_rest_create("https://api.hyperliquid.xyz", NULL, true);
-    if (!rest) return -1;
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(CACHE_DB_PATH, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        fprintf(stderr, "ERROR: cannot open cache %s\n", CACHE_DB_PATH);
+        return -1;
+    }
 
     int64_t now_s = (int64_t)time(NULL);
     int64_t end_ms = (now_s - (int64_t)end_days_ago * 86400) * 1000;
     int64_t start_ms = (end_ms / 1000 - (int64_t)n_days * 86400) * 1000;
 
-    int total = 0;
-    int64_t cursor = start_ms;
-    while (cursor < end_ms && total < max) {
-        int batch = 0;
-        int rc = hl_rest_get_candles(rest, coin, g_interval,
-                                      cursor, end_ms, &out[total], &batch,
-                                      max - total);
-        if (rc != 0 || batch == 0) {
-            if (total > 0) break;
-            hl_rest_destroy(rest);
-            return -1;
-        }
-        total += batch;
-        cursor = out[total - 1].time_open + g_interval_ms + 1;
-        if (cursor < end_ms) usleep(200000);
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT time_ms, open, high, low, close, volume FROM candles "
+        "WHERE coin=? AND interval=? AND time_ms>=? AND time_ms<=? "
+        "ORDER BY time_ms ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        sqlite3_close(db);
+        return -1;
     }
 
-    hl_rest_destroy(rest);
-    return total;
+    sqlite3_bind_text(stmt, 1, coin, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, g_interval, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, start_ms);
+    sqlite3_bind_int64(stmt, 4, end_ms);
+
+    int n = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && n < max) {
+        out[n].time_open = sqlite3_column_int64(stmt, 0);
+        out[n].time_close = out[n].time_open + g_interval_ms;
+        out[n].open   = tb_decimal_from_double(sqlite3_column_double(stmt, 1), 8);
+        out[n].high   = tb_decimal_from_double(sqlite3_column_double(stmt, 2), 8);
+        out[n].low    = tb_decimal_from_double(sqlite3_column_double(stmt, 3), 8);
+        out[n].close  = tb_decimal_from_double(sqlite3_column_double(stmt, 4), 8);
+        out[n].volume = tb_decimal_from_double(sqlite3_column_double(stmt, 5), 8);
+        n++;
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return n;
 }
 
 /* ── Run backtest on slice ──────────────────────────────────────────────── */

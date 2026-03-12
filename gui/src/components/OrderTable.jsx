@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Download, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Download } from 'lucide-react';
 
-const PAGE_SIZE = 50;
+const FETCH_LIMIT = 100;
 
 export default function OrderTable() {
   const [trades, setTrades] = useState([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(0);
   const [filters, setFilters] = useState({ coins: [], strategies: [] });
   const [coinFilter, setCoinFilter] = useState('');
   const [stratFilter, setStratFilter] = useState('');
@@ -27,18 +26,17 @@ export default function OrderTable() {
   const fetchTrades = useCallback(async () => {
     try {
       if (!window.api?.db?.filteredTrades) {
-        // Fallback to legacy API
-        const res = await window.api.db.trades(PAGE_SIZE);
+        const res = await window.api.db.trades(FETCH_LIMIT);
         if (res.ok) { setTrades(res.trades); setTotal(res.trades.length); }
         return;
       }
-      const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
+      const params = { limit: FETCH_LIMIT, offset: 0 };
       if (coinFilter) params.coin = coinFilter;
       if (stratFilter) params.strategy = stratFilter;
       const res = await window.api.db.filteredTrades(params);
       if (res.ok) { setTrades(res.trades); setTotal(res.total); }
     } catch (_) {}
-  }, [page, coinFilter, stratFilter]);
+  }, [coinFilter, stratFilter]);
 
   // Debounced fetch
   useEffect(() => {
@@ -52,11 +50,6 @@ export default function OrderTable() {
     const id = setInterval(fetchTrades, 10000);
     return () => clearInterval(id);
   }, [fetchTrades]);
-
-  // Reset page when filters change
-  useEffect(() => { setPage(0); }, [coinFilter, stratFilter]);
-
-  const totalPages = Math.ceil(total / PAGE_SIZE);
 
   function exportCsv() {
     const header = 'Time,Coin,Side,Price,Size,Fee,P&L,Strategy';
@@ -113,10 +106,9 @@ export default function OrderTable() {
       {trades.length === 0 ? (
         <p className="text-sm text-gray-600">No trades found</p>
       ) : (
-        <>
-          <div className="overflow-auto">
+          <div className="max-h-[290px] overflow-y-auto">
             <table className="w-full text-sm">
-              <thead>
+              <thead className="sticky top-0 bg-surface-card">
                 <tr className="text-gray-500 text-xs">
                   <th className="text-left pb-2">Time</th>
                   <th className="text-left pb-2">Coin</th>
@@ -157,30 +149,6 @@ export default function OrderTable() {
               </tbody>
             </table>
           </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-3 pt-3 border-t border-surface-border text-xs text-gray-500">
-              <span>Page {page + 1} / {totalPages}</span>
-              <div className="flex gap-1.5">
-                <button
-                  onClick={() => setPage(p => Math.max(0, p - 1))}
-                  disabled={page === 0}
-                  className="px-2 py-1 border border-surface-border rounded hover:bg-surface-hover disabled:opacity-30"
-                >
-                  <ChevronLeft size={12} />
-                </button>
-                <button
-                  onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-                  disabled={page >= totalPages - 1}
-                  className="px-2 py-1 border border-surface-border rounded hover:bg-surface-hover disabled:opacity-30"
-                >
-                  <ChevronRight size={12} />
-                </button>
-              </div>
-            </div>
-          )}
-        </>
       )}
     </div>
   );
