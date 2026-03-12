@@ -54,7 +54,6 @@ function AppMain() {
   const marketData = useMarketData();
   const { toasts, addToast, dismissToast } = useToasts();
   const [paperMode, setPaperMode] = useState(null);
-  const [wsStatus, setWsStatus] = useState('connecting');
   const activeCoins = useActiveCoins();
 
   // Modal close callback ref (set by child pages)
@@ -76,13 +75,6 @@ function AppMain() {
     onCloseModal: () => { if (closeModalRef.current) closeModalRef.current(); },
   });
 
-  // WS status listener
-  useEffect(() => {
-    if (!window.api?.ws?.onStatus) return;
-    return window.api.ws.onStatus((data) => {
-      setWsStatus(data.status);
-    });
-  }, []);
 
   const loadPaperMode = useCallback(async () => {
     try {
@@ -95,12 +87,6 @@ function AppMain() {
 
   const PageComponent = PAGES[page];
 
-  const wsColor = wsStatus === 'connected' ? 'bg-profit' :
-                  wsStatus === 'reconnecting' ? 'bg-yellow-400 animate-pulse' :
-                  'bg-loss';
-  const wsLabel = wsStatus === 'connected' ? 'WS Connected' :
-                  wsStatus === 'reconnecting' ? 'WS Reconnecting...' :
-                  'WS Disconnected';
 
   return (
     <div className="flex flex-col h-screen w-screen bg-surface-bg">
@@ -140,11 +126,6 @@ function AppMain() {
           {botStatus.running && botStatus.pid && (
             <span>PID: {botStatus.pid}</span>
           )}
-          {/* WS status indicator */}
-          <div className="flex items-center gap-1.5 ml-auto">
-            <span className={`w-2 h-2 rounded-full ${wsColor}`} />
-            <span>{wsLabel}</span>
-          </div>
         </div>
         </main>
       </div>
