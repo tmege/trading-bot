@@ -21,7 +21,7 @@ local config = {
 
     -- Position sizing
     entry_size    = 40.0,        -- USD per trade
-    equity_pct    = 0.10,        -- compound: 10% of account per trade
+    equity_pct    = 0.10,        -- 10% of account per trade
     max_size      = 60.0,        -- hard cap
 
     -- ATR multipliers for exits

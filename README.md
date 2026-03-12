@@ -60,7 +60,7 @@ src/
 └── backtest/                   Backtesting
     └── backtest_engine.c       Simulation on historical candles + metrics
 
-strategies/                     Lua strategies (12 available, 3 active, compound 10% equity/trade)
+strategies/                     Lua strategies (12 available, 3 active, 10% equity/trade)
 ├── regime_adaptive_1h.lua  *   ADX regime detection: mean reversion vs trend (primary)
 ├── ichimoku_trend_4h.lua   *   Ichimoku cloud trend following (secondary)
 ├── triple_confirm_15m.lua  *   BB + RSI + MACD triple filter (secondary)

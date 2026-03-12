@@ -53,7 +53,7 @@ struct tb_order_mgr {
 
     /* OID → strategy cache (survives reconciliation removal) */
     oid_cache_entry_t       oid_cache[OID_CACHE_SIZE];
-    int                     oid_cache_idx;
+    unsigned                oid_cache_idx;
 
     /* Prepared statements for trade logging */
     sqlite3_stmt           *stmt_insert_trade;
@@ -70,7 +70,14 @@ static int prepare_statements(tb_order_mgr_t *mgr) {
     const char *sql =
         "INSERT INTO trades (timestamp_ms, coin, side, price, size, fee, pnl, "
         "oid, tid, strategy, cloid) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(oid, tid) DO UPDATE SET "
+        "  strategy = CASE WHEN trades.strategy = 'unknown' "
+        "    THEN excluded.strategy ELSE trades.strategy END, "
+        "  pnl = CASE WHEN trades.pnl = '0' OR trades.pnl = '' "
+        "    THEN excluded.pnl ELSE trades.pnl END, "
+        "  fee = CASE WHEN trades.fee = '0' OR trades.fee = '' "
+        "    THEN excluded.fee ELSE trades.fee END";
     int rc = sqlite3_prepare_v2(mgr->db, sql, -1, &mgr->stmt_insert_trade, NULL);
     if (rc != SQLITE_OK) {
         tb_log_error("failed to prepare trade insert: %s", sqlite3_errmsg(mgr->db));
@@ -132,16 +139,16 @@ static void log_trade_to_db(tb_order_mgr_t *mgr, const tb_fill_t *fill,
     sqlite3_bind_text(s, 11, fill->hash, -1, SQLITE_STATIC);
 
     int rc = sqlite3_step(s);
-    if (rc != SQLITE_DONE) {
-        tb_log_warn("failed to log trade: %s", sqlite3_errmsg(mgr->db));
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+        tb_log_warn("failed to log trade: %s (rc=%d)", sqlite3_errmsg(mgr->db), rc);
     }
 }
 
 /* ── Cache OID → strategy (ring buffer + SQLite) ──────────────────────────── */
 static void cache_oid_strategy(tb_order_mgr_t *mgr, uint64_t oid,
                                 const char *strategy, const char *coin) {
-    /* 1. Ring buffer (fast, single-writer so no lock needed) */
-    int idx = mgr->oid_cache_idx % OID_CACHE_SIZE;
+    /* Ring buffer (single-writer, no lock needed) */
+    unsigned idx = mgr->oid_cache_idx & (OID_CACHE_SIZE - 1);
     mgr->oid_cache[idx].oid = oid;
     snprintf(mgr->oid_cache[idx].strategy, sizeof(mgr->oid_cache[idx].strategy),
              "%s", strategy);
@@ -214,19 +221,11 @@ static void remove_tracked_order(tb_order_mgr_t *mgr, uint64_t oid) {
     pthread_rwlock_unlock(&mgr->orders_lock);
 }
 
-/* ── Fill deduplication (prevents double-counting synth + WS fills) ────────── */
+/* ── Fill deduplication (prevents WS snapshot redelivery on reconnect) ──────── */
 #define SEEN_FILL_SIZE 128
 
-static uint64_t g_seen_tids[SEEN_FILL_SIZE];
-static int      g_seen_idx = 0;
-
-/* OID-based dedup: synth fills (from REST response) have tid=0 so we
- * also track by oid to prevent the WS fill for the same order from
- * being double-counted. */
-#define SEEN_OID_SIZE 64
-
-static uint64_t g_seen_oids[SEEN_OID_SIZE];
-static int      g_seen_oid_idx = 0;
+static uint64_t  g_seen_tids[SEEN_FILL_SIZE];
+static unsigned  g_seen_idx = 0;
 
 static bool fill_already_seen(uint64_t tid) {
     if (tid == 0) return false;
@@ -236,24 +235,10 @@ static bool fill_already_seen(uint64_t tid) {
     return false;
 }
 
-static bool fill_oid_already_seen(uint64_t oid) {
-    if (oid == 0) return false;
-    for (int i = 0; i < SEEN_OID_SIZE; i++) {
-        if (g_seen_oids[i] == oid) return true;
-    }
-    return false;
-}
-
 static void fill_mark_seen(uint64_t tid) {
     if (tid == 0) return;
-    g_seen_tids[g_seen_idx % SEEN_FILL_SIZE] = tid;
+    g_seen_tids[g_seen_idx & (SEEN_FILL_SIZE - 1)] = tid;
     g_seen_idx++;
-}
-
-static void fill_mark_oid_seen(uint64_t oid) {
-    if (oid == 0) return;
-    g_seen_oids[g_seen_oid_idx % SEEN_OID_SIZE] = oid;
-    g_seen_oid_idx++;
 }
 
 /* ── WebSocket callbacks (called from WS thread) ──────────────────────────── */
@@ -264,21 +249,22 @@ void tb_order_mgr_handle_ws_fills(tb_order_mgr_t *mgr,
     for (int i = 0; i < n_fills; i++) {
         const tb_fill_t *fill = &fills[i];
 
-        /* Deduplicate: skip if this fill was already processed (synth or prior WS) */
+        /* Deduplicate by tid: skip fills already processed (WS snapshot redelivery) */
         if (fill_already_seen(fill->tid)) {
-            tb_log_debug("fill dedup: skipping tid=%llu (already processed)",
-                         (unsigned long long)fill->tid);
-            continue;
-        }
-        /* Also dedup by OID: synth fills (from REST IOC response) have tid=0
-         * so tid-based dedup misses them. Check if this oid was already filled. */
-        if (fill_oid_already_seen(fill->oid)) {
-            tb_log_debug("fill dedup: skipping oid=%llu (synth fill already processed)",
+            tb_log_debug("fill dedup: skipping tid=%llu oid=%llu (already processed)",
+                         (unsigned long long)fill->tid,
                          (unsigned long long)fill->oid);
-            fill_mark_seen(fill->tid);  /* mark tid too so we don't reprocess */
             continue;
         }
         fill_mark_seen(fill->tid);
+
+        tb_log_debug("fill: %s %s oid=%llu tid=%llu (%d/%d)",
+                     fill->side == TB_SIDE_BUY ? "BUY" : "SELL",
+                     fill->coin,
+                     (unsigned long long)fill->oid,
+                     (unsigned long long)fill->tid,
+                     i + 1, n_fills);
+
         char strategy[64] = "unknown";
         find_strategy_for_oid(mgr, fill->oid, strategy, sizeof(strategy));
 
@@ -612,46 +598,11 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
                 px_str, sz_str,
                 submit->strategy_name);
 
-    /* Dispatch immediate fill to callback (IOC orders fill in REST response) */
-    if (!mgr->paper && fill_info.filled && fill_info.avg_px > 0 && mgr->fill_cb) {
-        tb_fill_t synth_fill;
-        memset(&synth_fill, 0, sizeof(synth_fill));
-        snprintf(synth_fill.coin, sizeof(synth_fill.coin), "%s", coin);
-        synth_fill.px = tb_decimal_from_double(fill_info.avg_px, 6);
-        synth_fill.sz = tb_decimal_from_double(fill_info.total_sz, 6);
-        synth_fill.side = submit->order.side;
-        synth_fill.oid = oid;
-        synth_fill.time_ms = (int64_t)time(NULL) * 1000;
-        synth_fill.crossed = true;  /* IOC = taker */
-        /* Estimate fee for synthetic fill (taker 0.05%, maker 0.02%) */
-        double fee_rate = (submit->order.tif == TB_TIF_ALO) ? 0.0002 : 0.0005;
-        synth_fill.fee = tb_decimal_from_double(
-            fill_info.total_sz * fill_info.avg_px * fee_rate, 8);
-
-        tb_log_info("immediate fill: %s %s %.6f @ %.2f (oid=%llu)",
-                    submit->order.side == TB_SIDE_BUY ? "BUY" : "SELL",
-                    coin, fill_info.total_sz, fill_info.avg_px,
-                    (unsigned long long)oid);
-
-        /* Update position tracker */
-        tb_pos_tracker_on_fill(mgr->pos_tracker, &synth_fill);
-
-        /* Update risk manager */
-        tb_risk_update_pnl(mgr->risk,
-                           tb_decimal_to_double(synth_fill.closed_pnl),
-                           tb_decimal_to_double(synth_fill.fee));
-
-        /* Log to database */
-        log_trade_to_db(mgr, &synth_fill, submit->strategy_name);
-
-        /* Mark this fill as seen for dedup against later WS fill.
-         * tid is 0 for synth fills (REST doesn't return tid), so also
-         * mark by oid to catch the WS fill for the same order. */
-        fill_mark_seen(synth_fill.tid);
-        fill_mark_oid_seen(oid);
-
-        /* Notify strategy (triggers on_fill → place_sl_tp) */
-        mgr->fill_cb(&synth_fill, submit->strategy_name, mgr->fill_cb_userdata);
+    /* IOC fill confirmed by REST — real fill arrives via WS userFills */
+    if (!mgr->paper && fill_info.filled && fill_info.avg_px > 0) {
+        tb_log_debug("REST confirms fill: %s %.6f @ %.2f (oid=%llu, awaiting WS)",
+                     coin, fill_info.total_sz, fill_info.avg_px,
+                     (unsigned long long)oid);
     }
 
     return 0;

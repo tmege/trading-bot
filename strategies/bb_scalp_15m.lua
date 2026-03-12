@@ -31,7 +31,7 @@ local config = {
 
     -- Position sizing (split across coins: $40 each)
     entry_size    = 40.0,        -- USD per scalp (fallback/minimum)
-    equity_pct    = 0.10,        -- compound: 10% of account per trade
+    equity_pct    = 0.10,        -- 10% of account per trade
     max_size      = 60.0,        -- hard cap
 
     -- Exit targets

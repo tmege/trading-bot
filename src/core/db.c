@@ -59,7 +59,10 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(timestamp_ms);"
     "CREATE INDEX IF NOT EXISTS idx_trades_coin ON trades(coin);"
     "CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);"
-    "CREATE INDEX IF NOT EXISTS idx_osm_created ON order_strategy_map(created_ms);";
+    "CREATE INDEX IF NOT EXISTS idx_osm_created ON order_strategy_map(created_ms);"
+
+    /* Unique constraint: one DB entry per fill (prevents WS redelivery duplicates) */
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_oid_tid ON trades(oid, tid);";
 
 int tb_db_open(sqlite3 **db, const char *db_path) {
     /* Ensure parent directory exists */

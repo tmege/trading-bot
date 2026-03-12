@@ -24,7 +24,7 @@ local config = {
 
     -- Position sizing
     entry_size    = 40.0,
-    equity_pct    = 0.05,        -- compound: 5% of account per trade (Kelly-aligned at ~40% WR)
+    equity_pct    = 0.05,        -- 5% of account per trade (Kelly-aligned at ~40% WR)
     max_size      = 60.0,
 
     -- Exit targets (fixed backup)

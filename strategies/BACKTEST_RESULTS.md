@@ -78,7 +78,7 @@
 ## Notes sur le Compound
 
 - `equity_pct = 0.05` (5% du compte par trade)
-- Les tailles de position croissent avec le compte (compound)
+- Les tailles de position croissent avec le compte (%-based sizing)
 - SL/TP utilisent la taille reelle du fill (pas de recalcul)
 - Pour retirer des gains: transferer vers un autre wallet, le bot s'adapte automatiquement au solde restant
 
