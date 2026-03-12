@@ -21,6 +21,7 @@ static int64_t get_int(yyjson_val *obj, const char *key) {
     if (yyjson_is_sint(v)) return yyjson_get_sint(v);
     if (yyjson_is_uint(v)) return (int64_t)yyjson_get_uint(v);
     if (yyjson_is_real(v)) return (int64_t)yyjson_get_real(v);
+    if (yyjson_is_str(v)) return strtoll(yyjson_get_str(v), NULL, 10);
     return 0;
 }
 

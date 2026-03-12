@@ -220,10 +220,26 @@ static void remove_tracked_order(tb_order_mgr_t *mgr, uint64_t oid) {
 static uint64_t g_seen_tids[SEEN_FILL_SIZE];
 static int      g_seen_idx = 0;
 
+/* OID-based dedup: synth fills (from REST response) have tid=0 so we
+ * also track by oid to prevent the WS fill for the same order from
+ * being double-counted. */
+#define SEEN_OID_SIZE 64
+
+static uint64_t g_seen_oids[SEEN_OID_SIZE];
+static int      g_seen_oid_idx = 0;
+
 static bool fill_already_seen(uint64_t tid) {
-    if (tid == 0) return false;  /* tid=0 means unknown, don't dedup */
+    if (tid == 0) return false;
     for (int i = 0; i < SEEN_FILL_SIZE; i++) {
         if (g_seen_tids[i] == tid) return true;
+    }
+    return false;
+}
+
+static bool fill_oid_already_seen(uint64_t oid) {
+    if (oid == 0) return false;
+    for (int i = 0; i < SEEN_OID_SIZE; i++) {
+        if (g_seen_oids[i] == oid) return true;
     }
     return false;
 }
@@ -232,6 +248,12 @@ static void fill_mark_seen(uint64_t tid) {
     if (tid == 0) return;
     g_seen_tids[g_seen_idx % SEEN_FILL_SIZE] = tid;
     g_seen_idx++;
+}
+
+static void fill_mark_oid_seen(uint64_t oid) {
+    if (oid == 0) return;
+    g_seen_oids[g_seen_oid_idx % SEEN_OID_SIZE] = oid;
+    g_seen_oid_idx++;
 }
 
 /* ── WebSocket callbacks (called from WS thread) ──────────────────────────── */
@@ -246,6 +268,14 @@ void tb_order_mgr_handle_ws_fills(tb_order_mgr_t *mgr,
         if (fill_already_seen(fill->tid)) {
             tb_log_debug("fill dedup: skipping tid=%llu (already processed)",
                          (unsigned long long)fill->tid);
+            continue;
+        }
+        /* Also dedup by OID: synth fills (from REST IOC response) have tid=0
+         * so tid-based dedup misses them. Check if this oid was already filled. */
+        if (fill_oid_already_seen(fill->oid)) {
+            tb_log_debug("fill dedup: skipping oid=%llu (synth fill already processed)",
+                         (unsigned long long)fill->oid);
+            fill_mark_seen(fill->tid);  /* mark tid too so we don't reprocess */
             continue;
         }
         fill_mark_seen(fill->tid);
@@ -518,6 +548,13 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
         }
     }
 
+    /* Reject zero-size orders (can happen when account too small + rounding) */
+    if (tb_decimal_is_zero(resolved.size)) {
+        tb_log_warn("order rejected: size rounds to 0 (account too small?) strategy=%s coin=%s",
+                    submit->strategy_name, coin);
+        return -1;
+    }
+
     /* Place order via paper exchange or REST */
     uint64_t oid = 0;
     int rc;
@@ -536,6 +573,10 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
     if (rc != 0) return -1;
 
     /* Cache OID → strategy (survives reconciliation + restart) */
+    if (oid == 0) {
+        tb_log_warn("oid=0 for %s %s — strategy tracking will fail",
+                    coin, submit->strategy_name);
+    }
     cache_oid_strategy(mgr, oid, submit->strategy_name, coin);
 
     /* Track the order locally */
@@ -603,8 +644,11 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
         /* Log to database */
         log_trade_to_db(mgr, &synth_fill, submit->strategy_name);
 
-        /* Mark this fill as seen for dedup against later WS fill */
+        /* Mark this fill as seen for dedup against later WS fill.
+         * tid is 0 for synth fills (REST doesn't return tid), so also
+         * mark by oid to catch the WS fill for the same order. */
         fill_mark_seen(synth_fill.tid);
+        fill_mark_oid_seen(oid);
 
         /* Notify strategy (triggers on_fill → place_sl_tp) */
         mgr->fill_cb(&synth_fill, submit->strategy_name, mgr->fill_cb_userdata);

@@ -451,26 +451,17 @@ static void engine_on_paper_fill(const tb_fill_t *fill, void *userdata) {
     tb_engine_t *engine = (tb_engine_t *)userdata;
     if (!engine || !engine->running) return;
 
-    /* Update position tracker */
-    tb_pos_tracker_on_fill(&engine->pos_tracker, fill);
-
-    /* Update risk P&L */
-    if (engine->risk_mgr) {
-        tb_risk_update_pnl(engine->risk_mgr,
-                           tb_decimal_to_double(fill->closed_pnl),
-                           tb_decimal_to_double(fill->fee));
-    }
-
-    /* Notify Lua strategies */
-    if (engine->lua_engine) {
-        tb_lua_engine_on_fill(engine->lua_engine, fill, "paper");
-    }
-
     tb_log_info("PAPER FILL: %s %s %.4f @ %.2f",
                 fill->side == TB_SIDE_BUY ? "BUY" : "SELL",
                 fill->coin,
                 tb_decimal_to_double(fill->sz),
                 tb_decimal_to_double(fill->px));
+
+    /* Route through order_manager: finds strategy via oid→strategy cache,
+     * updates position tracker + risk, logs trade to DB, notifies Lua */
+    if (engine->order_mgr) {
+        tb_order_mgr_handle_ws_fills(engine->order_mgr, fill, 1);
+    }
 }
 
 /* ── Order manager fill callback (live mode) ───────────────────────────────── */
