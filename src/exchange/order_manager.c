@@ -155,15 +155,18 @@ typedef struct {
 
 static trigger_coin_entry_t g_trigger_coin_cache[TRIGGER_COIN_CACHE_SIZE];
 static int g_trigger_coin_count = 0;
+static pthread_mutex_t g_trigger_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void cache_trigger_coin(const char *coin, const char *strategy) {
     time_t now = time(NULL);
+    pthread_mutex_lock(&g_trigger_lock);
     /* Update existing entry for this coin */
     for (int i = 0; i < g_trigger_coin_count; i++) {
         if (strcmp(g_trigger_coin_cache[i].coin, coin) == 0) {
             snprintf(g_trigger_coin_cache[i].strategy,
                      sizeof(g_trigger_coin_cache[i].strategy), "%s", strategy);
             g_trigger_coin_cache[i].cached_at = now;
+            pthread_mutex_unlock(&g_trigger_lock);
             return;
         }
     }
@@ -174,17 +177,21 @@ static void cache_trigger_coin(const char *coin, const char *strategy) {
         snprintf(e->strategy, sizeof(e->strategy), "%s", strategy);
         e->cached_at = now;
     }
+    pthread_mutex_unlock(&g_trigger_lock);
 }
 
 static bool find_strategy_by_coin_trigger(const char *coin, char *out, size_t out_len) {
     time_t now = time(NULL);
+    pthread_mutex_lock(&g_trigger_lock);
     for (int i = 0; i < g_trigger_coin_count; i++) {
         if (strcmp(g_trigger_coin_cache[i].coin, coin) == 0 &&
             now - g_trigger_coin_cache[i].cached_at < 86400) {  /* 24h TTL */
             snprintf(out, out_len, "%s", g_trigger_coin_cache[i].strategy);
+            pthread_mutex_unlock(&g_trigger_lock);
             return true;
         }
     }
+    pthread_mutex_unlock(&g_trigger_lock);
     return false;
 }
 
@@ -270,19 +277,27 @@ static void remove_tracked_order(tb_order_mgr_t *mgr, uint64_t oid) {
 
 static uint64_t  g_seen_tids[SEEN_FILL_SIZE];
 static unsigned  g_seen_idx = 0;
+static pthread_mutex_t g_seen_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static bool fill_already_seen(uint64_t tid) {
     if (tid == 0) return false;
+    pthread_mutex_lock(&g_seen_lock);
     for (int i = 0; i < SEEN_FILL_SIZE; i++) {
-        if (g_seen_tids[i] == tid) return true;
+        if (g_seen_tids[i] == tid) {
+            pthread_mutex_unlock(&g_seen_lock);
+            return true;
+        }
     }
+    pthread_mutex_unlock(&g_seen_lock);
     return false;
 }
 
 static void fill_mark_seen(uint64_t tid) {
     if (tid == 0) return;
+    pthread_mutex_lock(&g_seen_lock);
     g_seen_tids[g_seen_idx & (SEEN_FILL_SIZE - 1)] = tid;
     g_seen_idx++;
+    pthread_mutex_unlock(&g_seen_lock);
 }
 
 /* ── WebSocket callbacks (called from WS thread) ──────────────────────────── */
@@ -447,7 +462,7 @@ tb_order_mgr_t *tb_order_mgr_create(hl_rest_t *rest, hl_ws_t *ws,
     mgr->risk = risk;
     mgr->pos_tracker = pos_tracker;
     mgr->db = db;
-    mgr->recon_interval_sec = 15;
+    mgr->recon_interval_sec = 5;  /* 5s: faster MitM detection (was 15s) */
 
     pthread_rwlock_init(&mgr->orders_lock, NULL);
 

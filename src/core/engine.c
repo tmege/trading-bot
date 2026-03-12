@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <math.h>
 
 /* ── Engine struct ─────────────────────────────────────────────────────────── */
 
@@ -407,12 +408,68 @@ void tb_engine_stop(tb_engine_t *engine) {
 
 /* ── WebSocket callback: mid prices ────────────────────────────────────────── */
 
+/* ── Price sanity filter (anti-MitM) ─────────────────────────────────────── */
+#define PRICE_CACHE_MAX 64
+#define PRICE_MAX_DEVIATION 0.50  /* reject >50% deviation from last known */
+
+typedef struct {
+    char   coin[16];
+    double last_price;
+    int    tick_count;    /* how many valid ticks received */
+} price_sanity_entry_t;
+
+static price_sanity_entry_t g_price_cache[PRICE_CACHE_MAX];
+static int g_price_cache_n = 0;
+
+static price_sanity_entry_t *price_sanity_find(const char *coin) {
+    for (int i = 0; i < g_price_cache_n; i++) {
+        if (strcmp(g_price_cache[i].coin, coin) == 0)
+            return &g_price_cache[i];
+    }
+    return NULL;
+}
+
+static bool price_sanity_check(const char *coin, double mid) {
+    if (mid <= 0.0 || !isfinite(mid)) {
+        tb_log_warn("price sanity: REJECTED %s mid=%.8f (non-positive/NaN)", coin, mid);
+        return false;
+    }
+
+    price_sanity_entry_t *e = price_sanity_find(coin);
+    if (!e) {
+        /* First price for this coin — accept but log */
+        if (g_price_cache_n < PRICE_CACHE_MAX) {
+            e = &g_price_cache[g_price_cache_n++];
+            snprintf(e->coin, sizeof(e->coin), "%s", coin);
+            e->last_price = mid;
+            e->tick_count = 1;
+        }
+        return true;
+    }
+
+    double deviation = fabs(mid - e->last_price) / e->last_price;
+    if (deviation > PRICE_MAX_DEVIATION) {
+        tb_log_warn("price sanity: REJECTED %s mid=%.4f (%.1f%% deviation from %.4f)",
+                     coin, mid, deviation * 100.0, e->last_price);
+        return false;
+    }
+
+    e->last_price = mid;
+    e->tick_count++;
+    return true;
+}
+
 static void engine_on_mids(const tb_mid_t *mids, int n_mids, void *userdata) {
     tb_engine_t *engine = (tb_engine_t *)userdata;
     if (!engine || !engine->running) return;
 
     for (int i = 0; i < n_mids; i++) {
         double mid = tb_decimal_to_double(mids[i].mid);
+
+        /* Price sanity check: reject >50% deviation from last known price */
+        if (!price_sanity_check(mids[i].coin, mid)) {
+            continue;  /* skip this poisoned price */
+        }
 
         /* Feed to circuit breaker (tracks price velocity per coin) */
         if (engine->risk_mgr) {

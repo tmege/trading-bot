@@ -354,6 +354,13 @@ static void *ws_thread_func(void *arg) {
             info.user = ws;
             info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 
+            /* Explicit CA bundle for TLS verification (anti-MitM) */
+#if defined(__APPLE__)
+            info.client_ssl_ca_filepath = "/etc/ssl/cert.pem";
+#elif defined(__linux__)
+            info.client_ssl_ca_filepath = "/etc/ssl/certs/ca-certificates.crt";
+#endif
+
             ws->lws_ctx = lws_create_context(&info);
             if (!ws->lws_ctx) {
                 tb_log_error("failed to create LWS context");

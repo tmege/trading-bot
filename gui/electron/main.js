@@ -10,8 +10,10 @@ const registerLogsIPC = require('./ipc/logs');
 const registerSyncIPC = require('./ipc/sync');
 const registerWsIPC = require('./ipc/ws');
 const registerMarketIPC = require('./ipc/market');
+const env = require('./env');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+env.load(PROJECT_ROOT);
 const isDev = !app.isPackaged;
 
 let mainWindow;

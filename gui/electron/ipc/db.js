@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const env = require('../env');
 let Database;
 try {
   Database = require('better-sqlite3');
@@ -28,24 +29,9 @@ function getDb(projectRoot) {
   }
 }
 
-// Read wallet address from .env
-function readWalletAddress(projectRoot) {
-  try {
-    const envPath = path.join(projectRoot, '.env');
-    const content = fs.readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('TB_WALLET_ADDRESS=')) {
-        let val = trimmed.slice('TB_WALLET_ADDRESS='.length).trim();
-        if ((val.startsWith('"') && val.endsWith('"')) ||
-            (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        return val;
-      }
-    }
-  } catch (_) {}
-  return null;
+// Wallet address from centralized env module (never reads TB_PRIVATE_KEY)
+function readWalletAddress() {
+  return env.getWalletAddress();
 }
 
 // Fetch account data from Hyperliquid API
@@ -62,7 +48,7 @@ async function fetchHyperliquid(projectRoot) {
   const now = Date.now();
   if (now - accountFetchedAt < ACCOUNT_CACHE_MS) return cachedAccount;
 
-  const addr = readWalletAddress(projectRoot);
+  const addr = readWalletAddress();
   if (!addr) return cachedAccount;
 
   try {

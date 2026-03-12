@@ -23,18 +23,36 @@ module.exports = function registerConfigIPC(ipcMain, projectRoot) {
     }
   });
 
+  // SECURITY: Only these top-level keys can be modified from the renderer.
+  // This prevents a compromised renderer (XSS) from injecting arbitrary
+  // config like strategies.dir or exchange.rest_url.
+  const WRITABLE_KEYS = new Set([
+    'mode', 'risk', 'strategies', 'logging',
+  ]);
+
   ipcMain.handle('config:write', async (_event, newConfig) => {
     try {
-      // Read existing to preserve fields we stripped
       const raw = fs.readFileSync(configPath, 'utf-8');
       const existing = JSON.parse(raw);
 
-      // Merge: keep secret fields from existing, update the rest
-      const merged = { ...existing, ...newConfig };
+      // Allowlist merge: only copy permitted top-level keys
+      const merged = { ...existing };
+      for (const key of Object.keys(newConfig)) {
+        if (!WRITABLE_KEYS.has(key)) {
+          console.warn(`[config:write] REJECTED key '${key}' — not in allowlist`);
+          continue;
+        }
+        merged[key] = newConfig[key];
+      }
+
+      // Always preserve secrets from existing config
       if (existing.wallet) merged.wallet = existing.wallet;
       if (existing.private_key) merged.private_key = existing.private_key;
       if (existing.secret) merged.secret = existing.secret;
       if (existing.api_key) merged.api_key = existing.api_key;
+
+      // Never allow exchange URLs to be modified from renderer
+      merged.exchange = existing.exchange;
 
       // Atomic write: write to .tmp then rename
       const tmpPath = configPath + '.tmp';

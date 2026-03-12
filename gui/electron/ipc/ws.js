@@ -1,30 +1,10 @@
 const WebSocket = require('ws');
-const fs = require('fs');
-const path = require('path');
+const env = require('../env');
 
 module.exports = function registerWsIPC(ipcMain, projectRoot, getWindow) {
   let ws = null;
   let reconnectTimer = null;
   let walletAddress = null;
-
-  function readWallet() {
-    try {
-      const envPath = path.join(projectRoot, '.env');
-      const content = fs.readFileSync(envPath, 'utf-8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('TB_WALLET_ADDRESS=')) {
-          let val = trimmed.slice('TB_WALLET_ADDRESS='.length).trim();
-          if ((val.startsWith('"') && val.endsWith('"')) ||
-              (val.startsWith("'") && val.endsWith("'"))) {
-            val = val.slice(1, -1);
-          }
-          return val;
-        }
-      }
-    } catch (_) {}
-    return null;
-  }
 
   function send(win, channel, data) {
     if (win && !win.isDestroyed()) {
@@ -43,7 +23,7 @@ module.exports = function registerWsIPC(ipcMain, projectRoot, getWindow) {
     }
 
     emitStatus('reconnecting');
-    walletAddress = readWallet();
+    walletAddress = env.getWalletAddress();
     ws = new WebSocket('wss://api.hyperliquid.xyz/ws');
 
     ws.on('open', () => {
@@ -62,7 +42,7 @@ module.exports = function registerWsIPC(ipcMain, projectRoot, getWindow) {
           method: 'subscribe',
           subscription: { type: 'userFills', user: walletAddress },
         }));
-        console.log('[ws] subscribed to userFills for', walletAddress);
+        console.log('[ws] subscribed to userFills');
       } else {
         console.warn('[ws] no wallet address — userFills subscription skipped');
       }

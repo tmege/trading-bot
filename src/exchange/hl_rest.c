@@ -161,6 +161,17 @@ static int post_json(hl_rest_t *rest, const char *endpoint,
     curl_easy_setopt(rest->curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(rest->curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(rest->curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(rest->curl, CURLOPT_PROTOCOLS_STR, "https");
+
+    /* Certificate pinning for Hyperliquid (anti-MitM).
+     * Pin = SHA-256 of the server's Subject Public Key Info (SPKI).
+     * If Hyperliquid rotates their cert and this pin becomes stale,
+     * REST calls will fail with CURLE_SSL_PINNEDPUBKEYNOTMATCH —
+     * the bot logs an error and stops trading (fail-safe). */
+    if (strstr(url, "hyperliquid.xyz")) {
+        curl_easy_setopt(rest->curl, CURLOPT_PINNEDPUBLICKEY,
+            "sha256//6HcfzlS+1ACjqK+50lx+D346XkY/fCDP+mzBoqqjAFY=");
+    }
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");

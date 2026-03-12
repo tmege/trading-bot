@@ -1,5 +1,4 @@
-const path = require('path');
-const fs = require('fs');
+const env = require('../env');
 
 /* ── Cache ───────────────────────────────────────────────────────────────── */
 let cached = null;
@@ -9,26 +8,6 @@ const CACHE_MS = 120_000;       // 120s — crypto data (CoinGecko, F&G, forex)
 let fmpCached = null;
 let fmpFetchedAt = 0;
 const FMP_CACHE_MS = 3_600_000; // 1h — FMP free tier: 250 calls/day (16 syms × ~16 refreshes = ~256)
-
-/* ── Read optional macro API key from .env ───────────────────────────────── */
-function readMacroApiKey(projectRoot) {
-  try {
-    const envPath = path.join(projectRoot, '.env');
-    const content = fs.readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('TB_MACRO_API_KEY=')) {
-        let val = trimmed.slice('TB_MACRO_API_KEY='.length).trim();
-        if ((val.startsWith('"') && val.endsWith('"')) ||
-            (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        return val || null;
-      }
-    }
-  } catch (_) {}
-  return null;
-}
 
 /* ── FMP symbols (commodities only — indices/stocks removed) ──────────── */
 const FMP_COMMODITIES = { GCUSD: 'gold', SIUSD: 'silver' };
@@ -94,7 +73,7 @@ async function fetchMarketData(projectRoot) {
     has_fmp: false,
   };
 
-  const apiKey = readMacroApiKey(projectRoot);
+  const apiKey = env.getMacroApiKey();
 
   // FMP uses separate longer cache (250 calls/day free tier)
   const now2 = Date.now();
