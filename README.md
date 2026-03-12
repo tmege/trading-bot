@@ -51,6 +51,30 @@ chmod 600 .env
 
 `config/bot_config.json` — exchange URLs, risk parameters, active strategies with coins, paper mode. See the file for full options.
 
+## License Activation
+
+The GUI requires a license to run. Each license is tied to a single machine.
+
+```bash
+# 1. Generate admin keys (once)
+node scripts/license_admin.js generate-keys
+
+# 2. Copy the public key PEM into gui/electron/license.js (PUBLIC_KEY_PEM)
+
+# 3. Generate license codes
+node scripts/license_admin.js generate-codes 10
+
+# 4. User launches the GUI → "Activation requise" screen shows their machine ID
+
+# 5. Admin signs a token for that machine
+node scripts/license_admin.js sign --code <UUID> --machine <machine-id>
+
+# 6. User pastes the token → activated permanently
+
+# List all codes and their status
+node scripts/license_admin.js list
+```
+
 ## Usage
 
 ```bash

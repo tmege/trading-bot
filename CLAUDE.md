@@ -17,10 +17,10 @@ src/                    C engine source
 strategies/             12 Lua strategies + template
 config/                 bot_config.json (no secrets — secrets in .env)
 gui/                    Electron + React desktop app
-  electron/             main.js, preload.js, ipc/ (bot, config, strategies, backtest, db, logs, ws, market, sync)
-  src/                  App.jsx, pages/ (Dashboard, Market, Strategies, Backtest, Settings), components/, hooks/
+  electron/             main.js, preload.js, license.js, ipc/ (bot, config, strategies, backtest, db, logs, ws, market, sync, license)
+  src/                  App.jsx, pages/ (Dashboard, Market, Strategies, Backtest, Settings, LicenseGate), components/, hooks/
 tests/                  Unit tests + benchmarks (test_*.c, bench_*.c, backtest_*.c)
-scripts/                start.sh, stop.sh, backtest_all.sh, backtest_full_report.sh, backtest_multi_period.sh
+scripts/                start.sh, stop.sh, backtest_all.sh, backtest_full_report.sh, backtest_multi_period.sh, license_admin.js
 tools/                  candle_fetcher.c (historical data downloader with Binance fallback)
 docs/                   strategies.md, backtest-report.md, backtest-results.md, pentest.md
 data/                   SQLite DBs (trading_bot.db, candle_cache.db), backtest results
@@ -62,8 +62,10 @@ cd gui && npm install && npm run dev
 **Indicators**: `src/strategy/indicators.c` (SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, etc.)
 **Risk**: `src/risk/risk_manager.c` (daily loss, circuit breaker, leverage, position limits)
 **Backtest**: `src/backtest/backtest_engine.c`
-**GUI root**: `gui/src/App.jsx` (hoisted state: marketData, botStatus, tradeNotifications)
-**GUI IPC**: `gui/electron/ipc/` (9 namespaces)
+**GUI root**: `gui/src/App.jsx` (license gate → AppMain, hoisted state: marketData, botStatus, tradeNotifications)
+**GUI IPC**: `gui/electron/ipc/` (10 namespaces)
+**License**: `gui/electron/license.js` (Ed25519 verify, AES-256-GCM storage, machine fingerprint)
+**License admin**: `scripts/license_admin.js` (generate-keys, generate-codes, sign, list)
 
 ## Configuration
 
@@ -101,6 +103,19 @@ libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all 
 - `ichimoku_trend_4h.lua` — Ichimoku cloud trend, ATR SL 2.0x [2.0-4.5%] (secondary, 5% equity)
 - Coins: BTC, ETH, SOL (= 9 instances)
 - Risk: daily_loss 6%, emergency 5%, max_leverage 5x, max_position 150%, global_exposure 300%
+
+## License System
+
+Ed25519 asymmetric licensing — public key in app (verify only), private key admin-only (sign).
+
+- **Flow**: User gets machineId from GUI → admin signs token → user activates
+- **Machine ID**: SHA-256(hostname|cpuModel|platform|arch|MAC|totalMemGB) truncated 16 hex
+- **Storage**: `license.dat` in `app.getPath('userData')`, AES-256-GCM encrypted with machineId-derived key
+- **Token format**: base64url(JSON{c: code, m: machineId, s: Ed25519 signature of "code:machineId"})
+- **1 code = 1 machine**: token is bound to machineId via signature
+- **Admin CLI**: `scripts/license_admin.js` (generate-keys, generate-codes [n], sign --code --machine, list)
+- **Codes DB**: `scripts/license_codes.txt` (gitignored)
+- **Keys**: `scripts/license_private.pem` + `license_public.pem` (gitignored via *.pem)
 
 ## Rules
 - NEVER run git commands (user-managed)

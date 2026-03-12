@@ -7,6 +7,7 @@ import Backtest from './pages/Backtest';
 import Settings from './pages/Settings';
 import TradeNotifications from './components/TradeNotifications';
 import Toasts from './components/Toasts';
+import LicenseGate from './pages/LicenseGate';
 import useBotStatus from './hooks/useBotStatus';
 import useTradeNotifications from './hooks/useTradeNotifications';
 import useMarketData from './hooks/useMarketData';
@@ -23,6 +24,30 @@ const PAGES = {
 };
 
 export default function App() {
+  const [licenseValid, setLicenseValid] = useState(null);
+
+  useEffect(() => {
+    window.api.license.check().then(res => {
+      setLicenseValid(res.ok && res.valid);
+    }).catch(() => setLicenseValid(false));
+  }, []);
+
+  if (licenseValid === null) {
+    return (
+      <div className="flex items-center justify-center h-screen w-screen bg-surface-bg">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!licenseValid) {
+    return <LicenseGate onActivated={() => setLicenseValid(true)} />;
+  }
+
+  return <AppMain />;
+}
+
+function AppMain() {
   const [page, setPage] = useState('dashboard');
   const botStatus = useBotStatus();
   const { notifications, dismiss } = useTradeNotifications();

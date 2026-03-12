@@ -10,6 +10,7 @@ const registerLogsIPC = require('./ipc/logs');
 const registerSyncIPC = require('./ipc/sync');
 const registerWsIPC = require('./ipc/ws');
 const registerMarketIPC = require('./ipc/market');
+const registerLicenseIPC = require('./ipc/license');
 const env = require('./env');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -66,6 +67,7 @@ app.whenReady().then(() => {
   createWindow();
 
   // Register all IPC handlers
+  registerLicenseIPC(ipcMain);
   registerBotIPC(ipcMain, PROJECT_ROOT);
   registerConfigIPC(ipcMain, PROJECT_ROOT);
   registerStrategiesIPC(ipcMain, PROJECT_ROOT);

@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  // License management
+  license: {
+    check:     () => ipcRenderer.invoke('license:check'),
+    activate:  (token) => ipcRenderer.invoke('license:activate', token),
+    machineId: () => ipcRenderer.invoke('license:machineId'),
+  },
+
   // Bot process management
   bot: {
     start:  ()       => ipcRenderer.invoke('bot:start'),

@@ -15,6 +15,7 @@ logs/
 .env
 *.pem
 *.key
+scripts/license_codes.txt
 
 # IDE
 .vscode/
