@@ -11,6 +11,7 @@ const registerSyncIPC = require('./ipc/sync');
 const registerWsIPC = require('./ipc/ws');
 const registerMarketIPC = require('./ipc/market');
 const registerLicenseIPC = require('./ipc/license');
+const registerAiDigestIPC = require('./ipc/ai-digest');
 const env = require('./env');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -77,6 +78,7 @@ app.whenReady().then(() => {
   registerSyncIPC(ipcMain, PROJECT_ROOT, () => mainWindow);
   registerWsIPC(ipcMain, PROJECT_ROOT, () => mainWindow);
   registerMarketIPC(ipcMain, PROJECT_ROOT);
+  registerAiDigestIPC(ipcMain, PROJECT_ROOT);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

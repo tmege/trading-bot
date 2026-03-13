@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Keys that are safe to cache in the GUI process
-const SAFE_KEYS = new Set(['TB_WALLET_ADDRESS', 'TB_MACRO_API_KEY']);
+const SAFE_KEYS = new Set(['TB_WALLET_ADDRESS', 'TB_MACRO_API_KEY', 'TB_ANTHROPIC_API_KEY']);
 
 let cached = {};
 
@@ -48,8 +48,12 @@ function getMacroApiKey() {
   return cached.TB_MACRO_API_KEY || null;
 }
 
+function getAnthropicApiKey() {
+  return cached.TB_ANTHROPIC_API_KEY || null;
+}
+
 function reload(projectRoot) {
   load(projectRoot);
 }
 
-module.exports = { load, reload, getWalletAddress, getMacroApiKey };
+module.exports = { load, reload, getWalletAddress, getMacroApiKey, getAnthropicApiKey };

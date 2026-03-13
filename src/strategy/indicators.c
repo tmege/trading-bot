@@ -695,13 +695,17 @@ tb_indicators_snapshot_t tb_indicators_compute(const tb_candle_input_t *candles,
             tb_ichimoku(candles, n, ichi_buf);
             snap.ichi_tenkan = ichi_buf[last].tenkan;
             snap.ichi_kijun = ichi_buf[last].kijun;
-            snap.ichi_senkou_a = ichi_buf[last].senkou_a;
-            snap.ichi_senkou_b = ichi_buf[last].senkou_b;
-            /* Chikou: use the value from 26 bars ago (represents current close shifted back) */
+            /* Senkou A/B: the current cloud is the projection made 26 bars ago.
+               Read from [last-26] to get the cloud visible NOW on charts. */
+            if (last >= 26) {
+                snap.ichi_senkou_a = ichi_buf[last - 26].senkou_a;
+                snap.ichi_senkou_b = ichi_buf[last - 26].senkou_b;
+            }
+            /* Chikou: close from 26 bars ago (current close shifted back) */
             if (last >= 26) {
                 snap.ichi_chikou = ichi_buf[last - 26].chikou;
             }
-            /* Bullish: price > cloud and tenkan > kijun */
+            /* Bullish: price > current cloud and tenkan > kijun */
             double cloud_top = snap.ichi_senkou_a > snap.ichi_senkou_b ?
                                snap.ichi_senkou_a : snap.ichi_senkou_b;
             snap.ichi_bullish = (price > cloud_top && snap.ichi_tenkan > snap.ichi_kijun);

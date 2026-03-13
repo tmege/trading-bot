@@ -7,6 +7,7 @@
  */
 
 const crypto = require('crypto');
+const { execSync } = require('child_process');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
@@ -19,31 +20,59 @@ MCowBQYDK2VwAyEAl070P8PesnsXKUBUeIYTvtJZNyiYOETExbuUtmxsHyc=
 -----END PUBLIC KEY-----`;
 
 // ─── Machine fingerprint ────────────────────────────────────
+// Uses OS-level hardware UUID (immutable, survives reboots/network changes)
+// - macOS: IOPlatformUUID from IORegistry
+// - Linux: /etc/machine-id
+// - Windows: BIOS UUID via wmic
 
-function getStableMAC() {
-  const ifaces = os.networkInterfaces();
-  const names = Object.keys(ifaces).sort();
-  for (const name of names) {
-    for (const iface of ifaces[name]) {
-      if (!iface.internal && iface.mac && iface.mac !== '00:00:00:00:00:00') {
-        return iface.mac;
+function getHardwareUUID() {
+  try {
+    if (process.platform === 'darwin') {
+      const output = execSync(
+        'ioreg -rd1 -c IOPlatformExpertDevice',
+        { encoding: 'utf-8', timeout: 5000 }
+      );
+      const match = output.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/);
+      if (match) return match[1];
+    } else if (process.platform === 'linux') {
+      if (fs.existsSync('/etc/machine-id')) {
+        return fs.readFileSync('/etc/machine-id', 'utf-8').trim();
+      }
+      if (fs.existsSync('/var/lib/dbus/machine-id')) {
+        return fs.readFileSync('/var/lib/dbus/machine-id', 'utf-8').trim();
+      }
+    } else if (process.platform === 'win32') {
+      const output = execSync(
+        'wmic csproduct get UUID',
+        { encoding: 'utf-8', timeout: 5000 }
+      );
+      const lines = output.trim().split('\n');
+      if (lines.length >= 2) {
+        const uuid = lines[1].trim();
+        if (uuid && uuid !== 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF') return uuid;
       }
     }
+  } catch {
+    // Fall through to fallback
   }
-  return 'no-mac';
+  return null;
 }
 
 function getMachineId() {
-  const components = [
-    os.hostname(),
+  const hwid = getHardwareUUID();
+  if (hwid) {
+    const hash = crypto.createHash('sha256').update(hwid).digest('hex');
+    return hash.substring(0, 16);
+  }
+
+  // Fallback: CPU + platform + arch + RAM (no network — avoids instability)
+  const fallback = [
     os.cpus()[0]?.model || 'unknown-cpu',
     os.platform(),
     os.arch(),
-    getStableMAC(),
     String(Math.round(os.totalmem() / (1024 * 1024 * 1024))),
   ].join('|');
-
-  const hash = crypto.createHash('sha256').update(components).digest('hex');
+  const hash = crypto.createHash('sha256').update(fallback).digest('hex');
   return hash.substring(0, 16);
 }
 

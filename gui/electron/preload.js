@@ -95,6 +95,11 @@ contextBridge.exposeInMainWorld('api', {
     data: () => ipcRenderer.invoke('market:data'),
   },
 
+  // AI Digest (1 call/day, no manual refresh)
+  aiDigest: {
+    get: () => ipcRenderer.invoke('ai-digest:get'),
+  },
+
   // Market data sync
   sync: {
     run:    ()  => ipcRenderer.invoke('sync:run'),

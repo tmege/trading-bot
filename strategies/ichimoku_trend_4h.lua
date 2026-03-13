@@ -37,9 +37,12 @@ local config = {
     trail_enabled  = true,       -- trail SL under Tenkan-sen
     trail_buffer   = 0.3,       -- 0.3% buffer below Tenkan for trail
 
+    -- Cloud entry filter
+    cloud_buffer_pct = 0.5,     -- min % distance from cloud edge to enter (avoids boundary oscillation)
+
     -- Timing
-    check_sec     = 30,         -- check every 30s (swing)
-    cooldown_sec  = 600,        -- 10 min between trades
+    check_sec     = 120,        -- check every 2min (4h swing — no need for faster)
+    cooldown_sec  = 1800,       -- 30 min between trades (4h strategy)
     max_hold_sec  = 43200,      -- max hold 12h
 
     enabled       = true,
@@ -51,7 +54,7 @@ local instance_name = "ichimoku_trend_4h_" .. config.coin:lower()
 local function get_trade_size()
     local acct = bot.get_account_value()
     if acct and acct > 0 then
-        return acct * config.equity_pct
+        return math.min(acct * config.equity_pct, config.max_size)
     end
     return config.entry_size
 end
@@ -212,8 +215,10 @@ end
 local function close_position(reason)
     if not in_position then return end
 
-    if sl_oid then bot.cancel(config.coin, sl_oid); sl_oid = nil end
-    if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
+    -- Cancel ALL orders on exchange for this coin (catches orphaned trigger children)
+    bot.cancel_all_exchange(config.coin)
+    sl_oid = nil
+    tp_oid = nil
 
     local pos = bot.get_position(config.coin)
     if not pos or pos.size == 0 then
@@ -221,6 +226,7 @@ local function close_position(reason)
         position_side = nil
         entry_price = 0
         last_trail_px = 0
+        bot.save_state("has_position", "false")
         return
     end
 
@@ -252,6 +258,7 @@ local function close_position(reason)
     position_side = nil
     entry_price = 0
     last_trail_px = 0
+    bot.save_state("has_position", "false")
 end
 
 -- ── Callbacks ──────────────────────────────────────────────────────────────
@@ -272,13 +279,26 @@ function on_init()
     local saved_streak = bot.load_state("losing_streak")
     if saved_streak then losing_streak = tonumber(saved_streak) or 0 end
 
-    -- Check existing position
-    local pos = bot.get_position(config.coin)
-    if pos and pos.size ~= 0 then
-        in_position = true
-        entry_price = pos.entry_px
-        position_side = pos.size > 0 and "long" or "short"
-        entry_time = bot.time()
+    -- Restore position only if THIS strategy opened it (prevents cross-strategy claiming)
+    local had_position = bot.load_state("has_position")
+    if had_position == "true" then
+        local pos = bot.get_position(config.coin)
+        if pos and pos.size ~= 0 then
+            in_position = true
+            entry_price = pos.entry_px
+            position_side = pos.size > 0 and "long" or "short"
+            entry_time = bot.time()
+            bot.log("info", string.format("%s: restored OWN position %s %.4f @ $%.2f",
+                instance_name, position_side, math.abs(pos.size), entry_price))
+            -- Clean stale orders on exchange before re-placing SL/TP
+            bot.cancel_all_exchange(config.coin)
+            local ind = bot.get_indicators(config.coin, "4h", 52, pos.entry_px)
+            if ind and ind.atr and ind.atr > 0 then entry_atr = ind.atr end
+            place_sl_tp(entry_price, position_side, math.abs(pos.size))
+            bot.log("info", string.format("%s: re-placed SL/TP after restart", instance_name))
+        else
+            bot.save_state("has_position", "false")
+        end
     end
 
     last_check = bot.time()
@@ -339,6 +359,7 @@ function on_tick(coin, mid_price)
             in_position = false
             position_side = nil
             entry_price = 0
+            bot.cancel_all_exchange(config.coin)
             sl_oid = nil
             tp_oid = nil
             last_trail_px = 0
@@ -389,14 +410,17 @@ function on_tick(coin, mid_price)
     -- Velocity guard (skip entry if price moved too fast)
     if not velocity_check(mid_price, now) then return end
 
-    -- LONG: price above cloud + Tenkan > Kijun (pure Ichimoku, no RSI/ADX filters)
-    local long_ichimoku = above_cloud and tenkan > kijun
-    if ichi_bullish then long_ichimoku = true end
+    -- LONG: price above cloud WITH BUFFER + Tenkan > Kijun
+    -- Buffer prevents entry right at cloud edge (causes rapid entry/exit oscillation)
+    local cloud_buffer_up = cloud_top * config.cloud_buffer_pct / 100
+    local above_with_buffer = mid_price > (cloud_top + cloud_buffer_up)
+    local long_ichimoku = above_with_buffer and tenkan > kijun
+    if ichi_bullish and above_with_buffer then long_ichimoku = true end
 
     if long_ichimoku then
         bot.log("info", string.format(
-            "%s: ICHIMOKU LONG — above cloud ($%.2f > $%.2f), T=%.2f > K=%.2f",
-            instance_name, mid_price, cloud_top, tenkan, kijun))
+            "%s: ICHIMOKU LONG — above cloud+buffer ($%.2f > $%.2f+%.2f), T=%.2f > K=%.2f",
+            instance_name, mid_price, cloud_top, cloud_buffer_up, tenkan, kijun))
         local oid = place_entry("long", mid_price)
         if oid then
             last_trade = now
@@ -405,11 +429,12 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- SHORT: price below cloud + Tenkan < Kijun
-    if below_cloud and tenkan < kijun then
+    -- SHORT: price below cloud WITH BUFFER + Tenkan < Kijun
+    local cloud_buffer_dn = cloud_bottom * config.cloud_buffer_pct / 100
+    if mid_price < (cloud_bottom - cloud_buffer_dn) and tenkan < kijun then
         bot.log("info", string.format(
-            "%s: ICHIMOKU SHORT — below cloud ($%.2f < $%.2f), T=%.2f < K=%.2f",
-            instance_name, mid_price, cloud_bottom, tenkan, kijun))
+            "%s: ICHIMOKU SHORT — below cloud-buffer ($%.2f < $%.2f-%.2f), T=%.2f < K=%.2f",
+            instance_name, mid_price, cloud_bottom, cloud_buffer_dn, tenkan, kijun))
         local oid = place_entry("short", mid_price)
         if oid then
             last_trade = now
@@ -425,18 +450,36 @@ function on_fill(fill)
     bot.log("info", string.format("%s: FILL %s %.5f @ $%.2f pnl=%.4f fee=%.4f",
         instance_name, fill.side, fill.size, fill.price, fill.closed_pnl, fill.fee))
 
-    -- Entry fill
-    if not in_position then
+    -- ── Entry fill: closed_pnl == 0 means opening (handles partial fills) ──
+    if fill.closed_pnl == 0 then
+        if not in_position then
+            in_position = true
+            entry_price = fill.price
+            position_side = fill.side == "buy" and "long" or "short"
+            entry_time = bot.time()
+            bot.save_state("has_position", "true")
+        end
         entry_oid = nil
         entry_placed_at = 0
-        in_position = true
-        entry_price = fill.price
-        position_side = fill.side == "buy" and "long" or "short"
-        place_sl_tp(fill.price, position_side, fill.size)
+        -- Cancel ALL on exchange before refreshing SL/TP (catches trigger children)
+        bot.cancel_all_exchange(config.coin)
+        sl_oid = nil
+        tp_oid = nil
+        local pos = bot.get_position(config.coin)
+        if pos and pos.size ~= 0 then
+            place_sl_tp(entry_price, position_side, math.abs(pos.size))
+        end
         return
     end
 
-    -- Exit fill
+    -- ── Exit fill: closed_pnl != 0 means closing ──
+    if not in_position then
+        bot.log("warn", string.format("%s: exit fill but not in_position (pnl=%.4f) — syncing",
+            instance_name, fill.closed_pnl))
+        return
+    end
+
+    last_trade = bot.time()
     trade_count = trade_count + 1
     if fill.closed_pnl > 0 then
         win_count = win_count + 1
@@ -454,24 +497,20 @@ function on_fill(fill)
     bot.save_state("win_count", tostring(win_count))
     bot.save_state("losing_streak", tostring(losing_streak))
 
-    if fill.oid == sl_oid then
-        bot.log("info", string.format("%s: SL hit — pnl=%.4f (win rate: %d/%d = %.0f%%)",
-            instance_name, fill.closed_pnl, win_count, trade_count,
-            trade_count > 0 and (win_count / trade_count * 100) or 0))
-        if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
-        sl_oid = nil
-    elseif fill.oid == tp_oid then
-        bot.log("info", string.format("%s: TP hit — pnl=%.4f (win rate: %d/%d = %.0f%%)",
-            instance_name, fill.closed_pnl, win_count, trade_count,
-            trade_count > 0 and (win_count / trade_count * 100) or 0))
-        if sl_oid then bot.cancel(config.coin, sl_oid); sl_oid = nil end
-        tp_oid = nil
-    end
+    bot.log("info", string.format("%s: EXIT — pnl=%.4f (win rate: %d/%d = %.0f%%)",
+        instance_name, fill.closed_pnl, win_count, trade_count,
+        trade_count > 0 and (win_count / trade_count * 100) or 0))
+
+    -- Cancel ALL orders on exchange for this coin (catches orphaned trigger children)
+    bot.cancel_all_exchange(config.coin)
+    sl_oid = nil
+    tp_oid = nil
 
     in_position = false
     position_side = nil
     entry_price = 0
     last_trail_px = 0
+    bot.save_state("has_position", "false")
 end
 
 function on_timer()
@@ -492,8 +531,9 @@ function on_timer()
         position_side = nil
         entry_price = 0
         last_trail_px = 0
-        if sl_oid then bot.cancel(config.coin, sl_oid); sl_oid = nil end
-        if tp_oid then bot.cancel(config.coin, tp_oid); tp_oid = nil end
+        bot.cancel_all_exchange(config.coin)
+        sl_oid = nil
+        tp_oid = nil
     end
 end
 function on_shutdown()
@@ -503,6 +543,7 @@ function on_shutdown()
     bot.save_state("enabled", tostring(config.enabled))
     bot.save_state("trade_count", tostring(trade_count))
     bot.save_state("win_count", tostring(win_count))
+    bot.save_state("has_position", tostring(in_position))
 
     if in_position then
         bot.log("info", instance_name .. ": position open, SL/TP on exchange")

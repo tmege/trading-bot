@@ -745,6 +745,79 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
     return rc;
 }
 
+int tb_order_mgr_cancel_all_exchange_coin(tb_order_mgr_t *mgr, const char *coin) {
+    if (!coin || coin[0] == '\0') return -1;
+
+    /* In paper mode, fall back to local-only cancel */
+    if (mgr->paper) {
+        return tb_order_mgr_cancel_all_coin(mgr, coin);
+    }
+
+    if (!mgr->user_addr[0]) return -1;
+
+    /* Fetch ALL open orders from exchange (not local tracking) */
+    tb_order_t *exchange_orders = malloc(sizeof(tb_order_t) * MAX_OPEN_ORDERS);
+    if (!exchange_orders) return -1;
+
+    int n_exchange = 0;
+    int rc = hl_rest_get_open_orders(mgr->rest, mgr->user_addr,
+                                      exchange_orders, &n_exchange,
+                                      MAX_OPEN_ORDERS);
+    if (rc != 0) {
+        free(exchange_orders);
+        tb_log_error("cancel_all_exchange: failed to fetch open orders");
+        return rc;
+    }
+
+    /* Filter by coin and collect for batch cancel */
+    uint32_t cancel_assets[MAX_OPEN_ORDERS];
+    uint64_t cancel_oids[MAX_OPEN_ORDERS];
+    int n_cancel = 0;
+
+    for (int i = 0; i < n_exchange; i++) {
+        if (strcmp(exchange_orders[i].coin, coin) == 0) {
+            cancel_assets[n_cancel] = exchange_orders[i].asset;
+            cancel_oids[n_cancel] = exchange_orders[i].oid;
+            n_cancel++;
+        }
+    }
+    free(exchange_orders);
+
+    if (n_cancel == 0) {
+        /* Also clean local tracking for this coin */
+        tb_order_mgr_cancel_all_coin(mgr, coin);
+        return 0;
+    }
+
+    tb_log_info("cancel_all_exchange: cancelling %d orders for %s on exchange",
+                n_cancel, coin);
+
+    rc = hl_rest_cancel_orders(mgr->rest, cancel_assets, cancel_oids, n_cancel);
+    if (rc == 0) {
+        /* Remove from local tracking too */
+        pthread_rwlock_wrlock(&mgr->orders_lock);
+        for (int c = 0; c < n_cancel; c++) {
+            for (int i = mgr->n_orders - 1; i >= 0; i--) {
+                if (mgr->orders[i].order.oid == cancel_oids[c]) {
+                    if (i < mgr->n_orders - 1) {
+                        memmove(&mgr->orders[i], &mgr->orders[i + 1],
+                                sizeof(tracked_order_t) * (mgr->n_orders - i - 1));
+                    }
+                    mgr->n_orders--;
+                    break;
+                }
+            }
+        }
+        pthread_rwlock_unlock(&mgr->orders_lock);
+
+        tb_log_info("cancel_all_exchange: cancelled %d orders for %s", n_cancel, coin);
+    } else {
+        tb_log_error("cancel_all_exchange: batch cancel failed for %s", coin);
+    }
+
+    return rc;
+}
+
 int tb_order_mgr_get_open_orders(tb_order_mgr_t *mgr, const char *coin,
                                   tb_order_t *out, int *count) {
     int max_out = *count;

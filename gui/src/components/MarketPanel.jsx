@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Globe, Coins, DollarSign, Activity } from 'lucide-react';
 import usePrices from '../hooks/usePrices';
+import AiDigest from './AiDigest';
 
 /* ── Formatters ──────────────────────────────────────────────────────────── */
 function formatPrice(price) {
@@ -211,6 +212,9 @@ export default function MarketPanel({ marketData, activeCoins }) {
 
       {/* ── Market Phase ──────────────────────────────────────────────────── */}
       <MarketPhaseWidget macro={macro} />
+
+      {/* ── AI Digest ───────────────────────────────────────────────────── */}
+      <AiDigest />
 
       {/* ── Commodities ─────────────────────────────────────────────────── */}
       {(macro?.gold > 0 || macro?.silver > 0) && (

@@ -356,6 +356,26 @@ static int api_cancel_all(lua_State *L) {
     return 1;
 }
 
+/* ── bot.cancel_all_exchange(coin) — query exchange + cancel all ────────── */
+static int api_cancel_all_exchange(lua_State *L) {
+    tb_lua_ctx_t *ctx = get_ctx(L);
+    if (!ctx || !ctx->order_mgr) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "no order manager");
+        return 2;
+    }
+
+    const char *coin = luaL_checkstring(L, 1);
+    if (!is_valid_coin(coin)) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "invalid coin");
+        return 2;
+    }
+    int rc = tb_order_mgr_cancel_all_exchange_coin(ctx->order_mgr, coin);
+    lua_pushboolean(L, rc == 0);
+    return 1;
+}
+
 /* ── bot.get_position(coin) → table or nil ──────────────────────────────── */
 static int api_get_position(lua_State *L) {
     tb_lua_ctx_t *ctx = get_ctx(L);
@@ -903,6 +923,7 @@ static const luaL_Reg bot_funcs[] = {
     {"place_trigger",   api_place_trigger},
     {"cancel",          api_cancel},
     {"cancel_all",      api_cancel_all},
+    {"cancel_all_exchange", api_cancel_all_exchange},
     {"get_position",    api_get_position},
     {"get_mid_price",   api_get_mid_price},
     {"get_open_orders", api_get_open_orders},
