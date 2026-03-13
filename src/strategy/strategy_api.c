@@ -356,7 +356,7 @@ static int api_cancel_all(lua_State *L) {
     return 1;
 }
 
-/* ── bot.cancel_all_exchange(coin) — query exchange + cancel all ────────── */
+/* ── bot.cancel_all_exchange(coin) — query exchange + cancel own orders ─── */
 static int api_cancel_all_exchange(lua_State *L) {
     tb_lua_ctx_t *ctx = get_ctx(L);
     if (!ctx || !ctx->order_mgr) {
@@ -371,7 +371,9 @@ static int api_cancel_all_exchange(lua_State *L) {
         lua_pushstring(L, "invalid coin");
         return 2;
     }
-    int rc = tb_order_mgr_cancel_all_exchange_coin(ctx->order_mgr, coin);
+    /* Strategy-aware: only cancel orders placed by this strategy */
+    int rc = tb_order_mgr_cancel_all_exchange_coin_strategy(
+        ctx->order_mgr, coin, ctx->strategy_name);
     lua_pushboolean(L, rc == 0);
     return 1;
 }

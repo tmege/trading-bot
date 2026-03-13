@@ -47,6 +47,9 @@ int tb_order_mgr_cancel_by_coin(tb_order_mgr_t *mgr, const char *coin,
                                  uint64_t oid);
 int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin);
 int tb_order_mgr_cancel_all_exchange_coin(tb_order_mgr_t *mgr, const char *coin);
+int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
+                                                     const char *coin,
+                                                     const char *strategy);
 
 /* Query open orders for a coin (thread-safe) */
 int tb_order_mgr_get_open_orders(tb_order_mgr_t *mgr, const char *coin,

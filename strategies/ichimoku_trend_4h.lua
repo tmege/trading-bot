@@ -108,9 +108,14 @@ end
 -- ── Helpers ────────────────────────────────────────────────────────────────
 
 local function place_entry(side, mid)
-    -- Skip if opposing position exists on this coin (from another strategy)
+    -- Skip if position exists on this coin but we don't own it (another strategy)
     local existing = bot.get_position(config.coin)
     if existing and existing.size ~= 0 then
+        if not in_position then
+            bot.log("info", string.format("%s: SKIP — %s position on %s owned by another strategy",
+                instance_name, existing.size > 0 and "long" or "short", config.coin))
+            return nil
+        end
         local ex_side = existing.size > 0 and "long" or "short"
         if ex_side ~= side then
             bot.log("info", string.format("%s: SKIP — opposing %s position on %s",

@@ -746,11 +746,42 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
 }
 
 int tb_order_mgr_cancel_all_exchange_coin(tb_order_mgr_t *mgr, const char *coin) {
+    /* Legacy: cancel ALL orders for this coin (no strategy filter) */
+    return tb_order_mgr_cancel_all_exchange_coin_strategy(mgr, coin, NULL);
+}
+
+int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
+                                                     const char *coin,
+                                                     const char *strategy) {
     if (!coin || coin[0] == '\0') return -1;
 
-    /* In paper mode, fall back to local-only cancel */
+    /* In paper mode, fall back to local-only cancel (filtered by strategy) */
     if (mgr->paper) {
-        return tb_order_mgr_cancel_all_coin(mgr, coin);
+        if (!strategy) {
+            return tb_order_mgr_cancel_all_coin(mgr, coin);
+        }
+        /* Strategy-filtered local cancel for paper mode */
+        uint32_t assets[MAX_OPEN_ORDERS];
+        uint64_t oids[MAX_OPEN_ORDERS];
+        int n = 0;
+        pthread_rwlock_rdlock(&mgr->orders_lock);
+        for (int i = 0; i < mgr->n_orders; i++) {
+            if (strcmp(mgr->orders[i].order.coin, coin) == 0 &&
+                strcmp(mgr->orders[i].strategy, strategy) == 0) {
+                assets[n] = mgr->orders[i].order.asset;
+                oids[n] = mgr->orders[i].order.oid;
+                n++;
+            }
+        }
+        pthread_rwlock_unlock(&mgr->orders_lock);
+        int rc = 0;
+        for (int i = 0; i < n && rc == 0; i++)
+            rc = tb_paper_cancel_order(mgr->paper, assets[i], oids[i]);
+        if (rc == 0) {
+            for (int i = 0; i < n; i++)
+                remove_tracked_order(mgr, oids[i]);
+        }
+        return rc;
     }
 
     if (!mgr->user_addr[0]) return -1;
@@ -769,28 +800,52 @@ int tb_order_mgr_cancel_all_exchange_coin(tb_order_mgr_t *mgr, const char *coin)
         return rc;
     }
 
-    /* Filter by coin and collect for batch cancel */
+    /* Filter by coin and optionally by strategy (via OID lookup) */
     uint32_t cancel_assets[MAX_OPEN_ORDERS];
     uint64_t cancel_oids[MAX_OPEN_ORDERS];
     int n_cancel = 0;
 
     for (int i = 0; i < n_exchange; i++) {
-        if (strcmp(exchange_orders[i].coin, coin) == 0) {
-            cancel_assets[n_cancel] = exchange_orders[i].asset;
-            cancel_oids[n_cancel] = exchange_orders[i].oid;
-            n_cancel++;
+        if (strcmp(exchange_orders[i].coin, coin) != 0) continue;
+
+        if (strategy) {
+            /* Strategy-filtered: only cancel orders placed by this strategy */
+            char owner[64] = "";
+            if (find_strategy_for_oid(mgr, exchange_orders[i].oid,
+                                       owner, sizeof(owner))) {
+                if (strcmp(owner, strategy) != 0) {
+                    tb_log_debug("cancel_all_exchange: keeping %s's order oid=%llu "
+                                 "(caller=%s)", owner,
+                                 (unsigned long long)exchange_orders[i].oid, strategy);
+                    continue;  /* belongs to another strategy — don't cancel */
+                }
+            } else {
+                /* Unknown owner — don't cancel (fail-safe) */
+                tb_log_debug("cancel_all_exchange: keeping unowned order oid=%llu "
+                             "(caller=%s)",
+                             (unsigned long long)exchange_orders[i].oid, strategy);
+                continue;
+            }
         }
+
+        cancel_assets[n_cancel] = exchange_orders[i].asset;
+        cancel_oids[n_cancel] = exchange_orders[i].oid;
+        n_cancel++;
     }
     free(exchange_orders);
 
     if (n_cancel == 0) {
-        /* Also clean local tracking for this coin */
-        tb_order_mgr_cancel_all_coin(mgr, coin);
+        /* Also clean local tracking for this coin+strategy */
+        if (!strategy) {
+            tb_order_mgr_cancel_all_coin(mgr, coin);
+        }
         return 0;
     }
 
-    tb_log_info("cancel_all_exchange: cancelling %d orders for %s on exchange",
-                n_cancel, coin);
+    tb_log_info("cancel_all_exchange: cancelling %d orders for %s%s%s on exchange",
+                n_cancel, coin,
+                strategy ? " (strategy=" : "",
+                strategy ? strategy : "");
 
     rc = hl_rest_cancel_orders(mgr->rest, cancel_assets, cancel_oids, n_cancel);
     if (rc == 0) {
@@ -810,7 +865,10 @@ int tb_order_mgr_cancel_all_exchange_coin(tb_order_mgr_t *mgr, const char *coin)
         }
         pthread_rwlock_unlock(&mgr->orders_lock);
 
-        tb_log_info("cancel_all_exchange: cancelled %d orders for %s", n_cancel, coin);
+        tb_log_info("cancel_all_exchange: cancelled %d orders for %s%s%s",
+                    n_cancel, coin,
+                    strategy ? " (strategy=" : "",
+                    strategy ? strategy : "");
     } else {
         tb_log_error("cancel_all_exchange: batch cancel failed for %s", coin);
     }
