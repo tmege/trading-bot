@@ -86,7 +86,7 @@ typedef struct {
 } strategy_entry_t;
 
 static const strategy_entry_t strategies[] = {
-    { "BB Scalping",    "strategies/bb_scalp_15m.lua",          "Bollinger Band mean reversion, tight SL"     },
+    { "Regime Adaptive", "strategies/regime_adaptive_1h.lua",    "ADX regime detection, ATR SL/TP, OBV confirm" },
 };
 
 #define N_STRATEGIES (sizeof(strategies) / sizeof(strategies[0]))

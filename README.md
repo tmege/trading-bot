@@ -5,9 +5,9 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 ## Features
 
 - **Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders
-- **12 Lua strategies** — sandboxed, hot-reload (5s), multi-coin per file, compound sizing (10% equity/trade)
+- **Lua strategies** — sandboxed, hot-reload (5s), multi-coin per file, compound sizing (15% equity/trade), 1 active strategy (regime_adaptive_1h) on BTC/ETH/SOL
 - **Risk management** — daily loss limit, emergency close, circuit breaker, velocity guard, losing streak pause
-- **Backtesting** — walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
+- **Backtesting** — multi-timeframe 5m simulation, walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Desktop GUI** — Electron + React (dashboard, market overview, strategy browser, interactive backtesting, settings)
 - **Paper trading** — real market data, simulated execution
 - **15+ technical indicators** — SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, and more
@@ -35,9 +35,6 @@ cmake --build build && ctest --test-dir build --output-on-failure
 # Required in LIVE mode (optional in paper trading)
 TB_PRIVATE_KEY=0x...        # Hyperliquid API Wallet private key
 TB_WALLET_ADDRESS=0x...     # Main wallet address
-
-# Optional
-TB_MACRO_API_KEY=...        # FinancialModelingPrep (indices, stocks, commodities)
 ```
 
 Store credentials in `.env` (auto-loaded by `scripts/start.sh`):
@@ -93,9 +90,14 @@ cd gui && npm install && npm run dev
 
 ## Backtesting
 
+Backtests use **5m candle simulation** with indicator aggregation to the strategy's native timeframe. This prevents the same-candle fill bug (entry + SL/TP filling on the same bar) and produces realistic results.
+
 ```bash
-# Single strategy
-./build/backtest_json strategies/bb_scalp_15m.lua ETH 0 30 15m
+# Download candle data (required before first backtest)
+./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
+
+# Single strategy (last arg = strategy TF, simulation always uses 5m)
+./build/backtest_json strategies/regime_adaptive_1h.lua ETH 0 90 1h
 
 # All strategies batch
 ./scripts/backtest_all.sh 365 0
@@ -114,9 +116,8 @@ libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all 
 
 | Document | Description |
 |---|---|
-| [docs/strategies.md](docs/strategies.md) | Strategy descriptions, parameters, and usage |
-| [docs/backtest-report.md](docs/backtest-report.md) | Full backtest report with OOS results |
-| [docs/backtest-results.md](docs/backtest-results.md) | Backtest results summary |
+| [docs/strategies.md](docs/strategies.md) | Strategy description and parameters |
+| [docs/backtest-market-periods.md](docs/backtest-market-periods.md) | Multi-period backtest results (5m simulation) |
 | [docs/pentest.md](docs/pentest.md) | Security audit report |
 | [docs/marcus_venn_audit.md](docs/marcus_venn_audit.md) | Trading audit & $500 deployment plan |
 | [CLAUDE.md](CLAUDE.md) | AI-friendly project map (architecture, conventions, key files) |

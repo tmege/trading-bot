@@ -14,6 +14,7 @@ typedef struct {
     double      maker_fee_rate;    /* e.g. 0.0002 (2 bps) */
     double      taker_fee_rate;    /* e.g. 0.0005 (5 bps) */
     double      slippage_bps;      /* simulated slippage in basis points */
+    int64_t     strategy_interval_ms; /* strategy TF in ms (e.g. 3600000 for 1h) */
 } tb_backtest_config_t;
 
 /* ── Per-trade log entry ───────────────────────────────────────────────── */

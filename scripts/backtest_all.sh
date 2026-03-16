@@ -30,19 +30,7 @@ fi
 
 # ── Strategy definitions: name, file, interval ──────────────────────────
 declare -a STRATS=(
-    "bb_scalp_15m|strategies/bb_scalp_15m.lua|15m"
-    "triple_confirm_15m|strategies/triple_confirm_15m.lua|15m"
-    "macd_momentum_1h|strategies/macd_momentum_1h.lua|1h"
-    "rsi_divergence_1h|strategies/rsi_divergence_1h.lua|1h"
-    "ema_adx_trend_4h|strategies/ema_adx_trend_4h.lua|4h"
-    "bb_kc_squeeze_1h|strategies/bb_kc_squeeze_1h.lua|1h"
-    "donchian_breakout_1d|strategies/donchian_breakout_1d.lua|1d"
-    "vwap_reversion_15m|strategies/vwap_reversion_15m.lua|15m"
-    "stochrsi_scalp_5m|strategies/stochrsi_scalp_5m.lua|5m"
-    "williams_obv_4h|strategies/williams_obv_4h.lua|4h"
     "regime_adaptive_1h|strategies/regime_adaptive_1h.lua|1h"
-    "elder_mtf_15m|strategies/elder_mtf_15m.lua|15m"
-    "ichimoku_trend_4h|strategies/ichimoku_trend_4h.lua|4h"
 )
 
 COINS="ETH BTC"

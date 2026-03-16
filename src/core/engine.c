@@ -81,6 +81,33 @@ tb_engine_t *tb_engine_create(const tb_config_t *cfg) {
     memcpy(&engine->cfg, cfg, sizeof(tb_config_t));
     engine->running = false;
 
+    /* Validate coin exclusivity: each coin must belong to exactly one strategy */
+    {
+        typedef struct { char coin[16]; char strategy[64]; } coin_owner_t;
+        coin_owner_t owners[128];
+        int n_owners = 0;
+
+        for (int i = 0; i < cfg->n_active_strategies; i++) {
+            for (int c = 0; c < cfg->n_strategy_coins[i]; c++) {
+                const char *coin = cfg->strategy_coins[i][c];
+                for (int k = 0; k < n_owners; k++) {
+                    if (strcmp(owners[k].coin, coin) == 0) {
+                        tb_log_error("engine: coin '%s' assigned to both '%s' and '%s' "
+                                     "— each coin must belong to exactly one strategy",
+                                     coin, owners[k].strategy, cfg->active_strategies[i]);
+                        free(engine);
+                        return NULL;
+                    }
+                }
+                if (n_owners < 128) {
+                    snprintf(owners[n_owners].coin, 16, "%s", coin);
+                    snprintf(owners[n_owners].strategy, 64, "%s", cfg->active_strategies[i]);
+                    n_owners++;
+                }
+            }
+        }
+    }
+
     /* Open database */
     if (tb_db_open(&engine->db, cfg->db_path) != 0) {
         free(engine);
@@ -108,7 +135,6 @@ void tb_engine_destroy(tb_engine_t *engine) {
 
     /* Wipe all secrets from config before freeing */
     engine_secure_wipe(engine->cfg.private_key_hex, sizeof(engine->cfg.private_key_hex));
-    engine_secure_wipe(engine->cfg.macro_api_key, sizeof(engine->cfg.macro_api_key));
     engine_secure_wipe(engine->cfg.wallet_address, sizeof(engine->cfg.wallet_address));
 
     free(engine);
@@ -572,7 +598,6 @@ static void engine_update_dashboard(tb_engine_t *engine) {
 
     /* Market data */
     if (engine->data_mgr) {
-        data.macro     = tb_data_mgr_get_macro(engine->data_mgr);
         data.sentiment = tb_data_mgr_get_sentiment(engine->data_mgr);
         data.fear_greed = tb_data_mgr_get_fear_greed(engine->data_mgr);
     }

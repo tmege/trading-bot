@@ -114,28 +114,8 @@ run_strat() {
     done
 }
 
-# 15m strategies (max ~52 days of data)
-run_strat "bb_scalp_15m"        "strategies/bb_scalp_15m.lua"        "15m" 45
-run_strat "triple_confirm_15m"  "strategies/triple_confirm_15m.lua"  "15m" 45
-run_strat "vwap_reversion_15m"  "strategies/vwap_reversion_15m.lua"  "15m" 45
-run_strat "elder_mtf_15m"       "strategies/elder_mtf_15m.lua"       "15m" 45
-
-# 5m strategy (max ~17 days of data)
-run_strat "stochrsi_scalp_5m"   "strategies/stochrsi_scalp_5m.lua"   "5m"  15
-
-# 1h strategies (max ~208 days of data)
-run_strat "macd_momentum_1h"    "strategies/macd_momentum_1h.lua"    "1h"  180 90
-run_strat "rsi_divergence_1h"   "strategies/rsi_divergence_1h.lua"   "1h"  180 90
-run_strat "bb_kc_squeeze_1h"    "strategies/bb_kc_squeeze_1h.lua"    "1h"  180 90
-run_strat "regime_adaptive_1h"  "strategies/regime_adaptive_1h.lua"  "1h"  180 90
-
-# 4h strategies (max ~833 days of data)
-run_strat "ema_adx_trend_4h"    "strategies/ema_adx_trend_4h.lua"    "4h"  365 180 90
-run_strat "williams_obv_4h"     "strategies/williams_obv_4h.lua"     "4h"  365 180 90
-run_strat "ichimoku_trend_4h"   "strategies/ichimoku_trend_4h.lua"   "4h"  365 180 90
-
-# 1d strategy (max ~2 years)
-run_strat "donchian_breakout_1d" "strategies/donchian_breakout_1d.lua" "1d" 365 180
+# 1h strategies (5m simulation, all data available)
+run_strat "regime_adaptive_1h"  "strategies/regime_adaptive_1h.lua"  "1h"  365 180 90
 
 echo ""
 echo "=========================================="

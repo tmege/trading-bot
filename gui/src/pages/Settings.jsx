@@ -60,6 +60,19 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
     setSaving(false);
   }
 
+  // Check if a coin is already used by another strategy
+  function isCoinTaken(coin, excludeStratIdx) {
+    if (!config?.strategies?.active) return null;
+    for (let i = 0; i < config.strategies.active.length; i++) {
+      if (i === excludeStratIdx) continue;
+      const entry = config.strategies.active[i];
+      if (entry.coins && entry.coins.includes(coin)) {
+        return entry.file;
+      }
+    }
+    return null;
+  }
+
   function toggleCoin(stratIdx, coin) {
     if (!config) return;
     const updated = JSON.parse(JSON.stringify(config));
@@ -71,6 +84,11 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
       if (entry.coins.length <= 1) return;
       entry.coins.splice(idx, 1);
     } else {
+      const owner = isCoinTaken(coin, stratIdx);
+      if (owner) {
+        if (addToast) addToast('error', `${coin} is already used by ${owner}`);
+        return;
+      }
       entry.coins.push(coin);
     }
     saveConfig(updated);
@@ -82,6 +100,12 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
 
     if (!COIN_RE.test(coin)) {
       setCoinError('2-10 uppercase letters only');
+      return;
+    }
+
+    const owner = isCoinTaken(coin, stratIdx);
+    if (owner) {
+      setCoinError(`Used by ${owner}`);
       return;
     }
     setCoinError('');
@@ -247,20 +271,30 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
                       <div className="border-t border-surface-border pt-3">
                         <span className="text-[10px] text-gray-600 uppercase tracking-wider">Quick add</span>
                         <div className="flex flex-wrap gap-1.5 mt-2">
-                          {POPULAR_COINS.filter(c => !entry.coins.includes(c)).slice(0, 12).map(coin => (
-                            <button
-                              key={coin}
-                              onClick={() => {
-                                const updated = JSON.parse(JSON.stringify(config));
-                                updated.strategies.active[stratIdx].coins.push(coin);
-                                saveConfig(updated);
-                              }}
-                              className="flex items-center gap-1 px-2 py-1 bg-surface-hover border border-surface-border rounded text-[11px] text-gray-500 hover:text-white hover:border-accent/50 transition-colors"
-                            >
-                              <Plus size={10} />
-                              {coin}
-                            </button>
-                          ))}
+                          {POPULAR_COINS.filter(c => !entry.coins.includes(c)).slice(0, 12).map(coin => {
+                            const takenBy = isCoinTaken(coin, stratIdx);
+                            return (
+                              <button
+                                key={coin}
+                                disabled={!!takenBy}
+                                title={takenBy ? `Used by ${takenBy}` : undefined}
+                                onClick={() => {
+                                  if (takenBy) return;
+                                  const updated = JSON.parse(JSON.stringify(config));
+                                  updated.strategies.active[stratIdx].coins.push(coin);
+                                  saveConfig(updated);
+                                }}
+                                className={`flex items-center gap-1 px-2 py-1 border rounded text-[11px] transition-colors ${
+                                  takenBy
+                                    ? 'bg-surface-bg border-surface-border text-gray-700 cursor-not-allowed opacity-50'
+                                    : 'bg-surface-hover border-surface-border text-gray-500 hover:text-white hover:border-accent/50'
+                                }`}
+                              >
+                                <Plus size={10} />
+                                {coin}
+                              </button>
+                            );
+                          })}
 
                           {/* Custom add */}
                           {addingCoin === stratIdx ? (
@@ -319,7 +353,12 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
                         className="px-3 py-1 text-xs bg-accent/20 text-accent border border-accent/30 rounded hover:bg-accent/30"
                         onClick={() => {
                           const updated = JSON.parse(JSON.stringify(config));
-                          updated.strategies.active[stratIdx].coins = ["ETH", "BTC"];
+                          const available = ["ETH", "BTC"].filter(c => !isCoinTaken(c, stratIdx));
+                          if (available.length === 0) {
+                            if (addToast) addToast('error', 'ETH and BTC are already used by other strategies');
+                            return;
+                          }
+                          updated.strategies.active[stratIdx].coins = available;
                           saveConfig(updated);
                         }}
                       >

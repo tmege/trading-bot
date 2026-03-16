@@ -3,7 +3,6 @@
 
 #include "core/types.h"
 #include "core/config.h"
-#include "data/macro_fetcher.h"
 #include "data/twitter_sentiment.h"
 #include "data/fear_greed.h"
 #include "exchange/position_tracker.h"
@@ -32,7 +31,6 @@ typedef struct {
     int              n_orders;
 
     /* Market data */
-    tb_macro_data_t      macro;
     tb_sentiment_data_t  sentiment;
     tb_fear_greed_t      fear_greed;
 

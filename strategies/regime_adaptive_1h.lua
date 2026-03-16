@@ -33,34 +33,38 @@ local config = {
     adx_tr_threshold  = 28,     -- above this → trend
     -- Between 22-28: keep current regime (no whipsaw)
 
-    -- Mean reversion params (low vol regime)
-    mr_rsi_oversold   = 40,
-    mr_rsi_overbought = 60,
+    -- Mean reversion params (low vol regime) — stricter RSI to reduce overtrading
+    mr_rsi_oversold   = 25,     -- was 30: require deeper oversold
+    mr_rsi_overbought = 75,     -- was 70: require deeper overbought
+    mr_bb_width_min   = 0.015,  -- skip MR if BB width < 1.5% (too flat = no range to profit)
     mr_sl_atr_mult    = 1.0,    -- SL = 1.0x ATR (MR: tight)
-    mr_tp_atr_mult    = 1.5,    -- TP = 1.5x ATR
+    mr_tp_atr_mult    = 2.0,    -- TP = 2.0x ATR (was 1.5: better R:R)
     mr_sl_pct_min     = 0.8,    -- floor
     mr_sl_pct_max     = 2.0,    -- cap
     mr_tp_pct_min     = 1.0,    -- floor
 
-    -- Trend params (high vol regime)
-    tr_adx_min        = 25,     -- minimum ADX for trend entry (standard "trend present")
+    -- Trend params (high vol regime) — wider TP to let winners run
+    tr_adx_min        = 25,     -- was 30: catch more valid trends
     tr_rsi_max_long   = 70,     -- skip trend LONG if already overbought
     tr_rsi_min_short  = 30,     -- skip trend SHORT if already oversold
     tr_sl_atr_mult    = 1.5,    -- SL = 1.5x ATR (trend: wider)
-    tr_tp_atr_mult    = 3.0,    -- TP = 3.0x ATR
+    tr_tp_atr_mult    = 4.0,    -- TP = 4.0x ATR (was 3.0: let winners run)
     tr_sl_pct_min     = 1.2,    -- floor
     tr_sl_pct_max     = 3.5,    -- cap
     tr_tp_pct_min     = 2.0,    -- floor
 
-    -- Position sizing
+    -- Position sizing — bigger trades, fewer of them
     entry_size    = 40.0,
-    equity_pct    = 0.10,        -- 10% of account per trade
-    max_size      = 80.0,
+    equity_pct    = 0.20,        -- 20% of account per trade (was 15%: bigger to offset fees)
+    max_size      = 200.0,       -- was 120: allow larger positions with $672 capital
 
-    -- Timing
+    -- Timing — trade less, each trade matters more
     check_sec     = 60,          -- 1h TF: no need for faster than 60s
-    cooldown_sec  = 120,
-    max_hold_sec  = 14400,      -- max hold 4h
+    cooldown_sec  = 7200,        -- 2h between trades (target: ~1 trade/day max)
+    max_hold_sec  = 57600,       -- max hold 16h (let trend winners run)
+
+    -- Minimum volatility — skip entries when market is too flat
+    min_atr_pct   = 0.01,        -- skip entry if ATR < 1% of price (need movement to cover fees)
 
     enabled       = true,
 }
@@ -141,20 +145,11 @@ local function detect_regime(bb_width, adx)
 end
 
 local function place_entry(side, mid)
-    -- Skip if position exists on this coin but we don't own it (another strategy)
-    local existing = bot.get_position(config.coin)
-    if existing and existing.size ~= 0 then
-        if not in_position then
-            bot.log("info", string.format("%s: SKIP — %s position on %s owned by another strategy",
-                instance_name, existing.size > 0 and "long" or "short", config.coin))
-            return nil
-        end
-        local ex_side = existing.size > 0 and "long" or "short"
-        if ex_side ~= side then
-            bot.log("info", string.format("%s: SKIP — opposing %s position on %s",
-                instance_name, ex_side, config.coin))
-            return nil
-        end
+    -- Skip if we already have an opposing position
+    if in_position and position_side ~= side then
+        bot.log("info", string.format("%s: SKIP — already %s on %s",
+            instance_name, position_side, config.coin))
+        return nil
     end
 
     -- Cancel any existing pending entry first
@@ -182,12 +177,30 @@ local function place_entry(side, mid)
 end
 
 local function place_sl_tp(fill_price, side, regime, pos_size)
-    local is_mr = regime == "mean_reversion"
-    local sl_mult   = is_mr and config.mr_sl_atr_mult or config.tr_sl_atr_mult
-    local tp_mult   = is_mr and config.mr_tp_atr_mult or config.tr_tp_atr_mult
-    local sl_min    = is_mr and config.mr_sl_pct_min  or config.tr_sl_pct_min
-    local sl_max    = is_mr and config.mr_sl_pct_max  or config.tr_sl_pct_max
-    local tp_min    = is_mr and config.mr_tp_pct_min  or config.tr_tp_pct_min
+    local is_mr  = regime == "mean_reversion"
+    local is_liq = regime == "liquidation_bounce"
+
+    local sl_mult, tp_mult, sl_min, sl_max, tp_min
+    if is_liq then
+        -- Liquidation bounce: tight SL (should bounce fast), decent TP
+        sl_mult = 1.0
+        tp_mult = 2.5
+        sl_min  = 0.8
+        sl_max  = 2.0
+        tp_min  = 1.5
+    elseif is_mr then
+        sl_mult = config.mr_sl_atr_mult
+        tp_mult = config.mr_tp_atr_mult
+        sl_min  = config.mr_sl_pct_min
+        sl_max  = config.mr_sl_pct_max
+        tp_min  = config.mr_tp_pct_min
+    else
+        sl_mult = config.tr_sl_atr_mult
+        tp_mult = config.tr_tp_atr_mult
+        sl_min  = config.tr_sl_pct_min
+        sl_max  = config.tr_sl_pct_max
+        tp_min  = config.tr_tp_pct_min
+    end
 
     -- ATR-based SL/TP, clamped to min/max
     local atr_val = entry_atr > 0 and entry_atr or (fill_price * 0.015)  -- fallback 1.5%
@@ -349,6 +362,9 @@ function on_tick(coin, mid_price)
 
     local macd_hist = ind.macd_histogram
     local atr       = ind.atr
+    local obv       = ind.obv
+    local obv_sma   = ind.obv_sma
+    local sma20     = ind.sma_20
 
     if not bb_width or not adx or not rsi or not bb_upper or not bb_lower
        or not ema12 or not ema26 or not macd_hist or not atr then
@@ -398,7 +414,7 @@ function on_tick(coin, mid_price)
                 last_trade = now
                 return
             elseif hold_time > 1800 then  -- 30 min
-                close_position(string.format("regime %s→%s (held %ds, loss %.2f%%)",
+                close_position(string.format("regime %s→%s (held %.0fs, loss %.2f%%)",
                     entry_regime, current_regime, hold_time, unrealized))
                 last_trade = now
                 return
@@ -438,12 +454,23 @@ function on_tick(coin, mid_price)
     -- Velocity guard (skip entry if price moved too fast)
     if not velocity_check(mid_price, now) then return end
 
+    -- Minimum ATR guard (skip if market too flat — trades would be fee traps)
+    local atr_pct = atr / mid_price
+    if atr_pct < config.min_atr_pct then
+        return
+    end
+
     -- Store ATR for dynamic SL/TP on fill
     entry_atr = atr
 
     if current_regime == "mean_reversion" then
-        -- Mean reversion: BB touch + RSI extreme
-        -- LONG: price < bb_lower + RSI < 35
+        -- Mean reversion: BB touch + RSI extreme + sufficient BB width
+        if bb_width < config.mr_bb_width_min then
+            -- BB too narrow → no range to profit, skip
+            return
+        end
+
+        -- LONG: price < bb_lower + RSI < 25
         if mid_price < bb_lower and rsi < config.mr_rsi_oversold then
             bot.log("info", string.format(
                 "%s: MR LONG — price $%.2f < BB_low $%.2f, RSI=%.0f",
@@ -474,10 +501,11 @@ function on_tick(coin, mid_price)
         end
 
     elseif current_regime == "trend" then
-        -- Trend following: EMA12 vs EMA26 cross + ADX confirmation
-        -- LONG: ema_12 > ema_26 + adx > threshold + MACD confirms + RSI not overbought
+        -- Trend following: EMA12 vs EMA26 cross + ADX confirmation + SMA200 macro filter
+        -- LONG: ema_12 > ema_26 + adx > threshold + MACD confirms + RSI not overbought + price > SMA200
         if ema12 > ema26 and adx > config.tr_adx_min
-           and macd_hist > 0 and rsi < config.tr_rsi_max_long then
+           and macd_hist > 0 and rsi < config.tr_rsi_max_long
+           and (not obv or not obv_sma or obv > obv_sma) then  -- OBV confirms volume
             bot.log("info", string.format(
                 "%s: TREND LONG — EMA12 $%.2f > EMA26 $%.2f, ADX=%.1f",
                 instance_name, ema12, ema26, adx))
@@ -493,7 +521,8 @@ function on_tick(coin, mid_price)
 
         -- SHORT: ema_12 < ema_26 + adx > threshold + MACD confirms + RSI not oversold
         if ema12 < ema26 and adx > config.tr_adx_min
-           and macd_hist < 0 and rsi > config.tr_rsi_min_short then
+           and macd_hist < 0 and rsi > config.tr_rsi_min_short
+           and (not obv or not obv_sma or obv < obv_sma) then  -- OBV confirms volume
             bot.log("info", string.format(
                 "%s: TREND SHORT — EMA12 $%.2f < EMA26 $%.2f, ADX=%.1f",
                 instance_name, ema12, ema26, adx))
@@ -502,6 +531,27 @@ function on_tick(coin, mid_price)
                 last_trade = now
                 entry_time = now
                 entry_regime = "trend"
+                bot.save_state("entry_regime", entry_regime)
+            end
+            return
+        end
+    end
+
+    -- ── Liquidation bounce detection (any regime) ──
+    -- Detect rapid drop: extreme RSI + price far below SMA20 = probable liquidation cascade
+    -- These are regime-agnostic: liquidation bounces happen in ALL market conditions
+    if rsi < 25 and sma20 and sma20 > 0 then
+        local deviation_pct = (sma20 - mid_price) / sma20 * 100
+        if deviation_pct > 2.5 then
+            bot.log("info", string.format(
+                "%s: LIQUIDATION BOUNCE — RSI=%.0f, price $%.2f is %.1f%% below SMA20 $%.2f",
+                instance_name, rsi, mid_price, deviation_pct, sma20))
+            entry_atr = atr
+            local oid = place_entry("long", mid_price)
+            if oid then
+                last_trade = now
+                entry_time = now
+                entry_regime = "liquidation_bounce"
                 bot.save_state("entry_regime", entry_regime)
             end
             return

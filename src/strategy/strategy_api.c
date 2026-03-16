@@ -666,29 +666,6 @@ static int api_time(lua_State *L) {
     return 1;
 }
 
-/* ── bot.get_macro() → table ─────────────────────────────────────────────── */
-static int api_get_macro(lua_State *L) {
-    tb_lua_ctx_t *ctx = get_ctx(L);
-    if (!ctx || !ctx->data_mgr) {
-        lua_newtable(L);
-        return 1;
-    }
-
-    tb_macro_data_t m = tb_data_mgr_get_macro(ctx->data_mgr);
-    lua_createtable(L, 0, 8);
-
-    lua_pushnumber(L, m.sp500);       lua_setfield(L, -2, "sp500");
-    lua_pushnumber(L, m.gold);        lua_setfield(L, -2, "gold");
-    lua_pushnumber(L, m.dxy);         lua_setfield(L, -2, "dxy");
-    lua_pushnumber(L, m.btc_price);   lua_setfield(L, -2, "btc_price");
-    lua_pushnumber(L, m.btc_dominance); lua_setfield(L, -2, "btc_dominance");
-    lua_pushnumber(L, m.eth_btc);     lua_setfield(L, -2, "eth_btc");
-    lua_pushnumber(L, m.total2_mcap); lua_setfield(L, -2, "total2_mcap");
-    lua_pushboolean(L, m.valid);      lua_setfield(L, -2, "valid");
-
-    return 1;
-}
-
 /* ── bot.get_sentiment() → table ─────────────────────────────────────────── */
 static int api_get_sentiment(lua_State *L) {
     tb_lua_ctx_t *ctx = get_ctx(L);
@@ -936,7 +913,6 @@ static const luaL_Reg bot_funcs[] = {
     {"load_state",      api_load_state},
     {"log",             api_log},
     {"time",            api_time},
-    {"get_macro",       api_get_macro},
     {"get_sentiment",   api_get_sentiment},
     {"get_fear_greed",  api_get_fear_greed},
     {"get_indicators",      api_get_indicators},

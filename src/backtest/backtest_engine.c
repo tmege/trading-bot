@@ -41,6 +41,7 @@ typedef struct {
     bool         reduce_only;
     tb_tif_t     tif;
     bool         active;
+    int          placed_at_idx;  /* 5m candle index when order was placed */
 } bt_order_t;
 
 #define BT_MAX_ORDERS 256
@@ -66,10 +67,26 @@ struct tb_backtest_engine {
     int          n_orders;
     uint64_t     next_oid;
 
-    /* Current candle */
-    int          current_idx;
+    /* Current 5m candle */
+    int          current_idx;      /* index into candles[] (5m) */
     double       current_mid;
     int64_t      current_time;
+
+    /* Multi-timeframe aggregation (5m → strategy TF) */
+    tb_candle_t *candles_tf;       /* aggregated candles (1h, 4h...) */
+    int          n_candles_tf;     /* number of completed TF candles */
+    int          candles_tf_cap;   /* allocated capacity */
+    int64_t      tf_interval_ms;   /* strategy interval in ms */
+    int          current_tf_idx;   /* current TF index for get_indicators */
+
+    /* Partial TF candle being aggregated */
+    int64_t      partial_tf_start; /* time_open of current TF candle */
+    double       partial_open;
+    double       partial_high;
+    double       partial_low;
+    double       partial_close;
+    double       partial_volume;
+    int          partial_count;    /* number of 5m candles in partial */
 
     /* Lua state */
     lua_State   *L;
@@ -110,7 +127,6 @@ static int bt_lua_log(lua_State *L);
 static int bt_lua_time(lua_State *L);
 static int bt_lua_save_state(lua_State *L);
 static int bt_lua_load_state(lua_State *L);
-static int bt_lua_get_macro(lua_State *L);
 static int bt_lua_get_sentiment(lua_State *L);
 static int bt_lua_get_fear_greed(lua_State *L);
 /* ── Record a trade ────────────────────────────────────────────────────── */
@@ -254,22 +270,95 @@ static void execute_fill(tb_backtest_engine_t *bt, tb_side_t side,
 }
 
 /* ── Check limit orders for fills ──────────────────────────────────────── */
+/* Two-pass fill: SL triggers first (conservative), then TP/entries.
+ * This prevents same-candle SL+TP ambiguity from biasing toward TP. */
 static void check_order_fills(tb_backtest_engine_t *bt,
                               double high, double low) {
+    /* Pass 1: fill SL/adverse triggers first */
+    for (int i = 0; i < bt->n_orders; i++) {
+        bt_order_t *o = &bt->orders[i];
+        if (!o->active || !o->is_trigger || !o->reduce_only) continue;
+        if (o->placed_at_idx >= bt->current_idx) continue;
+        if (bt->position_size == 0) continue;
+
+        /* Only fill adverse triggers (SL) in pass 1 */
+        bool is_sl = false;
+        if (o->side == TB_SIDE_SELL && o->trigger_px <= bt->entry_price)
+            is_sl = true; /* Long SL */
+        if (o->side == TB_SIDE_BUY && o->trigger_px >= bt->entry_price)
+            is_sl = true; /* Short SL */
+        if (!is_sl) continue;
+
+        bool triggered = false;
+        if (o->side == TB_SIDE_SELL)
+            triggered = (low <= o->trigger_px);
+        else
+            triggered = (high >= o->trigger_px);
+
+        if (triggered) {
+            if (o->reduce_only) {
+                if (bt->position_size == 0) { o->active = false; continue; }
+                if (o->side == TB_SIDE_BUY && bt->position_size > 0) {
+                    o->active = false; continue;
+                }
+                if (o->side == TB_SIDE_SELL && bt->position_size < 0) {
+                    o->active = false; continue;
+                }
+            }
+            execute_fill(bt, o->side, o->trigger_px, o->size, true, o->oid);
+            o->active = false;
+        }
+    }
+
+    /* Pass 2: fill everything else (TP triggers, limit orders, entry triggers) */
     for (int i = 0; i < bt->n_orders; i++) {
         bt_order_t *o = &bt->orders[i];
         if (!o->active) continue;
+
+        /* Skip orders placed on this same 5m candle (prevents same-candle fill) */
+        if (o->placed_at_idx >= bt->current_idx) continue;
 
         bool filled = false;
         double fill_price = o->price;
 
         if (o->is_trigger) {
-            /* Trigger order: activate when price crosses trigger_px */
+            /* Trigger order: direction depends on whether it's SL or TP.
+             * For reduce_only orders with an open position, infer from
+             * trigger_px vs entry_price:
+             *   Long  TP (sell above entry) → fires on high >= trigger_px
+             *   Long  SL (sell below entry) → fires on low  <= trigger_px
+             *   Short TP (buy below entry)  → fires on low  <= trigger_px
+             *   Short SL (buy above entry)  → fires on high >= trigger_px
+             * For entry triggers, use standard stop logic. */
             bool triggered = false;
-            if (o->side == TB_SIDE_BUY && high >= o->trigger_px)
-                triggered = true;
-            if (o->side == TB_SIDE_SELL && low <= o->trigger_px)
-                triggered = true;
+
+            if (o->reduce_only && bt->position_size != 0) {
+                bool is_long = (bt->position_size > 0);
+                if (o->side == TB_SIDE_SELL) {
+                    if (o->trigger_px > bt->entry_price) {
+                        /* Long TP: sell when price rises to TP */
+                        triggered = (high >= o->trigger_px);
+                    } else {
+                        /* Long SL: sell when price drops to SL */
+                        triggered = (low <= o->trigger_px);
+                    }
+                } else { /* TB_SIDE_BUY */
+                    if (o->trigger_px < bt->entry_price) {
+                        /* Short TP: buy when price drops to TP */
+                        triggered = (low <= o->trigger_px);
+                    } else {
+                        /* Short SL: buy when price rises to SL */
+                        triggered = (high >= o->trigger_px);
+                    }
+                }
+                (void)is_long; /* used for clarity above */
+            } else {
+                /* Entry triggers / non-reduce_only: standard stop logic */
+                if (o->side == TB_SIDE_BUY && high >= o->trigger_px)
+                    triggered = true;
+                if (o->side == TB_SIDE_SELL && low <= o->trigger_px)
+                    triggered = true;
+            }
 
             if (triggered) {
                 fill_price = o->trigger_px;
@@ -324,38 +413,19 @@ static void setup_lua_sandbox(tb_backtest_engine_t *bt);
 
 /* ── Synthetic data stubs for backtest ─────────────────────────────────── */
 
-static int bt_lua_get_macro(lua_State *L) {
-    tb_backtest_engine_t *bt = get_bt(L);
-    lua_newtable(L);
-    lua_pushboolean(L, 1);
-    lua_setfield(L, -2, "valid");
-    /* Simulate BTC price correlated with ETH */
-    lua_pushnumber(L, bt->current_mid * 15.0);  /* rough ETH/BTC ratio */
-    lua_setfield(L, -2, "btc_price");
-    lua_pushnumber(L, 60.0);
-    lua_setfield(L, -2, "btc_dominance");
-    lua_pushnumber(L, 0.055);
-    lua_setfield(L, -2, "eth_btc");
-    lua_pushnumber(L, 1200e9);
-    lua_setfield(L, -2, "total2_mcap");
-    lua_pushnumber(L, 2000.0);
-    lua_setfield(L, -2, "gold");
-    lua_pushnumber(L, 5400.0);
-    lua_setfield(L, -2, "sp500");
-    lua_pushnumber(L, 104.0);
-    lua_setfield(L, -2, "dxy");
-    return 1;
-}
-
 static int bt_lua_get_sentiment(lua_State *L) {
     tb_backtest_engine_t *bt = get_bt(L);
     lua_newtable(L);
     lua_pushboolean(L, 1);
     lua_setfield(L, -2, "valid");
-    /* Generate pseudo-random sentiment from price momentum */
+    /* Generate pseudo-random sentiment from price momentum (use TF candles) */
     double score = 0.0;
-    if (bt->current_idx > 5) {
-        double prev = tb_decimal_to_double(bt->candles[bt->current_idx - 5].close);
+    int use_tf = (bt->candles_tf && bt->n_candles_tf > 0);
+    int idx = use_tf ? bt->current_tf_idx : bt->current_idx;
+    if (idx > 5) {
+        double prev = use_tf
+            ? tb_decimal_to_double(bt->candles_tf[idx - 5].close)
+            : tb_decimal_to_double(bt->candles[idx - 5].close);
         double curr = bt->current_mid;
         score = (curr - prev) / prev * 10.0;  /* amplified momentum as sentiment */
         if (score > 1.0) score = 1.0;
@@ -379,10 +449,14 @@ static int bt_lua_get_fear_greed(lua_State *L) {
     lua_newtable(L);
     lua_pushboolean(L, 1);
     lua_setfield(L, -2, "valid");
-    /* Simulate Fear & Greed based on recent price action */
+    /* Simulate Fear & Greed based on recent price action (use TF candles) */
     int fg = 50;
-    if (bt->current_idx > 20) {
-        double prev = tb_decimal_to_double(bt->candles[bt->current_idx - 20].close);
+    int use_tf = (bt->candles_tf && bt->n_candles_tf > 0);
+    int idx = use_tf ? bt->current_tf_idx : bt->current_idx;
+    if (idx > 20) {
+        double prev = use_tf
+            ? tb_decimal_to_double(bt->candles_tf[idx - 20].close)
+            : tb_decimal_to_double(bt->candles[idx - 20].close);
         double change = ((bt->current_mid - prev) / prev) * 100;
         fg = 50 + (int)(change * 5);
         if (fg < 5) fg = 5;
@@ -452,6 +526,7 @@ static void setup_lua_sandbox(tb_backtest_engine_t *bt) {
         {"place_trigger",    bt_lua_place_trigger},
         {"cancel",           bt_lua_cancel},
         {"cancel_all",       bt_lua_cancel_all},
+        {"cancel_all_exchange", bt_lua_cancel_all},  /* alias for live compat */
         {"get_position",     bt_lua_get_position},
         {"get_mid_price",    bt_lua_get_mid_price},
         {"get_open_orders",  bt_lua_get_open_orders},
@@ -459,7 +534,6 @@ static void setup_lua_sandbox(tb_backtest_engine_t *bt) {
         {"get_daily_pnl",    bt_lua_get_daily_pnl},
         {"get_candles",      bt_lua_get_candles},
         {"get_indicators",   bt_lua_get_indicators},
-        {"get_macro",        bt_lua_get_macro},
         {"get_sentiment",    bt_lua_get_sentiment},
         {"get_fear_greed",   bt_lua_get_fear_greed},
         {"log",              bt_lua_log},
@@ -546,6 +620,7 @@ static int bt_lua_place_limit(lua_State *L) {
         .reduce_only = reduce_only,
         .tif = tif,
         .active = true,
+        .placed_at_idx = bt->current_idx,
     };
     if (slot >= bt->n_orders) bt->n_orders = slot + 1;
 
@@ -555,10 +630,13 @@ static int bt_lua_place_limit(lua_State *L) {
 
 static int bt_lua_place_trigger(lua_State *L) {
     tb_backtest_engine_t *bt = get_bt(L);
-    /* bot.place_trigger(coin, side, trigger_px, size, opts) */
+    /* bot.place_trigger(coin, side, price, size, trigger_px, tpsl)
+     * Matches live API signature in strategy_api.c */
     const char *side_str = luaL_checkstring(L, 2);
-    double trigger_px = luaL_checknumber(L, 3);
+    double price = luaL_checknumber(L, 3);
     double size = luaL_checknumber(L, 4);
+    double trigger_px = luaL_optnumber(L, 5, price); /* trigger_px defaults to price */
+    const char *tpsl = luaL_optstring(L, 6, "sl");
 
     tb_side_t side;
     if (strcmp(side_str, "BUY") == 0 || strcmp(side_str, "buy") == 0 ||
@@ -572,12 +650,8 @@ static int bt_lua_place_trigger(lua_State *L) {
         return 1;
     }
 
-    bool reduce_only = false;
-    if (lua_istable(L, 5)) {
-        lua_getfield(L, 5, "reduce_only");
-        if (lua_isboolean(L, -1)) reduce_only = lua_toboolean(L, -1);
-        lua_pop(L, 1);
-    }
+    /* SL/TP triggers are always reduce_only */
+    bool reduce_only = (strcmp(tpsl, "sl") == 0 || strcmp(tpsl, "tp") == 0);
 
     int slot = -1;
     for (int i = 0; i < BT_MAX_ORDERS; i++) {
@@ -595,6 +669,7 @@ static int bt_lua_place_trigger(lua_State *L) {
         .reduce_only = reduce_only,
         .tif = TB_TIF_GTC,
         .active = true,
+        .placed_at_idx = bt->current_idx,
     };
     if (slot >= bt->n_orders) bt->n_orders = slot + 1;
 
@@ -686,10 +761,44 @@ static int bt_lua_get_daily_pnl(lua_State *L) {
 
 static int bt_lua_get_candles(lua_State *L) {
     tb_backtest_engine_t *bt = get_bt(L);
-    /* bot.get_candles(coin, interval, limit) */
+    /* bot.get_candles(coin, interval, limit) — returns aggregated TF candles */
     int limit = 100;
     if (lua_isnumber(L, 3)) limit = (int)lua_tointeger(L, 3);
 
+    /* Use aggregated TF candles if available */
+    if (bt->candles_tf && bt->n_candles_tf > 0) {
+        int start = bt->current_tf_idx - limit + 1;
+        if (start < 0) start = 0;
+
+        lua_newtable(L);
+        int n = 0;
+        for (int i = start; i <= bt->current_tf_idx && i < bt->n_candles_tf; i++) {
+            n++;
+            lua_newtable(L);
+            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].open));
+            lua_setfield(L, -2, "open");
+            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].high));
+            lua_setfield(L, -2, "high");
+            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].low));
+            lua_setfield(L, -2, "low");
+            /* Inject current 5m close as live_price into last candle */
+            if (i == bt->current_tf_idx)
+                lua_pushnumber(L, bt->current_mid);
+            else
+                lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].close));
+            lua_setfield(L, -2, "close");
+            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].volume));
+            lua_setfield(L, -2, "volume");
+            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].volume));
+            lua_setfield(L, -2, "v");
+            lua_pushinteger(L, bt->candles_tf[i].time_open);
+            lua_setfield(L, -2, "time");
+            lua_rawseti(L, -2, n);
+        }
+        return 1;
+    }
+
+    /* Fallback: use raw candles (no TF aggregation) */
     int start = bt->current_idx - limit + 1;
     if (start < 0) start = 0;
 
@@ -723,21 +832,41 @@ static int bt_lua_get_indicators(lua_State *L) {
     int limit = 250;
     if (lua_isnumber(L, 3)) limit = (int)lua_tointeger(L, 3);
 
-    int start = bt->current_idx - limit + 1;
+    /* Use aggregated TF candles if available */
+    int use_tf = (bt->candles_tf && bt->n_candles_tf > 0);
+    int cur_idx = use_tf ? bt->current_tf_idx : bt->current_idx;
+    int start = cur_idx - limit + 1;
     if (start < 0) start = 0;
-    int n = bt->current_idx - start + 1;
+    int n = cur_idx - start + 1;
+    if (n <= 0) { lua_pushnil(L); return 1; }
 
-    tb_candle_input_t *inputs = malloc(sizeof(tb_candle_input_t) * n);
+    tb_candle_input_t *inputs = malloc(sizeof(tb_candle_input_t) * (size_t)n);
     if (!inputs) { lua_pushnil(L); return 1; }
 
-    for (int i = 0; i < n; i++) {
-        int ci = start + i;
-        inputs[i].open   = tb_decimal_to_double(bt->candles[ci].open);
-        inputs[i].high   = tb_decimal_to_double(bt->candles[ci].high);
-        inputs[i].low    = tb_decimal_to_double(bt->candles[ci].low);
-        inputs[i].close  = tb_decimal_to_double(bt->candles[ci].close);
-        inputs[i].volume = tb_decimal_to_double(bt->candles[ci].volume);
-        inputs[i].time_ms = bt->candles[ci].time_open;
+    if (use_tf) {
+        for (int i = 0; i < n; i++) {
+            int ci = start + i;
+            inputs[i].open   = tb_decimal_to_double(bt->candles_tf[ci].open);
+            inputs[i].high   = tb_decimal_to_double(bt->candles_tf[ci].high);
+            inputs[i].low    = tb_decimal_to_double(bt->candles_tf[ci].low);
+            inputs[i].close  = tb_decimal_to_double(bt->candles_tf[ci].close);
+            inputs[i].volume = tb_decimal_to_double(bt->candles_tf[ci].volume);
+            inputs[i].time_ms = bt->candles_tf[ci].time_open;
+        }
+        /* Inject current 5m close as live_price into last candle */
+        if (n > 0) {
+            inputs[n - 1].close = bt->current_mid;
+        }
+    } else {
+        for (int i = 0; i < n; i++) {
+            int ci = start + i;
+            inputs[i].open   = tb_decimal_to_double(bt->candles[ci].open);
+            inputs[i].high   = tb_decimal_to_double(bt->candles[ci].high);
+            inputs[i].low    = tb_decimal_to_double(bt->candles[ci].low);
+            inputs[i].close  = tb_decimal_to_double(bt->candles[ci].close);
+            inputs[i].volume = tb_decimal_to_double(bt->candles[ci].volume);
+            inputs[i].time_ms = bt->candles[ci].time_open;
+        }
     }
 
     tb_indicators_snapshot_t snap = tb_indicators_compute(inputs, n);
@@ -871,6 +1000,10 @@ tb_backtest_engine_t *tb_backtest_create(const tb_backtest_config_t *cfg) {
     if (bt->cfg.maker_fee_rate == 0) bt->cfg.maker_fee_rate = 0.0002;
     if (bt->cfg.taker_fee_rate == 0) bt->cfg.taker_fee_rate = 0.0005;
 
+    /* Multi-timeframe: default to 5m interval (no aggregation needed) */
+    bt->tf_interval_ms = cfg->strategy_interval_ms > 0
+        ? cfg->strategy_interval_ms : 300000LL;
+
     return bt;
 }
 
@@ -884,6 +1017,7 @@ void tb_backtest_destroy(tb_backtest_engine_t *bt) {
     bt_free_lua_state(bt->L);
     bt->L = NULL;
     free(bt->candles);
+    free(bt->candles_tf);
     free(bt);
 }
 
@@ -895,6 +1029,75 @@ int tb_backtest_load_candles(tb_backtest_engine_t *bt,
     memcpy(bt->candles, candles, sizeof(tb_candle_t) * n_candles);
     bt->n_candles = n_candles;
     return 0;
+}
+
+/* ── Aggregate a 5m candle into the strategy TF ───────────────────────── */
+/* Returns true if a TF candle just completed (new boundary crossed). */
+static bool aggregate_5m_into_tf(tb_backtest_engine_t *bt,
+                                  const tb_candle_t *c5m) {
+    int64_t time_ms = c5m->time_open;
+    int64_t tf_ms = bt->tf_interval_ms;
+    int64_t tf_start = (time_ms / tf_ms) * tf_ms;
+
+    double o = tb_decimal_to_double(c5m->open);
+    double h = tb_decimal_to_double(c5m->high);
+    double l = tb_decimal_to_double(c5m->low);
+    double c = tb_decimal_to_double(c5m->close);
+    double v = tb_decimal_to_double(c5m->volume);
+
+    bool tf_completed = false;
+
+    if (bt->partial_count == 0) {
+        /* First 5m candle ever — start partial */
+        bt->partial_tf_start = tf_start;
+        bt->partial_open = o;
+        bt->partial_high = h;
+        bt->partial_low = l;
+        bt->partial_close = c;
+        bt->partial_volume = v;
+        bt->partial_count = 1;
+        return false;
+    }
+
+    if (tf_start != bt->partial_tf_start) {
+        /* New TF boundary — finalize the partial candle */
+        if (bt->n_candles_tf >= bt->candles_tf_cap) {
+            int new_cap = bt->candles_tf_cap == 0 ? 4096 : bt->candles_tf_cap * 2;
+            tb_candle_t *new_buf = realloc(bt->candles_tf,
+                                            sizeof(tb_candle_t) * (size_t)new_cap);
+            if (!new_buf) return false;
+            bt->candles_tf = new_buf;
+            bt->candles_tf_cap = new_cap;
+        }
+        int idx = bt->n_candles_tf++;
+        bt->candles_tf[idx].time_open = bt->partial_tf_start;
+        bt->candles_tf[idx].time_close = bt->partial_tf_start + tf_ms;
+        bt->candles_tf[idx].open   = tb_decimal_from_double(bt->partial_open, 8);
+        bt->candles_tf[idx].high   = tb_decimal_from_double(bt->partial_high, 8);
+        bt->candles_tf[idx].low    = tb_decimal_from_double(bt->partial_low, 8);
+        bt->candles_tf[idx].close  = tb_decimal_from_double(bt->partial_close, 8);
+        bt->candles_tf[idx].volume = tb_decimal_from_double(bt->partial_volume, 8);
+        bt->current_tf_idx = idx;
+        tf_completed = true;
+
+        /* Start new partial */
+        bt->partial_tf_start = tf_start;
+        bt->partial_open = o;
+        bt->partial_high = h;
+        bt->partial_low = l;
+        bt->partial_close = c;
+        bt->partial_volume = v;
+        bt->partial_count = 1;
+    } else {
+        /* Same TF — update partial */
+        if (h > bt->partial_high) bt->partial_high = h;
+        if (l < bt->partial_low) bt->partial_low = l;
+        bt->partial_close = c;
+        bt->partial_volume += v;
+        bt->partial_count++;
+    }
+
+    return tf_completed;
 }
 
 int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
@@ -913,6 +1116,19 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
     /* Calculate days */
     out->n_days = (int)((out->end_time_ms - out->start_time_ms) /
                         (86400LL * 1000)) + 1;
+
+    /* Determine if we need TF aggregation (strategy TF > 5m candle data) */
+    bool do_aggregate = (bt->tf_interval_ms > 300000LL);
+
+    /* Pre-allocate TF candle buffer */
+    if (do_aggregate) {
+        int est_tf_candles = (int)(bt->n_candles / (bt->tf_interval_ms / 300000LL)) + 10;
+        bt->candles_tf_cap = est_tf_candles;
+        bt->candles_tf = calloc((size_t)est_tf_candles, sizeof(tb_candle_t));
+        bt->n_candles_tf = 0;
+        bt->current_tf_idx = -1;
+        bt->partial_count = 0;
+    }
 
     /* Initialize Lua — no memory limit, backtests run fork-isolated */
     bt->L = luaL_newstate();
@@ -955,7 +1171,7 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
     double max_dd = 0, max_dd_pct = 0;
     int64_t last_equity_day = 0;
 
-    /* Main simulation loop */
+    /* Main simulation loop — iterates over 5m candles */
     for (int i = 0; i < bt->n_candles; i++) {
         bt->current_idx = i;
         double close = tb_decimal_to_double(bt->candles[i].close);
@@ -964,7 +1180,13 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
         bt->current_mid = close;
         bt->current_time = bt->candles[i].time_open;
 
-        /* Update unrealized P&L */
+        /* 1. Aggregate this 5m candle into the strategy TF */
+        bool tf_completed = false;
+        if (do_aggregate) {
+            tf_completed = aggregate_5m_into_tf(bt, &bt->candles[i]);
+        }
+
+        /* 2. Update unrealized P&L */
         if (bt->position_size != 0) {
             if (bt->position_size > 0)
                 bt->unrealized_pnl = (close - bt->entry_price) * bt->position_size;
@@ -974,10 +1196,10 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
             bt->unrealized_pnl = 0;
         }
 
-        /* Check order fills (use high/low of candle) */
+        /* 3. Check order fills on 5m high/low (skip orders placed this tick) */
         check_order_fills(bt, high, low);
 
-        /* Recalculate unrealized P&L after fills (fills may have changed position) */
+        /* 4. Re-update unrealized P&L after fills */
         if (bt->position_size != 0) {
             if (bt->position_size > 0)
                 bt->unrealized_pnl = (close - bt->entry_price) * bt->position_size;
@@ -987,7 +1209,7 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
             bt->unrealized_pnl = 0;
         }
 
-        /* Track daily equity reset (like live pos_tracker) */
+        /* 5. Track daily equity reset (like live pos_tracker) */
         {
             int64_t day = bt->current_time / (86400LL * 1000);
             if (day != bt->current_day) {
@@ -996,28 +1218,28 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
             }
         }
 
-        /* Periodic GC to keep memory reasonable (no hard limit since
-           backtests run fork-isolated — OS reclaims everything on exit) */
-        if (i % 1000 == 0) {
+        /* Periodic GC to keep memory reasonable */
+        if (i % 5000 == 0) {
             lua_gc(bt->L, LUA_GCCOLLECT, 0);
         }
 
-        /* Call on_tick(coin, mid_price) */
-        lua_getglobal(bt->L, "on_tick");
-        if (lua_isfunction(bt->L, -1)) {
-            lua_pushstring(bt->L, bt->cfg.coin);
-            lua_pushnumber(bt->L, close);
-            if (lua_pcall(bt->L, 2, 0, 0) != LUA_OK) {
-                tb_log_warn("backtest: on_tick error at candle %d: %s",
-                            i, lua_tostring(bt->L, -1));
+        /* 6. on_tick: called only when a TF candle completes (or every candle if no aggregation) */
+        bool should_tick = do_aggregate ? tf_completed : true;
+        if (should_tick && (!do_aggregate || bt->current_tf_idx >= 0)) {
+            lua_getglobal(bt->L, "on_tick");
+            if (lua_isfunction(bt->L, -1)) {
+                lua_pushstring(bt->L, bt->cfg.coin);
+                lua_pushnumber(bt->L, close);
+                if (lua_pcall(bt->L, 2, 0, 0) != LUA_OK) {
+                    tb_log_warn("backtest: on_tick error at candle %d: %s",
+                                i, lua_tostring(bt->L, -1));
+                    lua_pop(bt->L, 1);
+                }
+            } else {
                 lua_pop(bt->L, 1);
             }
-        } else {
-            lua_pop(bt->L, 1);
-        }
 
-        /* Call on_timer every 60 candles (simulate periodic timer) */
-        if (i > 0 && i % 60 == 0) {
+            /* Call on_timer at each TF tick (simulates periodic timer) */
             lua_getglobal(bt->L, "on_timer");
             if (lua_isfunction(bt->L, -1)) {
                 if (lua_pcall(bt->L, 0, 0, 0) != LUA_OK) {
@@ -1028,7 +1250,7 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
             }
         }
 
-        /* Track equity & drawdown */
+        /* 7. Track equity & drawdown */
         double equity = bt->balance + bt->unrealized_pnl;
         if (equity > peak_equity) peak_equity = equity;
         double dd = peak_equity - equity;

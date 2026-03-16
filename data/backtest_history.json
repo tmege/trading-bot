@@ -2533,5 +2533,20 @@
     "win_rate": 90.32258064516128,
     "trades": 527,
     "verdict": "DEPLOYABLE"
+  },
+  {
+    "id": 1773581526394,
+    "date": "2026-03-15T13:32:06.394Z",
+    "strategy": "regime_adaptive_1h.lua",
+    "coin": "BTC",
+    "interval": "1h",
+    "n_days": 367,
+    "return_pct": 1.5246499397604156,
+    "sharpe": 0,
+    "max_dd": 6.096323982033025,
+    "profit_factor": 9999,
+    "win_rate": 100,
+    "trades": 1,
+    "verdict": "INSUFFISANT"
   }
 ]

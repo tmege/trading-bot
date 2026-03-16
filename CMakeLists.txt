@@ -104,7 +104,6 @@ set(TB_SOURCES
     src/strategy/lua_engine.c
     src/strategy/strategy_api.c
     src/strategy/indicators.c
-    src/data/macro_fetcher.c
     src/data/twitter_sentiment.c
     src/data/fear_greed.c
     src/data/data_manager.c

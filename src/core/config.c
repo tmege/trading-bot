@@ -201,9 +201,6 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
                            sizeof(cfg->private_key_hex), creds_required);
     rc |= load_env_secret("TB_WALLET_ADDRESS", cfg->wallet_address,
                            sizeof(cfg->wallet_address), creds_required);
-    rc |= load_env_secret("TB_MACRO_API_KEY", cfg->macro_api_key,
-                           sizeof(cfg->macro_api_key), false);
-
     return rc;
 }
 

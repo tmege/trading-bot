@@ -44,25 +44,9 @@ Semaine 3 : Live $250 (50%). Semaine 4 : Si metriques tiennent, monter a $500.
 - Regime-change exit intelligent
 - 10% equity, max_size $80
 
-### 2. bb_scalp_15m (SECONDARY) — Note: 6/10
+### NOTE (2026-03-16)
 
-Remplace triple_confirm_15m qui avait :
-- Filtre MACD trop laxiste ("not deeply negative" = curve fitting)
-- SL fixe 1.2% = bruit sur DOGE/SOL
-- Conflit possible avec regime_adaptive
-
-bb_scalp superieur grace a :
-- Filtre HTF reel (1h ADX > 30)
-- SL ATR-based adaptatif
-- TP gradue vers bande opposee (ALO maker fee)
-- 8% equity (legerement reduit pour scalp frequence)
-
-### 3. ichimoku_trend_4h (SECONDARY) — Note: 5/10
-
-- Bon concept trend-following pur
-- SL converti en ATR-based (2.0x ATR, clampe 2.0-4.5%) — remplace fixe 3%
-- Trailing Tenkan avec 0.3% buffer
-- 5% equity (Kelly-aligned pour ~40% WR)
+bb_scalp_15m, ichimoku_trend_4h et toutes les autres strategies secondaires ont ete supprimees apres backtest 5m multi-periodes. Seule regime_adaptive_1h est deployee. Voir `docs/backtest-market-periods.md`.
 
 ## Coins : 3 (BTC, ETH, SOL)
 
@@ -105,19 +89,7 @@ SL ATR disproportionnes. 9 instances au lieu de 12.
 
 ## Strategies a surveiller pour $1000+
 
-| Priorite | Strategie | Raison |
-|----------|-----------|--------|
-| 1 | ema_adx_trend_4h | Complementaire ichimoku, SMA200 filter |
-| 2 | macd_momentum_1h | Trailing SL ATR-based bien fait |
-| 3 | bb_kc_squeeze_1h | Squeeze→expansion statistiquement valide |
-| 4 | vwap_reversion_15m | VWAP crypto moins fiable que equities |
-| 5 | williams_obv_4h | OBV volume confirmation interessante |
-
-### A eviter
-
-- **stochrsi_scalp_5m** : 5m + 0.8% SL + 3s check = HFT sans infra HFT
-- **elder_mtf_15m** : MTF simule avec SMA longues sur 15m = faux signaux
-- **rsi_divergence_1h** : Signal le plus surfit du retail, win rate reel 35-40%
+Toutes les strategies secondaires ont ete testees en backtest 5m multi-periodes (2026-03-16) et se sont averees sous-performantes. Aucune n'a obtenu de verdict DEPLOYABLE. Voir `docs/backtest-market-periods.md` pour les resultats detailles.
 
 ## Pieges rappeles
 

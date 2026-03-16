@@ -786,8 +786,16 @@ int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
 
     if (!mgr->user_addr[0]) return -1;
 
+    /* Resolve asset ID for this coin (exchange orders don't include it) */
+    const tb_asset_meta_t *meta = find_asset(mgr, coin);
+    if (!meta) {
+        tb_log_error("cancel_all_exchange: unknown coin '%s'", coin);
+        return -1;
+    }
+    uint32_t coin_asset_id = meta->asset_id;
+
     /* Fetch ALL open orders from exchange (not local tracking) */
-    tb_order_t *exchange_orders = malloc(sizeof(tb_order_t) * MAX_OPEN_ORDERS);
+    tb_order_t *exchange_orders = calloc(MAX_OPEN_ORDERS, sizeof(tb_order_t));
     if (!exchange_orders) return -1;
 
     int n_exchange = 0;
@@ -828,7 +836,7 @@ int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
             }
         }
 
-        cancel_assets[n_cancel] = exchange_orders[i].asset;
+        cancel_assets[n_cancel] = coin_asset_id;
         cancel_oids[n_cancel] = exchange_orders[i].oid;
         n_cancel++;
     }

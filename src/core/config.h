@@ -29,9 +29,6 @@ typedef struct {
     char     strategy_coins[8][TB_MAX_STRATEGY_COINS][16];
     int      n_strategy_coins[8];
 
-    /* Data sources */
-    char     macro_api_key[256];      /* from env TB_MACRO_API_KEY */
-
     /* Database */
     char     db_path[512];
 

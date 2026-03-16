@@ -1,7 +1,7 @@
 /**
  * Centralized .env reader for the Electron GUI.
  *
- * SECURITY: Only reads TB_WALLET_ADDRESS and TB_MACRO_API_KEY.
+ * SECURITY: Only reads TB_WALLET_ADDRESS and TB_ANTHROPIC_API_KEY.
  * TB_PRIVATE_KEY is NEVER loaded into GUI memory — the C engine
  * reads it directly from the process environment via getenv() + unsetenv().
  *
@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Keys that are safe to cache in the GUI process
-const SAFE_KEYS = new Set(['TB_WALLET_ADDRESS', 'TB_MACRO_API_KEY', 'TB_ANTHROPIC_API_KEY']);
+const SAFE_KEYS = new Set(['TB_WALLET_ADDRESS', 'TB_ANTHROPIC_API_KEY']);
 
 let cached = {};
 
@@ -44,10 +44,6 @@ function getWalletAddress() {
   return cached.TB_WALLET_ADDRESS || null;
 }
 
-function getMacroApiKey() {
-  return cached.TB_MACRO_API_KEY || null;
-}
-
 function getAnthropicApiKey() {
   return cached.TB_ANTHROPIC_API_KEY || null;
 }
@@ -56,4 +52,4 @@ function reload(projectRoot) {
   load(projectRoot);
 }
 
-module.exports = { load, reload, getWalletAddress, getMacroApiKey, getAnthropicApiKey };
+module.exports = { load, reload, getWalletAddress, getAnthropicApiKey };

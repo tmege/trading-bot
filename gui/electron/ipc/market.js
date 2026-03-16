@@ -1,17 +1,7 @@
-const env = require('../env');
-
 /* ── Cache ───────────────────────────────────────────────────────────────── */
 let cached = null;
 let fetchedAt = 0;
 const CACHE_MS = 120_000;       // 120s — crypto data (CoinGecko, F&G, forex)
-
-let fmpCached = null;
-let fmpFetchedAt = 0;
-const FMP_CACHE_MS = 3_600_000; // 1h — FMP free tier: 250 calls/day (16 syms × ~16 refreshes = ~256)
-
-/* ── FMP symbols (commodities only — indices/stocks removed) ──────────── */
-const FMP_COMMODITIES = { GCUSD: 'gold', SIUSD: 'silver' };
-const ALL_FMP_SYMBOLS = Object.keys(FMP_COMMODITIES);
 
 /* ── Fetch helpers ───────────────────────────────────────────────────────── */
 async function fetchJSON(url, timeoutMs = 8000) {
@@ -31,32 +21,10 @@ async function fetchJSON(url, timeoutMs = 8000) {
   }
 }
 
-/* ── Fetch all FMP symbols in parallel (individual calls, free tier) ───── */
-async function fetchAllFmpQuotes(apiKey) {
-  const results = await Promise.all(
-    ALL_FMP_SYMBOLS.map(sym =>
-      fetchJSON(`https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(sym)}&apikey=${apiKey}`)
-    )
-  );
-  const map = {};
-  for (const res of results) {
-    if (Array.isArray(res) && res.length > 0 && res[0].symbol) {
-      const item = res[0];
-      map[item.symbol] = {
-        price: item.price || 0,
-        change_pct: item.changePercentage || 0,
-        name: item.name || '',
-      };
-    }
-  }
-  return map;
-}
-
 async function fetchMarketData(projectRoot) {
   const now = Date.now();
   if (cached && now - fetchedAt < CACHE_MS) return cached;
 
-  // Start from previous data to preserve FMP results across rate-limited refreshes
   const data = cached ? { ...cached } : {
     btc_dominance: 0,
     total1_mcap: 0,
@@ -64,44 +32,24 @@ async function fetchMarketData(projectRoot) {
     total3_mcap: 0,
     fear_greed: 0,
     fear_greed_label: '',
-    gold: 0,
-    gold_pct: 0,
-    silver: 0,
-    silver_pct: 0,
     forex: [],
     last_update: 0,
-    has_fmp: false,
   };
 
-  const apiKey = env.getMacroApiKey();
-
-  // FMP uses separate longer cache (250 calls/day free tier)
-  const now2 = Date.now();
-  let fmpQuotes = fmpCached;
-  const needFmp = apiKey && (!fmpCached || now2 - fmpFetchedAt >= FMP_CACHE_MS);
-
-  // Fetch all sources in parallel (1 CoinGecko call only to avoid rate limit)
+  // Fetch all sources in parallel
   const promises = [
     // 1. CoinGecko global (dominance, total mcap)
     fetchJSON('https://api.coingecko.com/api/v3/global'),
     // 2. Fear & Greed
     fetchJSON('https://api.alternative.me/fng/?limit=1'),
-    // 3. FMP: indices, stocks, commodities (separate cache, free tier)
-    needFmp ? fetchAllFmpQuotes(apiKey) : Promise.resolve(null),
-    // 4. Frankfurter: forex (always, no key needed)
+    // 3. Frankfurter: forex (no key needed)
     fetchJSON('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,JPY,CHF'),
   ];
 
   const settled = await Promise.allSettled(promises);
-  const [globalData, fngData, freshFmpQuotes, forexData] = settled.map(
+  const [globalData, fngData, forexData] = settled.map(
     (r) => r.status === 'fulfilled' ? r.value : null
   );
-
-  if (freshFmpQuotes && Object.keys(freshFmpQuotes).length > 0) {
-    fmpCached = freshFmpQuotes;
-    fmpFetchedAt = now2;
-    fmpQuotes = freshFmpQuotes;
-  }
 
   // Parse CoinGecko global
   if (globalData?.data) {
@@ -122,15 +70,6 @@ async function fetchMarketData(projectRoot) {
     data.fear_greed = parseInt(fg.value, 10) || 0;
     data.fear_greed_label = fg.value_classification || '';
   }
-
-  // Parse FMP quotes (indices, stocks, commodities) — only rebuild if fresh data
-  if (fmpQuotes && Object.keys(fmpQuotes).length > 0) {
-    data.has_fmp = true;
-    const q = fmpQuotes;
-    if (q.GCUSD) { data.gold = q.GCUSD.price; data.gold_pct = q.GCUSD.change_pct; }
-    if (q.SIUSD) { data.silver = q.SIUSD.price; data.silver_pct = q.SIUSD.change_pct; }
-  }
-  // else: keep previous indices/stocks/commodities from cached data
 
   // Parse Frankfurter forex — rebuild to avoid duplicates
   if (forexData?.rates) {

@@ -53,7 +53,7 @@ typedef struct {
 } strategy_t;
 
 static const strategy_t STRATEGIES[] = {
-    { "BB Scalping",     "strategies/bb_scalp_15m.lua"    },
+    { "Regime Adaptive", "strategies/regime_adaptive_1h.lua" },
     { NULL, NULL }
 };
 

@@ -10,11 +10,11 @@ src/                    C engine source
   core/                 engine.c, config.c, decimal.c, db.c, logging.c, types.h
   exchange/             hl_rest.c, hl_ws.c, hl_signing.c, order_manager.c, paper_exchange.c
   strategy/             lua_engine.c, strategy_api.c, indicators.c
-  data/                 macro_fetcher.c, twitter_sentiment.c, fear_greed.c, data_manager.c
+  data/                 twitter_sentiment.c, fear_greed.c, data_manager.c
   risk/                 risk_manager.c
   report/               dashboard.c, report_gen.c
   backtest/             backtest_engine.c
-strategies/             12 Lua strategies + template
+strategies/             regime_adaptive_1h.lua (active) + strategy_template.lua
 config/                 bot_config.json (no secrets — secrets in .env)
 gui/                    Electron + React desktop app
   electron/             main.js, preload.js, license.js, ipc/ (bot, config, strategies, backtest, db, logs, ws, market, sync, license)
@@ -23,7 +23,7 @@ tests/                  Unit tests + benchmarks (test_*.c, bench_*.c, backtest_*
 scripts/                start.sh, stop.sh, backtest_all.sh, backtest_full_report.sh, backtest_multi_period.sh, license_admin.js
 tools/                  candle_fetcher.c (historical data downloader with Binance fallback)
 docs/                   strategies.md, backtest-report.md, backtest-results.md, pentest.md
-data/                   SQLite DBs (trading_bot.db, candle_cache.db), backtest results
+data/                   SQLite DBs (trading_bot.db, candle_cache.db — 5m candles only), backtest results
 logs/                   Runtime logs
 ```
 
@@ -45,8 +45,11 @@ cmake --build build && ctest --test-dir build --output-on-failure
 # GUI
 cd gui && npm install && npm run dev
 
-# Backtest
-./build/backtest_json strategies/bb_scalp_15m.lua ETH 0 30 15m
+# Download 5m candles (required before backtesting)
+./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
+
+# Backtest (always uses 5m candles internally, last arg = strategy TF)
+./build/backtest_json strategies/regime_adaptive_1h.lua ETH 0 90 1h
 ./scripts/backtest_all.sh 365 0
 ```
 
@@ -61,7 +64,7 @@ cd gui && npm install && npm run dev
 **Strategy API**: `src/strategy/strategy_api.c` (18 bot.* functions for Lua)
 **Indicators**: `src/strategy/indicators.c` (SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, etc.)
 **Risk**: `src/risk/risk_manager.c` (daily loss, circuit breaker, leverage, position limits)
-**Backtest**: `src/backtest/backtest_engine.c`
+**Backtest**: `src/backtest/backtest_engine.c` (multi-TF: 5m simulation + TF aggregation)
 **GUI root**: `gui/src/App.jsx` (license gate → AppMain, hoisted state: marketData, botStatus, tradeNotifications)
 **GUI IPC**: `gui/electron/ipc/` (10 namespaces)
 **License**: `gui/electron/license.js` (Ed25519 verify, AES-256-GCM storage, machine fingerprint)
@@ -69,9 +72,10 @@ cd gui && npm install && npm run dev
 
 ## Configuration
 
-- **Secrets**: `.env` file (TB_PRIVATE_KEY, TB_WALLET_ADDRESS, TB_MACRO_API_KEY) — never hardcoded
+- **Secrets**: `.env` file (TB_PRIVATE_KEY, TB_WALLET_ADDRESS) — never hardcoded
 - **Config**: `config/bot_config.json` — exchange URLs, risk params, active strategies+coins, paper mode
-- **Multi-coin**: `"coins": ["ETH","BTC","SOL","DOGE"]` in strategy config, engine injects `COIN` global
+- **Multi-coin**: `"coins": ["ETH","BTC","SOL"]` in strategy config, engine injects `COIN` global
+- **Coin exclusivity**: each coin must belong to exactly one strategy — enforced at engine startup (rejects duplicates), GUI Settings (grays out taken coins), and Lua (no cross-strategy guards needed)
 - **Risk (%-based)**: daily_loss_pct=8, emergency_close_pct=6, max_leverage=5, max_position_pct=200
 
 ## Conventions
@@ -85,6 +89,15 @@ cd gui && npm install && npm run dev
 ### Hyperliquid Fees
 Maker: 0.0150%, Taker: 0.0450%. ALO entries (maker), trigger exits (taker). Round trip = 0.06%.
 
+### Backtest Multi-Timeframe (5m simulation)
+- Backtests always load **5m candles** from SQLite cache (`data/candle_cache.db`)
+- `backtest_engine.c` aggregates 5m candles into the strategy's native TF (1h, 4h...) via `aggregate_5m_into_tf()`
+- `on_tick` is called only when a TF candle completes (e.g. every 12 ticks for 1h, 48 for 4h)
+- Order fills are checked on 5m high/low — orders placed in same 5m candle are skipped (`placed_at_idx` guard)
+- `get_indicators()` / `get_candles()` return aggregated TF candles (not raw 5m), with current 5m close injected as live_price
+- `strategy_interval_ms` in `tb_backtest_config_t` controls the aggregation TF
+- Candle data: only 5m stored in cache (15m/1h/4h/1d purged), up to 8+ years for BTC/ETH/SOL/DOGE via Binance
+
 ### Backtest Aliases (compatible with live)
 `sma`=sma_20, `ema`/`ema_fast`=ema_12, `ema_slow`=ema_26, `bb_mid`=bb_middle
 
@@ -93,16 +106,16 @@ Maker: 0.0150%, Taker: 0.0450%. ALO entries (maker), trigger exits (taker). Roun
 - `ind.valid` does NOT exist: test `if not ind then return end`
 - `bb_middle` not `bb_mid` from C (backtest has alias)
 - `get_indicators` 4th arg = live_price (injects into last candle close)
+- **1 coin = 1 strategy**: never assign the same coin to multiple strategies (engine refuses to start)
 
 ## Dependencies (macOS)
 libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all via Homebrew). yyjson via CMake FetchContent.
 
-## Active Strategies (production — $500 plan)
-- `regime_adaptive_1h.lua` — ADX regime detection, ATR SL/TP (primary, 10% equity, max_size $80)
-- `bb_scalp_15m.lua` — BB mean reversion, ATR SL, graduated TP (secondary, 8% equity)
-- `ichimoku_trend_4h.lua` — Ichimoku cloud trend, ATR SL 2.0x [2.0-4.5%] (secondary, 5% equity)
-- Coins: BTC, ETH, SOL (= 9 instances)
-- Risk: daily_loss 6%, emergency 5%, max_leverage 5x, max_position 150%, global_exposure 300%
+## Active Strategy (production — $500 plan)
+- `regime_adaptive_1h.lua` — ADX regime detection, ATR SL/TP, OBV confirmation, liquidation bounce (primary, 15% equity, max_size $120)
+- Coins: BTC, ETH, SOL (1 strategy, 3 coin instances)
+- Risk: daily_loss 6%, emergency 5%, max_leverage 5x, max_position 200%, global_exposure 300%
+- **Mode: LIVE**
 
 ## License System
 

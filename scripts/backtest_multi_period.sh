@@ -20,32 +20,9 @@ OUTFILE="$OUTDIR/multi_period_${TIMESTAMP}.csv"
 
 # Strategy definitions: file:coin:tf
 STRATEGIES=(
-    "strategies/bb_scalp_15m.lua:ETH:15m"
-    "strategies/triple_confirm_15m.lua:ETH:15m"
-    "strategies/macd_momentum_1h.lua:ETH:1h"
-    "strategies/rsi_divergence_1h.lua:ETH:1h"
-    "strategies/ema_adx_trend_4h.lua:ETH:4h"
-    "strategies/bb_kc_squeeze_1h.lua:ETH:1h"
-    "strategies/donchian_breakout_1d.lua:ETH:1d"
-    "strategies/vwap_reversion_15m.lua:ETH:15m"
-    "strategies/stochrsi_scalp_5m.lua:ETH:5m"
-    "strategies/williams_obv_4h.lua:ETH:4h"
     "strategies/regime_adaptive_1h.lua:ETH:1h"
-    "strategies/elder_mtf_15m.lua:ETH:15m"
-    "strategies/ichimoku_trend_4h.lua:ETH:4h"
-    "strategies/bb_scalp_15m.lua:BTC:15m"
-    "strategies/triple_confirm_15m.lua:BTC:15m"
-    "strategies/macd_momentum_1h.lua:BTC:1h"
-    "strategies/rsi_divergence_1h.lua:BTC:1h"
-    "strategies/ema_adx_trend_4h.lua:BTC:4h"
-    "strategies/bb_kc_squeeze_1h.lua:BTC:1h"
-    "strategies/donchian_breakout_1d.lua:BTC:1d"
-    "strategies/vwap_reversion_15m.lua:BTC:15m"
-    "strategies/stochrsi_scalp_5m.lua:BTC:5m"
-    "strategies/williams_obv_4h.lua:BTC:4h"
     "strategies/regime_adaptive_1h.lua:BTC:1h"
-    "strategies/elder_mtf_15m.lua:BTC:15m"
-    "strategies/ichimoku_trend_4h.lua:BTC:4h"
+    "strategies/regime_adaptive_1h.lua:SOL:1h"
 )
 
 # Periods: name:n_days:end_days_ago

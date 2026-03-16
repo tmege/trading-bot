@@ -177,15 +177,17 @@ static bnh_result_t compute_buy_and_hold(const tb_candle_t *candles, int n,
 /* ── Run backtest on a candle slice ────────────────────────────────────── */
 static int run_backtest_on_slice(const char *strat_path, const char *coin,
                                   const tb_candle_t *candles, int n,
+                                  int64_t strategy_interval_ms,
                                   tb_backtest_result_t *result) {
     tb_backtest_config_t cfg = {
-        .coin            = coin,
-        .strategy_path   = strat_path,
-        .initial_balance = INITIAL_BALANCE,
-        .max_leverage    = MAX_LEVERAGE,
-        .maker_fee_rate  = MAKER_FEE,
-        .taker_fee_rate  = TAKER_FEE,
-        .slippage_bps    = SLIPPAGE_BPS,
+        .coin                = coin,
+        .strategy_path       = strat_path,
+        .initial_balance     = INITIAL_BALANCE,
+        .max_leverage        = MAX_LEVERAGE,
+        .maker_fee_rate      = MAKER_FEE,
+        .taker_fee_rate      = TAKER_FEE,
+        .slippage_bps        = SLIPPAGE_BPS,
+        .strategy_interval_ms = strategy_interval_ms,
     };
 
     tb_backtest_engine_t *bt = tb_backtest_create(&cfg);
@@ -217,12 +219,13 @@ typedef struct {
 
 static int run_backtest_isolated(const char *strat_path, const char *coin,
                                   const tb_candle_t *candles, int n,
+                                  int64_t strategy_interval_ms,
                                   tb_backtest_result_t *result) {
     bt_shared_t *shared = mmap(NULL, BT_SHARED_SIZE,
                                 PROT_READ | PROT_WRITE,
                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (shared == MAP_FAILED) {
-        return run_backtest_on_slice(strat_path, coin, candles, n, result);
+        return run_backtest_on_slice(strat_path, coin, candles, n, strategy_interval_ms, result);
     }
     shared->rc = -1;
     shared->n_shared_trades = 0;
@@ -233,12 +236,12 @@ static int run_backtest_isolated(const char *strat_path, const char *coin,
     pid_t pid = fork();
     if (pid < 0) {
         munmap(shared, BT_SHARED_SIZE);
-        return run_backtest_on_slice(strat_path, coin, candles, n, result);
+        return run_backtest_on_slice(strat_path, coin, candles, n, strategy_interval_ms, result);
     }
 
     if (pid == 0) {
         shared->rc = run_backtest_on_slice(strat_path, coin, candles, n,
-                                            &shared->result);
+                                            strategy_interval_ms, &shared->result);
         /* Serialize trades into mmap region (child heap won't survive _exit) */
         int nt = shared->result.n_trade_log;
         if (nt > BT_SHARED_TRADES_MAX) nt = BT_SHARED_TRADES_MAX;
@@ -372,17 +375,21 @@ int main(int argc, char *argv[]) {
     if (n_days > 5000) n_days = 5000;
     if (end_days_ago < 0) end_days_ago = 0;
 
-    /* Compute max candles based on interval (int64_t to avoid overflow) */
-    int64_t candles_per_day = 24; /* 1h */
-    if (strcmp(interval, "5m") == 0)  candles_per_day = 288;
-    else if (strcmp(interval, "15m") == 0) candles_per_day = 96;
-    else if (strcmp(interval, "4h") == 0) candles_per_day = 6;
-    else if (strcmp(interval, "1d") == 0) candles_per_day = 1;
+    /* Parse strategy interval → ms */
+    int64_t interval_ms = 3600000LL; /* 1h default */
+    if (strcmp(interval, "5m") == 0)       interval_ms = 300000LL;
+    else if (strcmp(interval, "15m") == 0) interval_ms = 900000LL;
+    else if (strcmp(interval, "1h") == 0)  interval_ms = 3600000LL;
+    else if (strcmp(interval, "4h") == 0)  interval_ms = 14400000LL;
+    else if (strcmp(interval, "1d") == 0)  interval_ms = 86400000LL;
+
+    /* Always load 5m candles for multi-timeframe simulation (288/day) */
+    int64_t candles_per_day = 288;
     int64_t max_candles_64 = (int64_t)n_days * candles_per_day + 200;
     if (max_candles_64 > 2000000) max_candles_64 = 2000000;
     int max_candles = (int)max_candles_64;
 
-    /* ── Fetch candles ─────────────────────────────────────────────────── */
+    /* ── Fetch 5m candles ────────────────────────────────────────────── */
     progress("fetching", coin);
 
     tb_candle_t *candles = calloc((size_t)max_candles, sizeof(tb_candle_t));
@@ -391,19 +398,35 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int n_candles = fetch_candles(coin, n_days, end_days_ago, interval,
+    int n_candles = fetch_candles(coin, n_days, end_days_ago, "5m",
                                    candles, max_candles);
+
+    /* Fallback: if < 50 5m candles, try native interval with warning */
+    if (n_candles < 50 && strcmp(interval, "5m") != 0) {
+        fprintf(stderr, "{\"status\":\"warn\",\"detail\":\"only %d 5m candles, falling back to %s\"}\n",
+                n_candles, interval);
+        n_candles = fetch_candles(coin, n_days, end_days_ago, interval,
+                                   candles, max_candles);
+        interval_ms = 0; /* signal: no aggregation needed, candles are native TF */
+    }
+
     if (n_candles < 50) {
-        fprintf(stderr, "{\"status\":\"error\",\"detail\":\"only got %d candles — run candle_fetcher to download data\"}\n",
+        fprintf(stderr, "{\"status\":\"error\",\"detail\":\"only got %d candles — run candle_fetcher to download 5m data\"}\n",
                 n_candles);
         free(candles);
         return 1;
     }
 
-    /* ── Split IS/OOS ──────────────────────────────────────────────────── */
+    /* ── Split IS/OOS (aligned on TF boundary) ──────────────────────── */
     progress("running", "walk-forward split");
 
     int is_count = (int)(n_candles * IS_SPLIT);
+    /* Align split to TF boundary (multiple of 5m candles per TF period) */
+    if (interval_ms > 300000LL) {
+        int candles_per_tf = (int)(interval_ms / 300000LL);
+        if (candles_per_tf > 1)
+            is_count = (is_count / candles_per_tf) * candles_per_tf;
+    }
     int oos_count = n_candles - is_count;
     const tb_candle_t *is_candles = candles;
     const tb_candle_t *oos_candles = candles + is_count;
@@ -416,11 +439,11 @@ int main(int argc, char *argv[]) {
     memset(&r_oos, 0, sizeof(r_oos));
 
     int rc_is = run_backtest_isolated(strategy_path, coin,
-                                       is_candles, is_count, &r_is);
+                                       is_candles, is_count, interval_ms, &r_is);
 
     progress("running", "out-of-sample backtest");
     int rc_oos = run_backtest_isolated(strategy_path, coin,
-                                        oos_candles, oos_count, &r_oos);
+                                        oos_candles, oos_count, interval_ms, &r_oos);
 
     if (rc_is != 0 || rc_oos != 0) {
         fprintf(stderr, "{\"status\":\"error\",\"detail\":\"backtest failed IS=%d OOS=%d\"}\n",
@@ -433,7 +456,7 @@ int main(int argc, char *argv[]) {
 
     progress("running", "full period backtest");
     int rc_full = run_backtest_isolated(strategy_path, coin,
-                                         candles, n_candles, &r_full);
+                                         candles, n_candles, interval_ms, &r_full);
     if (rc_full != 0) {
         /* Estimate from IS + OOS */
         r_full.net_pnl = r_is.net_pnl + r_oos.net_pnl;
@@ -448,13 +471,14 @@ int main(int argc, char *argv[]) {
         r_full.total_fees = r_is.total_fees + r_oos.total_fees;
     }
 
-    /* ── Buy & Hold benchmarks ─────────────────────────────────────────── */
+    /* ── Buy & Hold benchmarks (use "5m" for annualization) ──────────── */
+    const char *bnh_interval = (interval_ms > 0) ? "5m" : interval;
     bnh_result_t bnh_full = compute_buy_and_hold(candles, n_candles,
-                                                  INITIAL_BALANCE, MAX_LEVERAGE, interval);
+                                                  INITIAL_BALANCE, MAX_LEVERAGE, bnh_interval);
     bnh_result_t bnh_is   = compute_buy_and_hold(is_candles, is_count,
-                                                  INITIAL_BALANCE, MAX_LEVERAGE, interval);
+                                                  INITIAL_BALANCE, MAX_LEVERAGE, bnh_interval);
     bnh_result_t bnh_oos  = compute_buy_and_hold(oos_candles, oos_count,
-                                                  INITIAL_BALANCE, MAX_LEVERAGE, interval);
+                                                  INITIAL_BALANCE, MAX_LEVERAGE, bnh_interval);
 
     /* ── Build JSON output ─────────────────────────────────────────────── */
     progress("complete", "building JSON");

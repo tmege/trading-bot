@@ -314,7 +314,7 @@ static void bench_backtest(void) {
     /* Backtest with grid strategy */
     tb_backtest_config_t cfg = {
         .coin = "ETH",
-        .strategy_path = "strategies/bb_scalp_15m.lua",
+        .strategy_path = "strategies/regime_adaptive_1h.lua",
         .initial_balance = 100.0,
         .max_leverage = 3,
         .maker_fee_rate = 0.0002,

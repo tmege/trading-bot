@@ -2,7 +2,6 @@
  * Tests for Data Sources (Phase 6)
  */
 
-#include "data/macro_fetcher.h"
 #include "data/twitter_sentiment.h"
 #include "data/fear_greed.h"
 #include "data/data_manager.h"
@@ -24,66 +23,6 @@ static int tests_failed = 0;
         tests_passed++; \
     } \
 } while(0)
-
-/* ── Test: macro fetcher creation ───────────────────────────────────────── */
-static void test_macro_create(void) {
-    printf("\n== Macro Fetcher ==\n");
-
-    tb_macro_fetcher_t *f = tb_macro_fetcher_create(NULL);
-    ASSERT(f != NULL, "macro fetcher created");
-
-    tb_macro_data_t data = tb_macro_fetcher_get(f);
-    ASSERT(!data.valid, "initial data not valid");
-
-    tb_macro_fetcher_destroy(f);
-}
-
-/* ── Test: macro fetcher live (CoinGecko) ───────────────────────────────── */
-static void test_macro_live(void) {
-    printf("\n== Macro Fetcher Live ==\n");
-
-    tb_macro_fetcher_t *f = tb_macro_fetcher_create(NULL);
-    int rc = tb_macro_fetcher_refresh(f);
-    ASSERT(rc == 0, "macro refresh succeeded");
-
-    tb_macro_data_t data = tb_macro_fetcher_get(f);
-    ASSERT(data.valid, "macro data is valid");
-    ASSERT(data.btc_price > 1000.0, "BTC price > $1000");
-    ASSERT(data.btc_dominance > 10.0 && data.btc_dominance < 90.0,
-           "BTC dominance in range 10-90%");
-    ASSERT(data.eth_btc > 0.001 && data.eth_btc < 1.0,
-           "ETH/BTC ratio in range");
-
-    printf("    BTC=$%.0f dom=%.1f%% ETH/BTC=%.5f Gold=$%.0f T2=$%.0fB\n",
-           data.btc_price, data.btc_dominance, data.eth_btc,
-           data.gold, data.total2_mcap);
-
-    tb_macro_fetcher_destroy(f);
-}
-
-/* ── Test: macro via Hyperliquid ─────────────────────────────────────────── */
-static void test_macro_hyperliquid(void) {
-    printf("\n== Macro via Hyperliquid ==\n");
-
-    hl_rest_t *rest = hl_rest_create("https://api.hyperliquid.xyz", NULL, true);
-    ASSERT(rest != NULL, "HL REST created");
-
-    tb_macro_fetcher_t *f = tb_macro_fetcher_create(NULL);
-    tb_macro_fetcher_set_hl_rest(f, rest);
-
-    int rc = tb_macro_fetcher_refresh(f);
-    ASSERT(rc == 0, "macro refresh via HL succeeded");
-
-    tb_macro_data_t data = tb_macro_fetcher_get(f);
-    ASSERT(data.btc_price > 1000.0, "BTC price from HL > $1000");
-    ASSERT(data.eth_btc > 0.001 && data.eth_btc < 1.0, "ETH/BTC from HL in range");
-
-    printf("    BTC=$%.0f(HL) ETH/BTC=%.5f dom=%.1f%% T2=$%.0fB\n",
-           data.btc_price, data.eth_btc, data.btc_dominance, data.total2_mcap);
-
-    tb_macro_fetcher_destroy(f);
-    hl_rest_destroy(rest);
-}
 
 /* ── Test: sentiment scoring ────────────────────────────────────────────── */
 static void test_sentiment_create(void) {
@@ -156,9 +95,6 @@ static void test_data_manager(void) {
     ASSERT(mgr != NULL, "data manager created");
 
     /* Don't start the background thread in tests — just test creation/destruction */
-    tb_macro_data_t macro = tb_data_mgr_get_macro(mgr);
-    ASSERT(!macro.valid, "initial macro not valid");
-
     tb_sentiment_data_t sent = tb_data_mgr_get_sentiment(mgr);
     ASSERT(!sent.valid, "initial sentiment not valid");
 
@@ -172,9 +108,6 @@ static void test_data_manager(void) {
 int main(void) {
     tb_log_init("./logs", 1);
 
-    test_macro_create();
-    test_macro_live();
-    test_macro_hyperliquid();
     test_sentiment_create();
     test_sentiment_scoring();
     test_fear_greed();

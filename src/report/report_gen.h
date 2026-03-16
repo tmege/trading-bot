@@ -2,7 +2,6 @@
 #define TB_REPORT_GEN_H
 
 #include "core/config.h"
-#include "data/macro_fetcher.h"
 #include "data/fear_greed.h"
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -65,7 +64,6 @@ typedef struct {
     double max_drawdown;
 
     /* Market context */
-    tb_macro_data_t     macro;
     tb_fear_greed_t     fear_greed;
 } tb_daily_report_t;
 

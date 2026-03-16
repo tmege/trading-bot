@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Globe, Coins, DollarSign, Activity } from 'lucide-react';
+import { Globe, DollarSign, Activity } from 'lucide-react';
 import usePrices from '../hooks/usePrices';
 import AiDigest from './AiDigest';
 
@@ -70,10 +70,10 @@ const PHASES = {
 };
 
 const PHASE_STRATEGIES = {
-  BULL:     ['regime_adaptive_1h', 'ichimoku_trend_4h', 'ema_adx_trend_4h'],
-  BEAR:     ['regime_adaptive_1h', 'macd_momentum_1h', 'bb_scalp_15m'],
-  RANGE:    ['bb_scalp_15m', 'stochrsi_scalp_5m', 'vwap_reversion_15m'],
-  HIGH_VOL: ['regime_adaptive_1h', 'ichimoku_trend_4h', 'triple_confirm_15m'],
+  BULL:     ['regime_adaptive_1h'],
+  BEAR:     ['regime_adaptive_1h'],
+  RANGE:    ['regime_adaptive_1h'],
+  HIGH_VOL: ['regime_adaptive_1h'],
 };
 
 function detectMarketPhase(macro) {
@@ -215,32 +215,6 @@ export default function MarketPanel({ marketData, activeCoins }) {
 
       {/* ── AI Digest ───────────────────────────────────────────────────── */}
       <AiDigest />
-
-      {/* ── Commodities ─────────────────────────────────────────────────── */}
-      {(macro?.gold > 0 || macro?.silver > 0) && (
-        <Section icon={Coins} title="Commodities">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {macro.gold > 0 && (
-              <DataCard
-                label="Gold (XAU)"
-                value={`$${formatPrice(macro.gold)}`}
-                valueClass="text-yellow-400"
-                sub={formatPct(macro.gold_pct)}
-                subClass={pctClass(macro.gold_pct)}
-              />
-            )}
-            {macro.silver > 0 && (
-              <DataCard
-                label="Silver (XAG)"
-                value={`$${formatPrice(macro.silver)}`}
-                valueClass="text-gray-300"
-                sub={formatPct(macro.silver_pct)}
-                subClass={pctClass(macro.silver_pct)}
-              />
-            )}
-          </div>
-        </Section>
-      )}
 
       {/* ── Forex ───────────────────────────────────────────────────────── */}
       {macro?.forex?.length > 0 && (
