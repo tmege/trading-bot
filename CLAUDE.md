@@ -1,6 +1,6 @@
 # Trading Bot — AI Context
 
-Algorithmic trading bot for Hyperliquid (perps). Engine in C (performance), strategies in Lua (flexibility), GUI in Electron+React. Supports paper and live trading, 12 strategies, multi-coin per file, hot-reload, compound sizing (10% equity/trade).
+Algorithmic trading bot for Hyperliquid (perps). Engine in C (performance), strategies in Lua (flexibility), GUI in Electron+React. Supports paper and live trading, 2 complementary strategies, multi-coin per file, hot-reload, compound sizing.
 
 ## Directory Structure
 
@@ -14,14 +14,14 @@ src/                    C engine source
   risk/                 risk_manager.c
   report/               dashboard.c, report_gen.c
   backtest/             backtest_engine.c
-strategies/             regime_adaptive_1h.lua (active) + strategy_template.lua
+strategies/             regime_multi_1h.lua (active) + multi_signal_1h.lua + regime_adaptive_1h.lua + bull_pullback_1h.lua
 config/                 bot_config.json (no secrets — secrets in .env)
 gui/                    Electron + React desktop app
   electron/             main.js, preload.js, license.js, ipc/ (bot, config, strategies, backtest, db, logs, ws, market, sync, license)
   src/                  App.jsx, pages/ (Dashboard, Market, Strategies, Backtest, Settings, LicenseGate), components/, hooks/
 tests/                  Unit tests + benchmarks (test_*.c, bench_*.c, backtest_*.c)
 scripts/                start.sh, stop.sh, backtest_all.sh, backtest_full_report.sh, backtest_multi_period.sh, license_admin.js
-tools/                  candle_fetcher.c (historical data downloader with Binance fallback)
+tools/                  candle_fetcher.c, strategy_analyzer.py, regime_analyzer.py, analyzer/ (Python analysis pipeline)
 docs/                   strategies.md, backtest-report.md, backtest-results.md, pentest.md
 data/                   SQLite DBs (trading_bot.db, candle_cache.db — 5m candles only), backtest results
 logs/                   Runtime logs
@@ -74,7 +74,7 @@ cd gui && npm install && npm run dev
 
 - **Secrets**: `.env` file (TB_PRIVATE_KEY, TB_WALLET_ADDRESS) — never hardcoded
 - **Config**: `config/bot_config.json` — exchange URLs, risk params, active strategies+coins, paper mode
-- **Multi-coin**: `"coins": ["ETH","BTC","SOL"]` in strategy config, engine injects `COIN` global
+- **Multi-coin**: `"coins": ["ETH","SOL"]` in strategy config, engine injects `COIN` global
 - **Coin exclusivity**: each coin must belong to exactly one strategy — enforced at engine startup (rejects duplicates), GUI Settings (grays out taken coins), and Lua (no cross-strategy guards needed)
 - **Risk (%-based)**: daily_loss_pct=8, emergency_close_pct=6, max_leverage=5, max_position_pct=200
 
@@ -111,11 +111,21 @@ Maker: 0.0150%, Taker: 0.0450%. ALO entries (maker), trigger exits (taker). Roun
 ## Dependencies (macOS)
 libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all via Homebrew). yyjson via CMake FetchContent.
 
-## Active Strategy (production — $500 plan)
-- `regime_adaptive_1h.lua` — ADX regime detection, ATR SL/TP, OBV confirmation, liquidation bounce (primary, 15% equity, max_size $120)
-- Coins: BTC, ETH, SOL (1 strategy, 3 coin instances)
-- Risk: daily_loss 6%, emergency 5%, max_leverage 5x, max_position 200%, global_exposure 300%
+## Strategies (production — $672 capital)
+- **Active**: `sniper_1h.lua` — ultra-selective high-conviction (x7 leverage, 90% equity, 4h cooldown)
+  - ETH: 4 signals (L1 momentum+calm, L3 trend+calm, S1 bear+calm, S2 oversold+downtrend)
+  - BTC: 2 signals (L1 momentum+calm, S1 bear+calm) — TP/SL 2.0%/2.0%, ATR<0.4%
+  - SOL: 3 signals (backup, not deployed) — inconsistent long-term
+- **Backup**: `multi_signal_1h.lua` — 5 data-driven signals per coin
+- Coins: ETH, BTC (1 coin = 1 strategy instance, exclusive)
+- Risk: daily_loss 6%, emergency 5%, max_leverage 5x, max_position 200%
 - **Mode: LIVE**
+
+## Analysis Pipeline (Python)
+- `tools/strategy_analyzer.py` — scan 63+ signaux × combos × grille TP/SL, rapports markdown
+- `tools/regime_analyzer.py` — analyse per-régime + walk-forward + Monte Carlo
+- `tools/analyzer/` — modules: data.py, indicators.py, labeling.py, signals.py, stats.py, regime.py, walk_forward.py, monte_carlo.py, report.py
+- Données: bougies 5m agrégées depuis SQLite, 8+ ans ETH, 5+ ans SOL
 
 ## License System
 

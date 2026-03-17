@@ -25,7 +25,7 @@
 
 /* ── Defaults ──────────────────────────────────────────────────────────── */
 #define INITIAL_BALANCE 100.0
-#define MAX_LEVERAGE    5
+#define MAX_LEVERAGE    15
 #define MAKER_FEE       0.0002
 #define TAKER_FEE       0.0005
 #define SLIPPAGE_BPS    1.0

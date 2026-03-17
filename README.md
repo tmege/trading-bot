@@ -5,7 +5,7 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 ## Features
 
 - **Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders
-- **Lua strategies** — sandboxed, hot-reload (5s), multi-coin per file, compound sizing (15% equity/trade), 1 active strategy (regime_adaptive_1h) on BTC/ETH/SOL
+- **Lua strategies** — sandboxed, hot-reload (5s), multi-coin per file, regime detection (bull/bear/neutral), dynamic leverage x3→x5, ATR-based sizing, drawdown guard
 - **Risk management** — daily loss limit, emergency close, circuit breaker, velocity guard, losing streak pause
 - **Backtesting** — multi-timeframe 5m simulation, walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Desktop GUI** — Electron + React (dashboard, market overview, strategy browser, interactive backtesting, settings)
@@ -104,6 +104,16 @@ Backtests use **5m candle simulation** with indicator aggregation to the strateg
 
 # Full report
 ./scripts/backtest_full_report.sh
+```
+
+### Probabilistic Analysis
+
+```bash
+# Per-regime signal analysis with walk-forward validation and Monte Carlo
+python3 tools/regime_analyzer.py --coin ETH,SOL --tf 1h --validate --montecarlo
+
+# Signal scan (all combinations)
+python3 tools/strategy_analyzer.py --coin ETH --tf 1h
 ```
 
 See [docs/strategies.md](docs/strategies.md) for strategy details and [docs/backtest-report.md](docs/backtest-report.md) for results.

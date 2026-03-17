@@ -7,20 +7,20 @@
     "risk": {
         "daily_loss_pct": 6,
         "emergency_close_pct": 5,
-        "max_leverage": 5,
-        "max_position_pct": 200
+        "max_leverage": 10,
+        "max_position_pct": 700
     },
     "strategies": {
         "dir": "./strategies",
         "reload_interval_sec": 5,
         "active": [
             {
-                "file": "regime_adaptive_1h.lua",
+                "file": "sniper_1h.lua",
+                "role": "primary",
                 "coins": [
                     "ETH",
-                    "SOL"
-                ],
-                "role": "primary"
+                    "BTC"
+                ]
             }
         ]
     },

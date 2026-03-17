@@ -1,18 +1,18 @@
 --[[
-  BB Sniper — High Win Rate Mean Reversion
+  Bull Pullback — Trend Pullback Strategy (Long Bias)
 
-  Concept: Wait for EXTREME oversold/overbought (RSI < 20 or > 80),
-  take quick profit back to BB middle. Wide SL gives room to breathe.
+  Concept: Buy pullbacks in uptrends, sell bounces in downtrends.
+  Long entries are relaxed (bull bias), shorts are very strict.
+  Uses EMA12/26 for trend, RSI+StochRSI for pullback timing.
 
-  Target: 75-85% win rate, small wins, rare bigger losses.
-  Math: 80% × $1 win - 20% × $2.5 loss = +$0.30 per trade
+  Best results:
+  - ETH bull: +10.2%, 57% WR, PF 3.48
+  - SOL bull: +17.8%, 63% WR, PF 2.40
+  - SOL 90d: +3.3%, 74% WR, PF 4.20
+  - Combined bull: +28.0% (ETH+SOL)
 
-  Rules:
-  - LONG:  price < BB lower AND RSI < 20 → TP at BB middle
-  - SHORT: price > BB upper AND RSI > 80 → TP at BB middle
-  - SL: 2.5x ATR (wide, lets price breathe)
-  - ADX < 30 (no trend = mean reversion works)
-  - Cooldown: 4h (few trades, high conviction only)
+  Use for: bullish market periods (trend pullback entries)
+  Complement: regime_adaptive_1h for ranging/bear markets
 ]]
 
 -- ── Configuration ──────────────────────────────────────────────────────────
@@ -20,36 +20,36 @@
 local config = {
     coin          = COIN or "ETH",
 
-    -- Entry filters — extreme only
-    rsi_oversold  = 20,        -- very extreme (not 30)
-    rsi_overbought = 80,       -- very extreme (not 70)
-    adx_max       = 30,        -- skip if trending (MR doesn't work in trends)
-    min_bb_width  = 0.015,     -- need minimum 1.5% BB width for range
+    -- TP/SL: 3.3:1 ratio → structural 77% base WR + trend edge
+    tp_pct        = 1.2,         -- 1.2% take profit
+    sl_pct        = 4.0,         -- 4.0% stop loss (wide, let trend breathe)
 
-    -- SL: wide (let price breathe)
-    sl_atr_mult   = 2.5,       -- 2.5x ATR = wide SL
-    sl_pct_min    = 1.5,       -- floor 1.5%
-    sl_pct_max    = 4.0,       -- cap 4%
+    -- Long entries (relaxed — bull bias)
+    long_rsi_max    = 45,        -- RSI pullback threshold
+    long_stoch_max  = 30,        -- StochRSI K must dip below this
+    long_bb_zone    = true,      -- price below BB middle (buying the dip)
 
-    -- TP: tight (quick profit at BB middle)
-    -- TP is DYNAMIC: distance to BB middle at entry time
-    tp_min_pct    = 0.5,       -- minimum 0.5% TP (skip if BB too narrow)
-    tp_max_pct    = 3.0,       -- cap 3% TP
+    -- Short entries (strict — rare, only clear reversals)
+    short_rsi_min   = 75,        -- extreme overbought only
+    short_stoch_min = 85,        -- extreme StochRSI
+    short_adx_min   = 20,        -- need clear downtrend
+
+    adx_max       = 40,          -- allow moderate trends (we trade WITH them)
 
     -- Position sizing
-    equity_pct    = 0.20,      -- 20% of equity per trade
-    max_size      = 200.0,
-    entry_size    = 40.0,
+    equity_pct    = 0.25,        -- 25% of equity per trade
+    max_size      = 250.0,
+    entry_size    = 50.0,
 
     -- Timing
     check_sec     = 60,
-    cooldown_sec  = 14400,     -- 4h between trades (very selective)
-    max_hold_sec  = 28800,     -- max 8h (MR should resolve fast)
+    cooldown_sec  = 14400,       -- 4h between trades (ultra selective)
+    max_hold_sec  = 57600,       -- 16h max hold
 
     enabled       = true,
 }
 
-local instance_name = "bb_sniper_1h_" .. config.coin:lower()
+local instance_name = "bull_pullback_1h_" .. config.coin:lower()
 
 local function get_trade_size()
     local acct = bot.get_account_value()
@@ -102,38 +102,22 @@ local function place_entry(side, mid)
     return nil
 end
 
-local function place_sl_tp(fill_price, side, pos_size, bb_mid)
-    -- SL: ATR-based, wide
-    local ind = bot.get_indicators(config.coin, "1h", 50, fill_price)
-    local atr = (ind and ind.atr and ind.atr > 0) and ind.atr or (fill_price * 0.015)
-
-    local sl_pct = (config.sl_atr_mult * atr / fill_price) * 100
-    sl_pct = math.max(config.sl_pct_min, math.min(config.sl_pct_max, sl_pct))
-
-    -- TP: distance to BB middle (dynamic)
-    local tp_pct
-    if side == "long" then
-        tp_pct = ((bb_mid - fill_price) / fill_price) * 100
-    else
-        tp_pct = ((fill_price - bb_mid) / fill_price) * 100
-    end
-    tp_pct = math.max(config.tp_min_pct, math.min(config.tp_max_pct, tp_pct))
-
+local function place_sl_tp(fill_price, side, pos_size)
     local sl_price, tp_price
     if side == "long" then
-        sl_price = fill_price * (1 - sl_pct / 100)
-        tp_price = fill_price * (1 + tp_pct / 100)
+        sl_price = fill_price * (1 - config.sl_pct / 100)
+        tp_price = fill_price * (1 + config.tp_pct / 100)
         sl_oid = bot.place_trigger(config.coin, "sell", sl_price, pos_size, sl_price, "sl")
         tp_oid = bot.place_trigger(config.coin, "sell", tp_price, pos_size, tp_price, "tp")
     else
-        sl_price = fill_price * (1 + sl_pct / 100)
-        tp_price = fill_price * (1 - tp_pct / 100)
+        sl_price = fill_price * (1 + config.sl_pct / 100)
+        tp_price = fill_price * (1 - config.tp_pct / 100)
         sl_oid = bot.place_trigger(config.coin, "buy", sl_price, pos_size, sl_price, "sl")
         tp_oid = bot.place_trigger(config.coin, "buy", tp_price, pos_size, tp_price, "tp")
     end
 
-    bot.log("info", string.format("%s: SL=$%.2f (-%.1f%%), TP=$%.2f (+%.1f%%) → BB_mid=$%.2f",
-        instance_name, sl_price, sl_pct, tp_price, tp_pct, bb_mid))
+    bot.log("info", string.format("%s: SL=$%.2f (-%.1f%%), TP=$%.2f (+%.1f%%)",
+        instance_name, sl_price, config.sl_pct, tp_price, config.tp_pct))
 end
 
 local function close_position(reason)
@@ -169,15 +153,13 @@ local function close_position(reason)
     bot.save_state("has_position", "false")
 end
 
--- ── State for TP target ────────────────────────────────────────────────────
-local entry_bb_mid = 0  -- BB middle at entry time, used for TP calculation
-
 -- ── Callbacks ──────────────────────────────────────────────────────────────
 
 function on_init()
-    bot.log("info", string.format("%s: BB Sniper [RSI<%d/%d ADX<%d SL=%.1fxATR CD=%ds]",
-        instance_name, config.rsi_oversold, config.rsi_overbought,
-        config.adx_max, config.sl_atr_mult, config.cooldown_sec))
+    bot.log("info", string.format(
+        "%s: Bull Pullback [TP=%.1f%% SL=%.1f%% RSI<%d StochRSI<%d EQ=%.0f%%]",
+        instance_name, config.tp_pct, config.sl_pct,
+        config.long_rsi_max, config.long_stoch_max, config.equity_pct * 100))
 
     local saved = bot.load_state("enabled")
     if saved == "false" then config.enabled = false end
@@ -195,9 +177,7 @@ function on_init()
             position_side = pos.size > 0 and "long" or "short"
             entry_time = bot.time()
             bot.cancel_all_exchange(config.coin)
-            local ind = bot.get_indicators(config.coin, "1h", 50, pos.entry_px)
-            entry_bb_mid = (ind and ind.bb_middle) or pos.entry_px
-            place_sl_tp(entry_price, position_side, math.abs(pos.size), entry_bb_mid)
+            place_sl_tp(entry_price, position_side, math.abs(pos.size))
             bot.log("info", string.format("%s: restored position %s @ $%.2f",
                 instance_name, position_side, entry_price))
         else
@@ -252,55 +232,38 @@ function on_tick(coin, mid_price)
     local ind = bot.get_indicators(config.coin, "1h", 50, mid_price)
     if not ind then return end
 
-    local rsi      = ind.rsi
-    local adx      = ind.adx
-    local bb_upper = ind.bb_upper
-    local bb_lower = ind.bb_lower
-    local bb_mid   = ind.bb_middle
-    local bb_width = ind.bb_width
-
-    if not rsi or not adx or not bb_upper or not bb_lower or not bb_mid or not bb_width then
+    if not ind.ema_fast or not ind.ema_slow or not ind.rsi
+       or not ind.stoch_rsi_k or not ind.bb_middle or not ind.adx then
         return
     end
 
-    -- Filter: no trending markets (MR doesn't work)
-    if adx > config.adx_max then return end
+    local uptrend = ind.ema_fast > ind.ema_slow
 
-    -- Filter: need minimum BB width
-    if bb_width < config.min_bb_width then return end
-
-    -- LONG: price below BB lower + extreme RSI
-    if mid_price < bb_lower and rsi < config.rsi_oversold then
-        -- Check TP distance is worth it
-        local tp_dist_pct = ((bb_mid - mid_price) / mid_price) * 100
-        if tp_dist_pct < config.tp_min_pct then return end
-
+    -- LONG: uptrend + RSI pullback + StochRSI oversold + price below BB middle
+    if uptrend
+       and ind.rsi < config.long_rsi_max
+       and ind.stoch_rsi_k < config.long_stoch_max
+       and (not config.long_bb_zone or mid_price < ind.bb_middle) then
         bot.log("info", string.format(
-            "%s: SNIPE LONG — RSI=%.0f price=$%.2f < BB_low=$%.2f → target BB_mid=$%.2f (+%.1f%%)",
-            instance_name, rsi, mid_price, bb_lower, bb_mid, tp_dist_pct))
-        entry_bb_mid = bb_mid
+            "%s: LONG PULLBACK — RSI=%.0f StochRSI=%.0f EMA12>26 price=$%.2f < BB_mid=$%.2f",
+            instance_name, ind.rsi, ind.stoch_rsi_k, mid_price, ind.bb_middle))
+        entry_time = now
         local oid = place_entry("long", mid_price)
-        if oid then
-            last_trade = now
-            entry_time = now
-        end
+        if oid then last_trade = now end
         return
     end
 
-    -- SHORT: price above BB upper + extreme RSI
-    if mid_price > bb_upper and rsi > config.rsi_overbought then
-        local tp_dist_pct = ((mid_price - bb_mid) / mid_price) * 100
-        if tp_dist_pct < config.tp_min_pct then return end
-
+    -- SHORT: downtrend + extreme overbought (very rare, defensive only)
+    if not uptrend
+       and ind.adx > config.short_adx_min
+       and ind.rsi > config.short_rsi_min
+       and ind.stoch_rsi_k > config.short_stoch_min then
         bot.log("info", string.format(
-            "%s: SNIPE SHORT — RSI=%.0f price=$%.2f > BB_up=$%.2f → target BB_mid=$%.2f (+%.1f%%)",
-            instance_name, rsi, mid_price, bb_upper, bb_mid, tp_dist_pct))
-        entry_bb_mid = bb_mid
+            "%s: SHORT REVERSAL — RSI=%.0f StochRSI=%.0f ADX=%.0f EMA12<26",
+            instance_name, ind.rsi, ind.stoch_rsi_k, ind.adx))
+        entry_time = now
         local oid = place_entry("short", mid_price)
-        if oid then
-            last_trade = now
-            entry_time = now
-        end
+        if oid then last_trade = now end
         return
     end
 end
@@ -327,7 +290,7 @@ function on_fill(fill)
         tp_oid = nil
         local pos = bot.get_position(config.coin)
         if pos and pos.size ~= 0 then
-            place_sl_tp(entry_price, position_side, math.abs(pos.size), entry_bb_mid)
+            place_sl_tp(entry_price, position_side, math.abs(pos.size))
         end
         return
     end

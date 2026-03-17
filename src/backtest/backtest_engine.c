@@ -305,8 +305,8 @@ static void check_order_fills(tb_backtest_engine_t *bt,
                     o->active = false; continue;
                 }
             }
+            o->active = false;  /* Deactivate BEFORE execute_fill to prevent slot reuse corruption */
             execute_fill(bt, o->side, o->trigger_px, o->size, true, o->oid);
-            o->active = false;
         }
     }
 
@@ -401,8 +401,8 @@ static void check_order_fills(tb_backtest_engine_t *bt,
             }
 
             bool is_taker = (o->tif == TB_TIF_IOC || o->is_trigger);
+            o->active = false;  /* Deactivate BEFORE execute_fill to prevent slot reuse corruption */
             execute_fill(bt, o->side, fill_price, o->size, is_taker, o->oid);
-            o->active = false;
         }
     }
 }
@@ -853,9 +853,12 @@ static int bt_lua_get_indicators(lua_State *L) {
             inputs[i].volume = tb_decimal_to_double(bt->candles_tf[ci].volume);
             inputs[i].time_ms = bt->candles_tf[ci].time_open;
         }
-        /* Inject current 5m close as live_price into last candle */
+        /* Inject current mid as live_price into last candle (like live) */
         if (n > 0) {
-            inputs[n - 1].close = bt->current_mid;
+            double mid = bt->current_mid;
+            inputs[n - 1].close = mid;
+            if (mid > inputs[n - 1].high) inputs[n - 1].high = mid;
+            if (mid < inputs[n - 1].low)  inputs[n - 1].low  = mid;
         }
     } else {
         for (int i = 0; i < n; i++) {
@@ -873,7 +876,7 @@ static int bt_lua_get_indicators(lua_State *L) {
     free(inputs);
 
     lua_newtable(L);
-    lua_pushboolean(L, n >= 200 ? 1 : 0);  lua_setfield(L, -2, "valid");
+    lua_pushboolean(L, snap.valid ? 1 : 0);  lua_setfield(L, -2, "valid");
     lua_pushnumber(L, snap.sma_20);   lua_setfield(L, -2, "sma_20");
     lua_pushnumber(L, snap.sma_50);   lua_setfield(L, -2, "sma_50");
     lua_pushnumber(L, snap.sma_200);  lua_setfield(L, -2, "sma_200");
@@ -961,7 +964,9 @@ static int bt_lua_log(lua_State *L) {
 
 static int bt_lua_time(lua_State *L) {
     tb_backtest_engine_t *bt = get_bt(L);
-    lua_pushinteger(L, bt->current_time);
+    /* Return seconds (double) to match live api_time() behavior.
+       bt->current_time is in milliseconds (from candle time_ms). */
+    lua_pushnumber(L, (double)bt->current_time / 1000.0);
     return 1;
 }
 
@@ -1226,10 +1231,18 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
         /* 6. on_tick: called only when a TF candle completes (or every candle if no aggregation) */
         bool should_tick = do_aggregate ? tf_completed : true;
         if (should_tick && (!do_aggregate || bt->current_tf_idx >= 0)) {
+            /* When TF completes, use the TF candle's actual close (not the
+               next-period 5m close) to avoid look-ahead bias. */
+            double tick_price = close;
+            if (do_aggregate && tf_completed && bt->current_tf_idx >= 0) {
+                tick_price = tb_decimal_to_double(
+                    bt->candles_tf[bt->current_tf_idx].close);
+                bt->current_mid = tick_price;
+            }
             lua_getglobal(bt->L, "on_tick");
             if (lua_isfunction(bt->L, -1)) {
                 lua_pushstring(bt->L, bt->cfg.coin);
-                lua_pushnumber(bt->L, close);
+                lua_pushnumber(bt->L, tick_price);
                 if (lua_pcall(bt->L, 2, 0, 0) != LUA_OK) {
                     tb_log_warn("backtest: on_tick error at candle %d: %s",
                                 i, lua_tostring(bt->L, -1));
@@ -1247,6 +1260,38 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
                 }
             } else {
                 lua_pop(bt->L, 1);
+            }
+
+            /* 6b. Process any IOC orders placed by on_tick/on_timer immediately.
+             * IOC = immediate-or-cancel, should not wait for next candle.
+             * This fixes close_position() IOC orders being delayed 1 candle. */
+            for (int j = 0; j < bt->n_orders; j++) {
+                bt_order_t *o = &bt->orders[j];
+                if (!o->active || o->tif != TB_TIF_IOC) continue;
+
+                bool filled = false;
+                double fill_price = bt->current_mid;
+
+                if (o->side == TB_SIDE_BUY && bt->current_mid <= o->price)
+                    filled = true;
+                else if (o->side == TB_SIDE_SELL && bt->current_mid >= o->price)
+                    filled = true;
+
+                if (filled) {
+                    if (o->reduce_only) {
+                        if (bt->position_size == 0) { o->active = false; continue; }
+                        if (o->side == TB_SIDE_BUY && bt->position_size > 0) {
+                            o->active = false; continue;
+                        }
+                        if (o->side == TB_SIDE_SELL && bt->position_size < 0) {
+                            o->active = false; continue;
+                        }
+                    }
+                    o->active = false;  /* Deactivate BEFORE execute_fill to prevent slot reuse corruption */
+                    execute_fill(bt, o->side, fill_price, o->size, true, o->oid);
+                } else {
+                    o->active = false; /* IOC cancelled — didn't fill */
+                }
             }
         }
 
