@@ -20,9 +20,9 @@ OUTFILE="$OUTDIR/multi_period_${TIMESTAMP}.csv"
 
 # Strategy definitions: file:coin:tf
 STRATEGIES=(
-    "strategies/regime_adaptive_1h.lua:ETH:1h"
-    "strategies/regime_adaptive_1h.lua:BTC:1h"
-    "strategies/regime_adaptive_1h.lua:SOL:1h"
+    "strategies/sniper_1h.lua:ETH:1h"
+    "strategies/sniper_1h.lua:BTC:1h"
+    "strategies/sniper_1h.lua:SOL:1h"
 )
 
 # Periods: name:n_days:end_days_ago

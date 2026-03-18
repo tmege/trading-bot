@@ -178,13 +178,17 @@ hl_signer_t *hl_signer_create(const char *private_key_hex) {
     memcpy(s->address, pub_hash + 12, 20);
 
     /* Lock private key in memory to prevent swapping to disk */
-    mlock(s->privkey, sizeof(s->privkey));
+    if (mlock(s->privkey, sizeof(s->privkey)) != 0) {
+        fprintf(stderr, "[WARN] mlock failed for privkey — key may be swapped to disk\n");
+    }
 
     return s;
 }
 
 void hl_signer_destroy(hl_signer_t *signer) {
     if (!signer) return;
+    /* Unlock from RAM before wiping */
+    munlock(signer->privkey, sizeof(signer->privkey));
     /* Securely wipe private key (explicit_bzero prevents compiler optimization) */
     secure_wipe(signer->privkey, 32);
     if (signer->secp_ctx) {

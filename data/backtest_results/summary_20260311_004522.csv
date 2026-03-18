@@ -1,8 +1,0 @@
-strategy,coin,interval,return_pct,sharpe_oos,sortino_oos,dd_pct,pf,win_rate,trades,alpha,verdict
-bb_scalp_15m,ETH,15m,540.69,143.05,1307.85,0.5,92.65,70.7,963,530.06,DEPLOYABLE
-bb_scalp_15m,BTC,15m,577.29,153.55,1779.21,0.5,99.99,72.9,1013,559.29,DEPLOYABLE
-triple_confirm_15m,ETH,15m,0.00,0.00,0.00,0.0,0.00,0.0,0,-10.68,INSUFFISANT
-triple_confirm_15m,BTC,15m,0.00,0.00,0.00,0.0,0.00,0.0,0,-18.22,INSUFFISANT
-ema_adx_trend_4h,BTC,4h,110.25,26.16,127.64,1.0,15.03,76.1,117,164.14,DEPLOYABLE
-vwap_reversion_15m,ETH,15m,250.14,108.04,466.22,0.7,19.35,69.0,767,239.39,DEPLOYABLE
-elder_mtf_15m,ETH,15m,0.00,0.00,0.00,0.0,0.00,0.0,0,-10.75,INSUFFISANT

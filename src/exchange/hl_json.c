@@ -59,6 +59,39 @@ int hl_json_parse_meta(yyjson_val *root, tb_asset_meta_t *assets, int *count) {
     return 0;
 }
 
+/* ── Parse asset contexts (2nd element of metaAndAssetCtxs response) ────── */
+int hl_json_parse_asset_ctxs(yyjson_val *root,
+                             const tb_asset_meta_t *assets, int n_assets,
+                             tb_asset_ctx_t *out, int *out_count) {
+    /* Response: [{ "universe": [...] }, [ {ctx0}, {ctx1}, ... ]] */
+    if (!yyjson_is_arr(root)) return -1;
+    yyjson_val *ctxs_arr = yyjson_arr_get(root, 1);
+    if (!ctxs_arr || !yyjson_is_arr(ctxs_arr)) return -1;
+
+    int n = 0;
+    size_t idx, max;
+    yyjson_val *item;
+    yyjson_arr_foreach(ctxs_arr, idx, max, item) {
+        if ((int)idx >= n_assets || n >= TB_MAX_ASSETS) break;
+        safe_strcpy(out[n].coin, sizeof(out[n].coin), assets[idx].name);
+
+        /* Hyperliquid returns these as strings */
+        yyjson_val *fund = yyjson_obj_get(item, "funding");
+        yyjson_val *prem = yyjson_obj_get(item, "premium");
+        yyjson_val *oi   = yyjson_obj_get(item, "openInterest");
+        yyjson_val *mark = yyjson_obj_get(item, "markPx");
+
+        out[n].funding_rate = fund ? atof(yyjson_get_str(fund)) : 0;
+        out[n].premium      = prem ? atof(yyjson_get_str(prem)) : 0;
+        out[n].open_interest = oi  ? atof(yyjson_get_str(oi))   : 0;
+        out[n].mark_px       = mark ? atof(yyjson_get_str(mark)) : 0;
+        out[n].valid = true;
+        n++;
+    }
+    *out_count = n;
+    return 0;
+}
+
 /* ── Parse allMids ──────────────────────────────────────────────────────── */
 int hl_json_parse_all_mids(yyjson_val *root, tb_mid_t *mids, int *count) {
     /* Response: { "coin": "price", ... } */

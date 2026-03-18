@@ -1,6 +1,6 @@
 # Strategies de Trading — Documentation
 
-> 1 strategie active en production : `regime_adaptive_1h.lua` sur BTC/ETH/SOL.
+> 1 strategie active en production : `sniper_1h.lua` sur ETH/BTC.
 > Moteur C avec indicateurs natifs, Lua sandboxe, multi-coin automatique.
 
 ---
@@ -10,50 +10,39 @@
 Chaque strategie suit le meme pattern :
 
 - **COIN global** injecte par le moteur C avant chargement (fallback `"ETH"`)
-- **Instance name** : `{strategie}_{coin}` (ex: `regime_adaptive_1h_btc`)
+- **Instance name** : `{strategie}_{coin}` (ex: `sniper_1h_eth`)
 - **5 callbacks** : `on_init`, `on_tick`, `on_fill`, `on_timer`, `on_shutdown`
 - **Entry IOC** : slippage 0.1% (`price * 1.001` buy, `* 0.999` sell)
 - **SL/TP** : trigger orders reduce-only sur l'exchange
 - **Etat persistant** : `trade_count`, `win_count`, `enabled` via `save_state`/`load_state`
 - **Position recovery** : detecte les positions existantes au redemarrage
 - **Max hold time** : fermeture forcee si la position est tenue trop longtemps
-- **Sizing** : 15% equity par trade, levier 5x max
 
 ---
 
 ## Strategie active
 
-### regime_adaptive_1h.lua — Regime Adaptatif
+### sniper_1h.lua — Sniper High-Conviction
 
-**Type :** Adaptatif (2 modes) | **Timeframe :** 1h | **Coins :** BTC, ETH, SOL
+**Type :** Ultra-selectif | **Timeframe :** 1h | **Coins :** ETH, BTC (SOL backup)
 
-**Detection de regime :**
-- **Low Vol** (BB width < 3% ET ADX < 20) → mode Mean Reversion
-- **High Vol** (BB width > 5% OU ADX > 25) → mode Trend Following
-- **Transition** : ferme la position si le regime change
+**Principe :** Signaux rares a haute conviction, levier eleve (x7), 90% equity par trade.
 
-**Mode Mean Reversion :**
-- LONG : prix < BB lower + RSI < 35 → SL 1.2%, TP 2%
-- SHORT : prix > BB upper + RSI > 65
+**Signaux ETH (4) :**
+- **L1** : momentum + calm (RSI>65 + low_vol + MACD decel)
+- **L3** : trend + calm (RSI>65 + ADX>25 + low_vol)
+- **S1** : bear + calm (RSI<30 + low_vol + SMA20<50)
+- **S2** : oversold + downtrend (RSI<30 + MACD<0 + low_vol)
 
-**Mode Trend Following :**
-- LONG : EMA(12) > EMA(26) + ADX > 25 → SL 2%, TP 4%
-- SHORT : EMA(12) < EMA(26) + ADX > 25
+**Signaux BTC (2) :**
+- **L1** : momentum + calm — TP/SL 2.0%/2.0%, ATR<0.4%
+- **S1** : bear + calm — TP/SL 2.0%/2.0%, ATR<0.4%
 
-**Confirmations additionnelles :**
-- MACD histogram direction (momentum)
-- OBV vs OBV SMA (volume)
-- ATR-based SL/TP dynamiques
-- Liquidation bounce detection
+**Parametres :** Levier 7x, equity 90%, cooldown 4h, max_hold 48h, max_size $9999
 
-**Concept :** S'adapte dynamiquement au regime de marche. Evite d'appliquer du mean reversion en marche tendanciel et inversement.
-
-**Parametres :** Levier 5x, equity 15%, max_size $120, check 60s, cooldown 120s, max hold 4h
-
-**Backtest (5m simulation, walk-forward 60/40):**
-- Seule strategie avec des verdicts DEPLOYABLE (6/27 periodes)
-- Meilleur sur ETH (+1.0% moy) et en marche bear/high-vol
-- Performance en low-vol a ameliorer
+**Backtest (5m simulation, 730j) :**
+- ETH: +289.6%, 12 trades, 92% WR, DD 24.5%, PF 4.31
+- BTC: +275.2%, 28 trades, 75% WR, DD 20.7%, PF 5.39
 
 ---
 
@@ -87,7 +76,7 @@ Tous les indicateurs sont calcules nativement en C et exposes via `bot.get_indic
 
 ```bash
 # Une seule strategie
-./build/backtest_json strategies/regime_adaptive_1h.lua ETH 0 90 1h
+./build/backtest_json strategies/sniper_1h.lua ETH 0 90 1h
 
 # Toutes les periodes de marche
 bash data/backtest_results/market_periods/run_all.sh

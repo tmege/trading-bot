@@ -129,6 +129,53 @@ SIGNAL_DEFS = {
     # Donchian breakout (20-period)
     "dc_breakout_high": lambda df: df["close"] >= df["close"].rolling(20).max(),
     "dc_breakout_low": lambda df: df["close"] <= df["close"].rolling(20).min(),
+
+    # ═══ CMF / MFI / SQUEEZE ═══
+
+    # CMF (Chaikin Money Flow)
+    "cmf_positive": lambda df: df["cmf"] > 0,
+    "cmf_negative": lambda df: df["cmf"] < 0,
+    "cmf_strong_bull": lambda df: df["cmf"] > 0.1,
+    "cmf_strong_bear": lambda df: df["cmf"] < -0.1,
+
+    # MFI (Money Flow Index)
+    "mfi_os_20": lambda df: df["mfi"] < 20,
+    "mfi_os_30": lambda df: df["mfi"] < 30,
+    "mfi_ob_70": lambda df: df["mfi"] > 70,
+    "mfi_ob_80": lambda df: df["mfi"] > 80,
+
+    # Squeeze Momentum
+    "squeeze_on": lambda df: df["squeeze_on"] == 1 if "squeeze_on" in df.columns else pd.Series(False, index=df.index),
+    "squeeze_off": lambda df: df["squeeze_on"] == 0 if "squeeze_on" in df.columns else pd.Series(False, index=df.index),
+    "squeeze_mom_bull": lambda df: df["squeeze_mom"] > 0 if "squeeze_mom" in df.columns else pd.Series(False, index=df.index),
+    "squeeze_mom_bear": lambda df: df["squeeze_mom"] < 0 if "squeeze_mom" in df.columns else pd.Series(False, index=df.index),
+
+    # ═══ SUPERTREND / Z-SCORE / FVG / ROC / PSAR ═══
+
+    # Supertrend
+    "supertrend_bull": lambda df: df["supertrend_up"] == 1 if "supertrend_up" in df.columns else pd.Series(False, index=df.index),
+    "supertrend_bear": lambda df: df["supertrend_up"] == 0 if "supertrend_up" in df.columns else pd.Series(False, index=df.index),
+
+    # Z-Score
+    "zscore_high_2": lambda df: df["zscore"] > 2.0 if "zscore" in df.columns else pd.Series(False, index=df.index),
+    "zscore_high_1": lambda df: df["zscore"] > 1.0 if "zscore" in df.columns else pd.Series(False, index=df.index),
+    "zscore_low_1": lambda df: df["zscore"] < -1.0 if "zscore" in df.columns else pd.Series(False, index=df.index),
+    "zscore_low_2": lambda df: df["zscore"] < -2.0 if "zscore" in df.columns else pd.Series(False, index=df.index),
+    "zscore_neutral": lambda df: df["zscore"].abs() < 0.5 if "zscore" in df.columns else pd.Series(False, index=df.index),
+
+    # FVG
+    "fvg_bull": lambda df: df["fvg_bull"] == 1 if "fvg_bull" in df.columns else pd.Series(False, index=df.index),
+    "fvg_bear": lambda df: df["fvg_bear"] == 1 if "fvg_bear" in df.columns else pd.Series(False, index=df.index),
+
+    # ROC
+    "roc_positive": lambda df: df["roc"] > 0 if "roc" in df.columns else pd.Series(False, index=df.index),
+    "roc_negative": lambda df: df["roc"] < 0 if "roc" in df.columns else pd.Series(False, index=df.index),
+    "roc_strong_up": lambda df: df["roc"] > 5.0 if "roc" in df.columns else pd.Series(False, index=df.index),
+    "roc_strong_down": lambda df: df["roc"] < -5.0 if "roc" in df.columns else pd.Series(False, index=df.index),
+
+    # Parabolic SAR
+    "psar_bull": lambda df: df["psar_up"] == 1 if "psar_up" in df.columns else pd.Series(False, index=df.index),
+    "psar_bear": lambda df: df["psar_up"] == 0 if "psar_up" in df.columns else pd.Series(False, index=df.index),
 }
 
 

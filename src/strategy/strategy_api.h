@@ -24,6 +24,8 @@
  *   bot.log(level, msg) → nil
  *   bot.time() → epoch seconds (float)
  *   bot.sleep_ms(ms) → nil  (cooperative, just sets timer)
+ *   bot.get_funding_rate(coin) → {rate, premium, mark_px} or nil (live only)
+ *   bot.get_open_interest(coin) → number or nil (live only)
  */
 void tb_strategy_api_register(lua_State *L, tb_lua_ctx_t *ctx);
 

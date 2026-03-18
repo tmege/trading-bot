@@ -484,7 +484,7 @@ module.exports = function registerDbIPC(ipcMain, projectRoot) {
 
       for (const r of rows) {
         // Group coin instances under base strategy name
-        // e.g. bb_scalp_15m_eth → bb_scalp_15m
+        // e.g. sniper_1h_eth → sniper_1h
         const parts = r.strategy.split('_');
         let base = r.strategy;
         // Try to find base by removing last part if it's a known coin suffix

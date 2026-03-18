@@ -199,13 +199,14 @@ export default function Backtest({ activeCoins }) {
               Backtest History ({history.length})
             </h3>
             <button
-              className="text-[10px] text-gray-600 hover:text-loss flex items-center gap-1"
+              className="text-xs text-gray-500 hover:text-loss flex items-center gap-1.5 px-2 py-1 rounded border border-transparent hover:border-loss/30 hover:bg-loss/10 transition-colors"
               onClick={async () => {
+                if (!window.confirm(`Supprimer les ${history.length} entrées de l'historique ?`)) return;
                 await window.api.backtest.clearHistory();
                 setHistory([]);
               }}
             >
-              <Trash2 size={10} /> Clear
+              <Trash2 size={12} /> Vider l'historique
             </button>
           </div>
 

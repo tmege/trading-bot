@@ -18,7 +18,7 @@ PERIODS = {
     "recent": "Recent 6M",
 }
 
-STRATEGIES = ["regime_adaptive_1h"]
+STRATEGIES = ["sniper_1h"]
 COINS = ["ETH", "SOL"]
 
 def load_result(period, strat, coin):
@@ -51,7 +51,7 @@ for period in PERIODS:
 print("# Rapport Backtest Multi-Timeframe — Periodes de Marche")
 print()
 print(f"> **Date**: 2026-03-16 | **Simulation**: bougies 5m | **Balance initiale**: $100 | **Levier max**: 5x")
-print(f"> **Strategies**: regime_adaptive_1h, squeeze_breakout_1h, ichimoku_trend_4h")
+print(f"> **Strategies**: sniper_1h")
 print(f"> **Coins**: BTC, ETH, SOL, DOGE | **Resultats**: {len(all_data)}/84 valides")
 print()
 

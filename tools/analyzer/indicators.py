@@ -5,7 +5,8 @@ import ta
 from ta.momentum import RSIIndicator, StochRSIIndicator, WilliamsRIndicator
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.volatility import BollingerBands, AverageTrueRange, KeltnerChannel
-from ta.volume import OnBalanceVolumeIndicator
+from ta.volume import OnBalanceVolumeIndicator, ChaikinMoneyFlowIndicator, MFIIndicator
+from ta.trend import PSARIndicator
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -162,5 +163,84 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # --- DI crossover ---
     df["di_bull"] = (df["plus_di"] > df["minus_di"]).astype(int)
     df["di_bear"] = (df["plus_di"] < df["minus_di"]).astype(int)
+
+    # --- CMF (Chaikin Money Flow) ---
+    df["cmf"] = ChaikinMoneyFlowIndicator(high, low, close, volume, window=20).chaikin_money_flow()
+
+    # --- MFI (Money Flow Index) ---
+    df["mfi"] = MFIIndicator(high, low, close, volume, window=14).money_flow_index()
+
+    # --- Squeeze Momentum (LazyBear) ---
+    # Squeeze = BB inside KC
+    kc_sq = KeltnerChannel(high, low, close, window=20, window_atr=10, multiplier=1.5)
+    kc_sq_lower = kc_sq.keltner_channel_lband()
+    kc_sq_upper = kc_sq.keltner_channel_hband()
+    bb_sq = BollingerBands(close, window=20, window_dev=2)
+    bb_sq_lower = bb_sq.bollinger_lband()
+    bb_sq_upper = bb_sq.bollinger_hband()
+    df["squeeze_on"] = ((bb_sq_lower > kc_sq_lower) & (bb_sq_upper < kc_sq_upper)).astype(int)
+
+    # Momentum = linear regression of (close - midline)
+    dc_high = high.rolling(20).max()
+    dc_low = low.rolling(20).min()
+    midline = (df["sma_20"] + (dc_high + dc_low) / 2) / 2
+    delta = close - midline
+    # Simple approximation: use rolling mean of delta as momentum proxy
+    df["squeeze_mom"] = delta.rolling(20).mean()
+
+    # --- ROC (Rate of Change, 12 periods) ---
+    df["roc"] = close.pct_change(12) * 100
+
+    # --- Z-Score (20 periods) ---
+    sma20_zs = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
+    df["zscore"] = (close - sma20_zs) / std20.replace(0, float("nan"))
+
+    # --- FVG (Fair Value Gap) ---
+    df["fvg_bull"] = (high.shift(2) < low).astype(int)
+    df["fvg_bear"] = (low.shift(2) > high).astype(int)
+    fvg_bull_size = (low - high.shift(2)) / ((low + high.shift(2)) / 2) * 100
+    fvg_bear_size = (low.shift(2) - high) / ((low.shift(2) + high) / 2) * 100
+    df["fvg_size"] = fvg_bull_size.where(df["fvg_bull"] == 1, fvg_bear_size.where(df["fvg_bear"] == 1, 0))
+
+    # --- Supertrend (ATR 10, mult 3.0) ---
+    atr_st = AverageTrueRange(high, low, close, window=10).average_true_range()
+    hl2 = (high + low) / 2
+    upper_band = hl2 + 3.0 * atr_st
+    lower_band = hl2 - 3.0 * atr_st
+    supertrend = pd.Series(0.0, index=df.index)
+    st_up = pd.Series(True, index=df.index)
+    prev_upper = upper_band.iloc[0] if len(upper_band) > 0 else 0
+    prev_lower = lower_band.iloc[0] if len(lower_band) > 0 else 0
+    prev_uptrend = True
+    for i in range(1, len(df)):
+        cur_upper = upper_band.iloc[i]
+        cur_lower = lower_band.iloc[i]
+        prev_close = close.iloc[i - 1]
+        if cur_upper < prev_upper or prev_close > prev_upper:
+            prev_upper = cur_upper
+        else:
+            cur_upper = prev_upper
+        if cur_lower > prev_lower or prev_close < prev_lower:
+            prev_lower = cur_lower
+        else:
+            cur_lower = prev_lower
+        if prev_uptrend:
+            if close.iloc[i] < cur_lower:
+                prev_uptrend = False
+        else:
+            if close.iloc[i] > cur_upper:
+                prev_uptrend = True
+        supertrend.iloc[i] = cur_lower if prev_uptrend else cur_upper
+        st_up.iloc[i] = prev_uptrend
+        prev_upper = cur_upper
+        prev_lower = cur_lower
+    df["supertrend"] = supertrend
+    df["supertrend_up"] = st_up.astype(int)
+
+    # --- Parabolic SAR ---
+    psar_ind = PSARIndicator(high, low, close, step=0.02, max_step=0.20)
+    df["psar"] = psar_ind.psar()
+    df["psar_up"] = (close > df["psar"]).astype(int)
 
     return df

@@ -1,6 +1,6 @@
 # Trading Bot — AI Context
 
-Algorithmic trading bot for Hyperliquid (perps). Engine in C (performance), strategies in Lua (flexibility), GUI in Electron+React. Supports paper and live trading, 2 complementary strategies, multi-coin per file, hot-reload, compound sizing.
+Algorithmic trading bot for Hyperliquid (perps). Engine in C (performance), strategies in Lua (flexibility), GUI in Electron+React. Supports paper and live trading, multi-coin per file, hot-reload, compound sizing.
 
 ## Directory Structure
 
@@ -12,9 +12,9 @@ src/                    C engine source
   strategy/             lua_engine.c, strategy_api.c, indicators.c
   data/                 twitter_sentiment.c, fear_greed.c, data_manager.c
   risk/                 risk_manager.c
-  report/               dashboard.c, report_gen.c
+  report/               dashboard.c
   backtest/             backtest_engine.c
-strategies/             regime_multi_1h.lua (active) + multi_signal_1h.lua + regime_adaptive_1h.lua + bull_pullback_1h.lua
+strategies/             sniper_1h.lua (active) + strategy_template.lua (template)
 config/                 bot_config.json (no secrets — secrets in .env)
 gui/                    Electron + React desktop app
   electron/             main.js, preload.js, license.js, ipc/ (bot, config, strategies, backtest, db, logs, ws, market, sync, license)
@@ -22,7 +22,7 @@ gui/                    Electron + React desktop app
 tests/                  Unit tests + benchmarks (test_*.c, bench_*.c, backtest_*.c)
 scripts/                start.sh, stop.sh, backtest_all.sh, backtest_full_report.sh, backtest_multi_period.sh, license_admin.js
 tools/                  candle_fetcher.c, strategy_analyzer.py, regime_analyzer.py, analyzer/ (Python analysis pipeline)
-docs/                   strategies.md, backtest-report.md, backtest-results.md, pentest.md
+docs/                   strategies.md, backtest-market-periods.md, pentest.md
 data/                   SQLite DBs (trading_bot.db, candle_cache.db — 5m candles only), backtest results
 logs/                   Runtime logs
 ```
@@ -49,7 +49,7 @@ cd gui && npm install && npm run dev
 ./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
 
 # Backtest (always uses 5m candles internally, last arg = strategy TF)
-./build/backtest_json strategies/regime_adaptive_1h.lua ETH 0 90 1h
+./build/backtest_json strategies/sniper_1h.lua ETH 0 90 1h
 ./scripts/backtest_all.sh 365 0
 ```
 
@@ -62,7 +62,7 @@ cd gui && npm install && npm run dev
 **WebSocket**: `src/exchange/hl_ws.c` (allMids, l2Book, candles, fills)
 **Strategies**: `src/strategy/lua_engine.c` (sandbox, hot-reload, COIN injection)
 **Strategy API**: `src/strategy/strategy_api.c` (18 bot.* functions for Lua)
-**Indicators**: `src/strategy/indicators.c` (SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, etc.)
+**Indicators**: `src/strategy/indicators.c` (SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, CMF, MFI, Squeeze Momentum, etc.)
 **Risk**: `src/risk/risk_manager.c` (daily loss, circuit breaker, leverage, position limits)
 **Backtest**: `src/backtest/backtest_engine.c` (multi-TF: 5m simulation + TF aggregation)
 **GUI root**: `gui/src/App.jsx` (license gate → AppMain, hoisted state: marketData, botStatus, tradeNotifications)
@@ -76,12 +76,17 @@ cd gui && npm install && npm run dev
 - **Config**: `config/bot_config.json` — exchange URLs, risk params, active strategies+coins, paper mode
 - **Multi-coin**: `"coins": ["ETH","SOL"]` in strategy config, engine injects `COIN` global
 - **Coin exclusivity**: each coin must belong to exactly one strategy — enforced at engine startup (rejects duplicates), GUI Settings (grays out taken coins), and Lua (no cross-strategy guards needed)
-- **Risk (%-based)**: daily_loss_pct=8, emergency_close_pct=6, max_leverage=5, max_position_pct=200
+- **Risk (%-based)**: daily_loss_pct=6, emergency_close_pct=5, max_leverage=10, max_position_pct=700
 
 ## Conventions
 
 ### C to Lua Indicator Fields
-`rsi`, `bb_upper`, `bb_middle`, `bb_lower`, `bb_width`, `bb_squeeze`, `sma_20`, `sma_50`, `sma_200`, `ema_12`, `ema_26`, `macd`, `macd_signal`, `macd_histogram`, `atr`, `vwap`, `adx_14`, `plus_di`, `minus_di`, `kc_upper/middle/lower`, `dc_upper/middle/lower`, `stoch_rsi_k/d`, `cci_20`, `williams_r`, `obv`, `obv_sma`, `ichi_tenkan/kijun/senkou_a/senkou_b/chikou`
+`rsi`, `bb_upper`, `bb_middle`, `bb_lower`, `bb_width`, `bb_squeeze`, `sma_20`, `sma_50`, `sma_200`, `ema_12`, `ema_26`, `macd`, `macd_signal`, `macd_histogram`, `atr`, `vwap`, `adx_14`, `plus_di`, `minus_di`, `kc_upper/middle/lower`, `dc_upper/middle/lower`, `stoch_rsi_k/d`, `cci_20`, `williams_r`, `obv`, `obv_sma`, `ichi_tenkan/kijun/senkou_a/senkou_b/chikou`, `cmf`, `mfi`, `squeeze_mom`, `squeeze_on`, `roc`, `zscore`, `fvg_bull`, `fvg_bear`, `fvg_size`, `supertrend`, `supertrend_up`, `psar`, `psar_up`
+Aliases (backtest-compatible): `sma`=sma_20, `ema`/`ema_fast`=ema_12, `ema_slow`=ema_26, `bb_mid`=bb_middle
+
+### Lua Live-Only API
+- `bot.get_funding_rate(coin)` → `{rate, premium, mark_px}` or `nil` (60s cache, not available in backtest)
+- `bot.get_open_interest(coin)` → `number` or `nil` (60s cache, not available in backtest)
 
 ### Lua Strategy Callbacks
 `on_init(config)`, `on_tick(data)`, `on_fill(fill)`, `on_timer()`, `on_book(book)`, `on_shutdown()`
@@ -98,9 +103,6 @@ Maker: 0.0150%, Taker: 0.0450%. ALO entries (maker), trigger exits (taker). Roun
 - `strategy_interval_ms` in `tb_backtest_config_t` controls the aggregation TF
 - Candle data: only 5m stored in cache (15m/1h/4h/1d purged), up to 8+ years for BTC/ETH/SOL/DOGE via Binance
 
-### Backtest Aliases (compatible with live)
-`sma`=sma_20, `ema`/`ema_fast`=ema_12, `ema_slow`=ema_26, `bb_mid`=bb_middle
-
 ### Critical Gotchas
 - MACD needs 34+ candles: use `get_indicators(coin, tf, 50, mid)` minimum
 - `ind.valid` does NOT exist: test `if not ind then return end`
@@ -116,9 +118,9 @@ libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all 
   - ETH: 4 signals (L1 momentum+calm, L3 trend+calm, S1 bear+calm, S2 oversold+downtrend)
   - BTC: 2 signals (L1 momentum+calm, S1 bear+calm) — TP/SL 2.0%/2.0%, ATR<0.4%
   - SOL: 3 signals (backup, not deployed) — inconsistent long-term
-- **Backup**: `multi_signal_1h.lua` — 5 data-driven signals per coin
+- **Template**: `strategy_template.lua` — skeleton for new strategies
 - Coins: ETH, BTC (1 coin = 1 strategy instance, exclusive)
-- Risk: daily_loss 6%, emergency 5%, max_leverage 5x, max_position 200%
+- Risk: daily_loss 6%, emergency 5%, max_leverage 10x, max_position 700%
 - **Mode: LIVE**
 
 ## Analysis Pipeline (Python)

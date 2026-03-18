@@ -237,6 +237,18 @@ int hl_rest_get_meta(hl_rest_t *rest, tb_asset_meta_t *out_assets, int *out_coun
     return rc;
 }
 
+int hl_rest_get_asset_ctxs(hl_rest_t *rest,
+                           const tb_asset_meta_t *assets, int n_assets,
+                           tb_asset_ctx_t *out, int *out_count) {
+    yyjson_doc *doc = info_request(rest, "{\"type\":\"metaAndAssetCtxs\"}", 20);
+    if (!doc) return -1;
+
+    int rc = hl_json_parse_asset_ctxs(yyjson_doc_get_root(doc),
+                                       assets, n_assets, out, out_count);
+    yyjson_doc_free(doc);
+    return rc;
+}
+
 int hl_rest_get_all_mids(hl_rest_t *rest, tb_mid_t *out_mids, int *out_count) {
     yyjson_doc *doc = info_request(rest, "{\"type\":\"allMids\"}", 2);
     if (!doc) return -1;

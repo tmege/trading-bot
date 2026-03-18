@@ -11,11 +11,14 @@ module.exports = function registerLicenseIPC(ipcMain) {
   });
 
   ipcMain.handle('license:activate', async (_event, token) => {
+    if (typeof token !== 'string' || token.length > 10000) {
+      return { ok: false, error: 'Invalid token' };
+    }
     try {
       activateLicense(token);
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: err.message };
+      return { ok: false, error: 'Activation failed' };
     }
   });
 

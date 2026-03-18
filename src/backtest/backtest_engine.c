@@ -563,6 +563,11 @@ static int bt_lua_place_limit(lua_State *L) {
     double price = luaL_checknumber(L, 3);
     double size = luaL_checknumber(L, 4);
 
+    if (!isfinite(price) || price <= 0 || !isfinite(size) || size <= 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+
     tb_side_t side;
     if (strcmp(side_str, "BUY") == 0 || strcmp(side_str, "buy") == 0 ||
         strcmp(side_str, "B") == 0)
@@ -637,6 +642,12 @@ static int bt_lua_place_trigger(lua_State *L) {
     double size = luaL_checknumber(L, 4);
     double trigger_px = luaL_optnumber(L, 5, price); /* trigger_px defaults to price */
     const char *tpsl = luaL_optstring(L, 6, "sl");
+
+    if (!isfinite(price) || price <= 0 || !isfinite(size) || size <= 0 ||
+        !isfinite(trigger_px) || trigger_px <= 0) {
+        lua_pushnil(L);
+        return 1;
+    }
 
     tb_side_t side;
     if (strcmp(side_str, "BUY") == 0 || strcmp(side_str, "buy") == 0 ||
@@ -930,6 +941,35 @@ static int bt_lua_get_indicators(lua_State *L) {
     lua_pushnumber(L, snap.ichi_senkou_b); lua_setfield(L, -2, "ichi_senkou_b");
     lua_pushnumber(L, snap.ichi_chikou);   lua_setfield(L, -2, "ichi_chikou");
 
+    /* CMF */
+    lua_pushnumber(L, snap.cmf_20);        lua_setfield(L, -2, "cmf");
+
+    /* MFI */
+    lua_pushnumber(L, snap.mfi_14);        lua_setfield(L, -2, "mfi");
+
+    /* Squeeze Momentum */
+    lua_pushnumber(L, snap.squeeze_mom);   lua_setfield(L, -2, "squeeze_mom");
+    lua_pushboolean(L, snap.squeeze_on);   lua_setfield(L, -2, "squeeze_on");
+
+    /* ROC */
+    lua_pushnumber(L, snap.roc_12);        lua_setfield(L, -2, "roc");
+
+    /* Z-Score */
+    lua_pushnumber(L, snap.zscore_20);     lua_setfield(L, -2, "zscore");
+
+    /* FVG */
+    lua_pushboolean(L, snap.fvg_bull);     lua_setfield(L, -2, "fvg_bull");
+    lua_pushboolean(L, snap.fvg_bear);     lua_setfield(L, -2, "fvg_bear");
+    lua_pushnumber(L, snap.fvg_size);      lua_setfield(L, -2, "fvg_size");
+
+    /* Supertrend */
+    lua_pushnumber(L, snap.supertrend);    lua_setfield(L, -2, "supertrend");
+    lua_pushboolean(L, snap.supertrend_up);lua_setfield(L, -2, "supertrend_up");
+
+    /* Parabolic SAR */
+    lua_pushnumber(L, snap.psar);          lua_setfield(L, -2, "psar");
+    lua_pushboolean(L, snap.psar_up);      lua_setfield(L, -2, "psar_up");
+
     /* Aliases for strategy compatibility */
     lua_pushnumber(L, snap.sma_20);    lua_setfield(L, -2, "sma");
     lua_pushnumber(L, snap.ema_12);    lua_setfield(L, -2, "ema");
@@ -949,15 +989,36 @@ static int bt_lua_get_indicators(lua_State *L) {
     lua_pushboolean(L, snap.kc_squeeze);        lua_setfield(L, -2, "kc_squeeze");
     lua_pushboolean(L, snap.ichi_bullish);      lua_setfield(L, -2, "ichi_bullish");
 
+    /* ── New derived indicators ── */
+    lua_pushnumber(L, snap.atr_pct);           lua_setfield(L, -2, "atr_pct");
+    lua_pushnumber(L, snap.atr_pct_rank);      lua_setfield(L, -2, "atr_pct_rank");
+    lua_pushnumber(L, snap.range_pct_rank);    lua_setfield(L, -2, "range_pct_rank");
+    lua_pushnumber(L, snap.vol_ratio);         lua_setfield(L, -2, "vol_ratio");
+    lua_pushnumber(L, snap.ema12_dist_pct);    lua_setfield(L, -2, "ema12_dist_pct");
+    lua_pushnumber(L, snap.sma20_dist_pct);    lua_setfield(L, -2, "sma20_dist_pct");
+    lua_pushinteger(L, snap.consec_green);     lua_setfield(L, -2, "consec_green");
+    lua_pushinteger(L, snap.consec_red);       lua_setfield(L, -2, "consec_red");
+    lua_pushboolean(L, snap.bullish_engulf);   lua_setfield(L, -2, "bullish_engulf");
+    lua_pushboolean(L, snap.bearish_engulf);   lua_setfield(L, -2, "bearish_engulf");
+    lua_pushboolean(L, snap.shooting_star);    lua_setfield(L, -2, "shooting_star");
+    lua_pushboolean(L, snap.hammer);           lua_setfield(L, -2, "hammer");
+    lua_pushboolean(L, snap.doji);             lua_setfield(L, -2, "doji");
+    lua_pushboolean(L, snap.macd_hist_incr);   lua_setfield(L, -2, "macd_accelerating");
+    lua_pushboolean(L, snap.macd_hist_decr);   lua_setfield(L, -2, "macd_decelerating");
+    lua_pushboolean(L, snap.di_bull);          lua_setfield(L, -2, "di_bull");
+    lua_pushboolean(L, snap.di_bear);          lua_setfield(L, -2, "di_bear");
+    lua_pushboolean(L, snap.rsi_bull_div);     lua_setfield(L, -2, "rsi_bull_divergence");
+    lua_pushboolean(L, snap.rsi_bear_div);     lua_setfield(L, -2, "rsi_bear_divergence");
+
     return 1;
 }
 
 static int bt_lua_log(lua_State *L) {
-    /* bot.log(level, msg) — show warnings only */
+    /* bot.log(level, msg) — output to stderr so diagnostic strategies can log */
     const char *level = lua_tostring(L, 1);
     const char *msg = lua_tostring(L, 2);
-    if (level && msg && (strcmp(level, "warn") == 0 || strcmp(level, "info") == 0)) {
-        tb_log_debug("bt-lua [%s]: %s", level, msg);
+    if (level && msg) {
+        fprintf(stderr, "bt-lua [%s]: %s\n", level, msg);
     }
     return 0;
 }
@@ -1028,8 +1089,9 @@ void tb_backtest_destroy(tb_backtest_engine_t *bt) {
 
 int tb_backtest_load_candles(tb_backtest_engine_t *bt,
                              const tb_candle_t *candles, int n_candles) {
+    if (n_candles <= 0) return -1;
     free(bt->candles);
-    bt->candles = malloc(sizeof(tb_candle_t) * n_candles);
+    bt->candles = malloc(sizeof(tb_candle_t) * (size_t)n_candles);
     if (!bt->candles) return -1;
     memcpy(bt->candles, candles, sizeof(tb_candle_t) * n_candles);
     bt->n_candles = n_candles;

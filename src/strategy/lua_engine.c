@@ -349,7 +349,7 @@ int tb_lua_engine_load_strategies(tb_lua_engine_t *engine) {
                     snprintf(slot->path, sizeof(slot->path), "%s", full_path);
                     snprintf(slot->coin, sizeof(slot->coin), "%s", cfg->strategy_coins[i][c]);
 
-                    /* Instance name = base_coinlower, e.g. "bb_scalp_15m_eth" */
+                    /* Instance name = base_coinlower, e.g. "sniper_1h_eth" */
                     char coin_lower[16];
                     snprintf(coin_lower, sizeof(coin_lower), "%s", slot->coin);
                     for (char *p = coin_lower; *p; p++) {

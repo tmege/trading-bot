@@ -466,6 +466,192 @@ int tb_obv(const tb_candle_input_t *candles, int n, double *out) {
     return 0;
 }
 
+/* ── ROC (Rate of Change) ──────────────────────────────────────────────── */
+int tb_roc(const tb_candle_input_t *candles, int n, int period, double *out) {
+    if (!candles || !out || n <= 0 || period <= 0) return -1;
+    memset(out, 0, sizeof(double) * (size_t)n);
+
+    for (int i = period; i < n; i++) {
+        double prev = candles[i - period].close;
+        out[i] = prev > 1e-12 ? (candles[i].close - prev) / prev * 100.0 : 0;
+    }
+    return 0;
+}
+
+/* ── Z-Score ──────────────────────────────────────────────────────────── */
+int tb_zscore(const tb_candle_input_t *candles, int n, int period, double *out) {
+    if (!candles || !out || n <= 0 || period <= 0) return -1;
+    memset(out, 0, sizeof(double) * (size_t)n);
+
+    double *sma_buf = calloc((size_t)n, sizeof(double));
+    if (!sma_buf) return -1;
+    tb_sma(candles, n, period, sma_buf);
+
+    for (int i = period - 1; i < n; i++) {
+        double sum_sq = 0;
+        for (int j = i - period + 1; j <= i; j++) {
+            double diff = candles[j].close - sma_buf[i];
+            sum_sq += diff * diff;
+        }
+        double stddev = sqrt(sum_sq / period);
+        out[i] = stddev > 1e-12 ? (candles[i].close - sma_buf[i]) / stddev : 0;
+    }
+
+    free(sma_buf);
+    return 0;
+}
+
+/* ── FVG (Fair Value Gap) ─────────────────────────────────────────────── */
+int tb_fvg(const tb_candle_input_t *candles, int n, tb_fvg_val_t *out) {
+    if (!candles || !out || n <= 0) return -1;
+    memset(out, 0, sizeof(tb_fvg_val_t) * (size_t)n);
+
+    for (int i = 2; i < n; i++) {
+        /* Bullish FVG: candle[i-2].high < candle[i].low (gap up) */
+        if (candles[i - 2].high < candles[i].low) {
+            out[i].bullish_fvg = true;
+            double mid = (candles[i - 2].high + candles[i].low) / 2.0;
+            out[i].fvg_size = mid > 1e-12
+                ? (candles[i].low - candles[i - 2].high) / mid * 100.0 : 0;
+        }
+        /* Bearish FVG: candle[i-2].low > candle[i].high (gap down) */
+        if (candles[i - 2].low > candles[i].high) {
+            out[i].bearish_fvg = true;
+            double mid = (candles[i - 2].low + candles[i].high) / 2.0;
+            out[i].fvg_size = mid > 1e-12
+                ? (candles[i - 2].low - candles[i].high) / mid * 100.0 : 0;
+        }
+    }
+    return 0;
+}
+
+/* ── Supertrend ───────────────────────────────────────────────────────── */
+int tb_supertrend(const tb_candle_input_t *candles, int n,
+                  int atr_period, double multiplier,
+                  tb_supertrend_val_t *out) {
+    if (!candles || !out || n <= 0 || atr_period <= 0) return -1;
+    memset(out, 0, sizeof(tb_supertrend_val_t) * (size_t)n);
+
+    double *atr_buf = calloc((size_t)n, sizeof(double));
+    if (!atr_buf) return -1;
+    tb_atr(candles, n, atr_period, atr_buf);
+
+    int start = atr_period - 1;
+    if (start >= n) { free(atr_buf); return 0; }
+
+    /* Initialize first valid bar */
+    double hl2 = (candles[start].high + candles[start].low) / 2.0;
+    double upper_band = hl2 + multiplier * atr_buf[start];
+    double lower_band = hl2 - multiplier * atr_buf[start];
+    bool uptrend = candles[start].close > hl2;
+
+    out[start].value = uptrend ? lower_band : upper_band;
+    out[start].is_uptrend = uptrend;
+
+    for (int i = start + 1; i < n; i++) {
+        hl2 = (candles[i].high + candles[i].low) / 2.0;
+        double new_upper = hl2 + multiplier * atr_buf[i];
+        double new_lower = hl2 - multiplier * atr_buf[i];
+
+        /* Band continuity: upper can only decrease, lower can only increase */
+        if (new_upper < upper_band || candles[i - 1].close > upper_band)
+            upper_band = new_upper;
+        if (new_lower > lower_band || candles[i - 1].close < lower_band)
+            lower_band = new_lower;
+
+        /* Direction flip */
+        if (uptrend) {
+            if (candles[i].close < lower_band) {
+                uptrend = false;
+            }
+        } else {
+            if (candles[i].close > upper_band) {
+                uptrend = true;
+            }
+        }
+
+        out[i].value = uptrend ? lower_band : upper_band;
+        out[i].is_uptrend = uptrend;
+    }
+
+    free(atr_buf);
+    return 0;
+}
+
+/* ── Parabolic SAR (Wilder) ──────────────────────────────────────────── */
+int tb_psar(const tb_candle_input_t *candles, int n,
+            double af_start, double af_max, double af_step,
+            tb_psar_val_t *out) {
+    if (!candles || !out || n <= 0) return -1;
+    memset(out, 0, sizeof(tb_psar_val_t) * (size_t)n);
+    if (n < 2) return 0;
+
+    /* Initialize: assume uptrend from bar 0 */
+    bool uptrend = candles[1].close >= candles[0].close;
+    double af = af_start;
+    double ep, sar;
+
+    if (uptrend) {
+        sar = candles[0].low;
+        ep = candles[0].high;
+    } else {
+        sar = candles[0].high;
+        ep = candles[0].low;
+    }
+
+    out[0].sar = sar;
+    out[0].is_uptrend = uptrend;
+
+    for (int i = 1; i < n; i++) {
+        double prev_sar = sar;
+
+        /* Advance SAR */
+        sar = prev_sar + af * (ep - prev_sar);
+
+        if (uptrend) {
+            /* SAR cannot be above prior two lows */
+            if (i >= 2 && sar > candles[i - 2].low) sar = candles[i - 2].low;
+            if (sar > candles[i - 1].low) sar = candles[i - 1].low;
+
+            /* Check for reversal */
+            if (candles[i].low < sar) {
+                uptrend = false;
+                sar = ep;  /* SAR flips to extreme point */
+                ep = candles[i].low;
+                af = af_start;
+            } else {
+                if (candles[i].high > ep) {
+                    ep = candles[i].high;
+                    af += af_step;
+                    if (af > af_max) af = af_max;
+                }
+            }
+        } else {
+            /* SAR cannot be below prior two highs */
+            if (i >= 2 && sar < candles[i - 2].high) sar = candles[i - 2].high;
+            if (sar < candles[i - 1].high) sar = candles[i - 1].high;
+
+            /* Check for reversal */
+            if (candles[i].high > sar) {
+                uptrend = true;
+                sar = ep;  /* SAR flips to extreme point */
+                ep = candles[i].high;
+                af = af_start;
+            } else {
+                if (candles[i].low < ep) {
+                    ep = candles[i].low;
+                    af += af_step;
+                    if (af > af_max) af = af_max;
+                }
+            }
+        }
+
+        out[i].sar = sar;
+        out[i].is_uptrend = uptrend;
+    }
+    return 0;
+}
+
 /* ── Ichimoku Cloud ────────────────────────────────────────────────────── */
 static double period_high(const tb_candle_input_t *candles, int end, int period) {
     double hh = candles[end].high;
@@ -509,6 +695,126 @@ int tb_ichimoku(const tb_candle_input_t *candles, int n, tb_ichimoku_val_t *out)
         /* Chikou = close at current bar (represents close shifted back 26) */
         out[i].chikou = candles[i].close;
     }
+    return 0;
+}
+
+/* ── CMF (Chaikin Money Flow) ──────────────────────────────────────────── */
+int tb_cmf(const tb_candle_input_t *candles, int n, int period, double *out) {
+    if (!candles || !out || n <= 0 || period <= 0) return -1;
+    memset(out, 0, sizeof(double) * (size_t)n);
+
+    for (int i = period - 1; i < n; i++) {
+        double sum_mfv = 0;
+        double sum_vol = 0;
+        for (int j = i - period + 1; j <= i; j++) {
+            double hl = candles[j].high - candles[j].low;
+            double mf_mult = hl > 1e-12
+                ? ((candles[j].close - candles[j].low) - (candles[j].high - candles[j].close)) / hl
+                : 0;
+            sum_mfv += mf_mult * candles[j].volume;
+            sum_vol += candles[j].volume;
+        }
+        out[i] = sum_vol > 0 ? sum_mfv / sum_vol : 0;
+    }
+    return 0;
+}
+
+/* ── MFI (Money Flow Index) ───────────────────────────────────────────── */
+int tb_mfi(const tb_candle_input_t *candles, int n, int period, double *out) {
+    if (!candles || !out || n <= 0 || period <= 0) return -1;
+    memset(out, 0, sizeof(double) * (size_t)n);
+    if (n < period + 1) return -1;
+
+    /* Typical price × volume for each bar */
+    double *raw_mf = calloc((size_t)n, sizeof(double));
+    if (!raw_mf) return -1;
+    for (int i = 0; i < n; i++)
+        raw_mf[i] = ((candles[i].high + candles[i].low + candles[i].close) / 3.0) * candles[i].volume;
+
+    for (int i = period; i < n; i++) {
+        double pos_flow = 0, neg_flow = 0;
+        for (int j = i - period + 1; j <= i; j++) {
+            double tp_cur = (candles[j].high + candles[j].low + candles[j].close) / 3.0;
+            double tp_prev = (candles[j-1].high + candles[j-1].low + candles[j-1].close) / 3.0;
+            if (tp_cur > tp_prev)
+                pos_flow += raw_mf[j];
+            else if (tp_cur < tp_prev)
+                neg_flow += raw_mf[j];
+        }
+        if (neg_flow < 1e-12)
+            out[i] = 100.0;
+        else
+            out[i] = 100.0 - (100.0 / (1.0 + pos_flow / neg_flow));
+    }
+
+    free(raw_mf);
+    return 0;
+}
+
+/* ── Squeeze Momentum (LazyBear) ──────────────────────────────────────── */
+/* Linear regression value (least squares fit, return y-value at last point) */
+static double linreg_val(const double *data, int start, int len) {
+    double sum_x = 0, sum_y = 0, sum_xy = 0, sum_x2 = 0;
+    for (int i = 0; i < len; i++) {
+        double x = (double)i;
+        double y = data[start + i];
+        sum_x += x;
+        sum_y += y;
+        sum_xy += x * y;
+        sum_x2 += x * x;
+    }
+    double n = (double)len;
+    double denom = n * sum_x2 - sum_x * sum_x;
+    if (fabs(denom) < 1e-12) return 0;
+    double slope = (n * sum_xy - sum_x * sum_y) / denom;
+    double intercept = (sum_y - slope * sum_x) / n;
+    return intercept + slope * (n - 1);
+}
+
+int tb_squeeze_momentum(const tb_candle_input_t *candles, int n, tb_squeeze_val_t *out) {
+    if (!candles || !out || n <= 0) return -1;
+    memset(out, 0, sizeof(tb_squeeze_val_t) * (size_t)n);
+
+    int bb_period = 20;
+    int kc_period = 20;
+    int dc_period = 20;
+    int linreg_len = 20;
+    double bb_mult = 2.0;
+    double kc_mult = 1.5;
+
+    if (n < bb_period) return 0;
+
+    /* Compute BB, KC, Donchian, SMA */
+    tb_bollinger_val_t *bb = calloc((size_t)n, sizeof(tb_bollinger_val_t));
+    tb_keltner_val_t *kc = calloc((size_t)n, sizeof(tb_keltner_val_t));
+    tb_donchian_val_t *dc = calloc((size_t)n, sizeof(tb_donchian_val_t));
+    double *sma_buf = calloc((size_t)n, sizeof(double));
+    double *delta = calloc((size_t)n, sizeof(double));
+    if (!bb || !kc || !dc || !sma_buf || !delta) {
+        free(bb); free(kc); free(dc); free(sma_buf); free(delta);
+        return -1;
+    }
+
+    tb_bollinger(candles, n, bb_period, bb_mult, bb);
+    tb_keltner(candles, n, kc_period, 10, kc_mult, kc);
+    tb_donchian(candles, n, dc_period, dc);
+    tb_sma(candles, n, bb_period, sma_buf);
+
+    /* Momentum = linreg of (close - midline)
+       midline = average of Donchian mid and SMA */
+    for (int i = bb_period - 1; i < n; i++) {
+        double midline = (dc[i].middle + sma_buf[i]) / 2.0;
+        delta[i] = candles[i].close - midline;
+    }
+
+    int start = bb_period - 1 + linreg_len - 1;
+    for (int i = start; i < n; i++) {
+        out[i].momentum = linreg_val(delta, i - linreg_len + 1, linreg_len);
+        out[i].squeeze_on = (bb[i].lower > kc[i].lower && bb[i].upper < kc[i].upper
+                             && bb[i].upper > 0 && kc[i].upper > 0);
+    }
+
+    free(bb); free(kc); free(dc); free(sma_buf); free(delta);
     return 0;
 }
 
@@ -575,6 +881,11 @@ tb_indicators_snapshot_t tb_indicators_compute(const tb_candle_input_t *candles,
             snap.macd_histogram = macd_buf[last].histogram;
             snap.macd_bullish_cross = snap.macd_line > snap.macd_signal &&
                                       snap.macd_histogram > 0;
+            /* MACD histogram direction (acceleration/deceleration) */
+            if (last >= 1) {
+                snap.macd_hist_incr = macd_buf[last].histogram > macd_buf[last - 1].histogram;
+                snap.macd_hist_decr = macd_buf[last].histogram < macd_buf[last - 1].histogram;
+            }
             free(macd_buf);
         }
     }
@@ -711,6 +1022,212 @@ tb_indicators_snapshot_t tb_indicators_compute(const tb_candle_input_t *candles,
             snap.ichi_bullish = (price > cloud_top && snap.ichi_tenkan > snap.ichi_kijun);
             free(ichi_buf);
         }
+    }
+
+    /* CMF 20 */
+    if (n >= 20) {
+        tb_cmf(candles, n, 20, buf);
+        snap.cmf_20 = buf[last];
+    }
+
+    /* MFI 14 */
+    if (n >= 15) {
+        tb_mfi(candles, n, 14, buf);
+        snap.mfi_14 = buf[last];
+    }
+
+    /* Squeeze Momentum */
+    if (n >= 40) {
+        tb_squeeze_val_t *sq_buf = calloc((size_t)n, sizeof(tb_squeeze_val_t));
+        if (sq_buf) {
+            tb_squeeze_momentum(candles, n, sq_buf);
+            snap.squeeze_mom = sq_buf[last].momentum;
+            snap.squeeze_on = sq_buf[last].squeeze_on;
+            free(sq_buf);
+        }
+    }
+
+    /* ROC 12 */
+    if (n >= 13) {
+        tb_roc(candles, n, 12, buf);
+        snap.roc_12 = buf[last];
+    }
+
+    /* Z-Score 20 */
+    if (n >= 20) {
+        tb_zscore(candles, n, 20, buf);
+        snap.zscore_20 = buf[last];
+    }
+
+    /* FVG */
+    if (n >= 3) {
+        tb_fvg_val_t *fvg_buf = calloc((size_t)n, sizeof(tb_fvg_val_t));
+        if (fvg_buf) {
+            tb_fvg(candles, n, fvg_buf);
+            snap.fvg_bull = fvg_buf[last].bullish_fvg;
+            snap.fvg_bear = fvg_buf[last].bearish_fvg;
+            snap.fvg_size = fvg_buf[last].fvg_size;
+            free(fvg_buf);
+        }
+    }
+
+    /* Supertrend (ATR 10, mult 3.0) */
+    if (n >= 11) {
+        tb_supertrend_val_t *st_buf = calloc((size_t)n, sizeof(tb_supertrend_val_t));
+        if (st_buf) {
+            tb_supertrend(candles, n, 10, 3.0, st_buf);
+            snap.supertrend = st_buf[last].value;
+            snap.supertrend_up = st_buf[last].is_uptrend;
+            free(st_buf);
+        }
+    }
+
+    /* Parabolic SAR (0.02, 0.20, 0.02) */
+    if (n >= 2) {
+        tb_psar_val_t *psar_buf = calloc((size_t)n, sizeof(tb_psar_val_t));
+        if (psar_buf) {
+            tb_psar(candles, n, 0.02, 0.20, 0.02, psar_buf);
+            snap.psar = psar_buf[last].sar;
+            snap.psar_up = psar_buf[last].is_uptrend;
+            free(psar_buf);
+        }
+    }
+
+    /* ── New derived indicators ──────────────────────────────────────────── */
+
+    /* ATR % and percentile rank (rolling 100 bars) */
+    if (n >= 15 && price > 0) {
+        snap.atr_pct = snap.atr_14 / price;
+
+        /* Recompute ATR for percentile calc */
+        tb_atr(candles, n, 14, buf);
+        int lb = 100;
+        int start = last - lb + 1;
+        if (start < 14) start = 14;  /* ATR needs 14 bars warm-up */
+        int count_below = 0, count_total = 0;
+        for (int i = start; i <= last; i++) {
+            if (buf[i] > 0 && candles[i].close > 0) {
+                double pct = buf[i] / candles[i].close;
+                if (pct < snap.atr_pct) count_below++;
+                count_total++;
+            }
+        }
+        snap.atr_pct_rank = count_total > 0 ? (double)count_below / count_total : 0.5;
+    }
+
+    /* Range percentile rank (rolling 100 bars) */
+    if (n >= 2 && price > 0) {
+        double cur_range = (candles[last].high - candles[last].low) / price;
+        int lb = 100;
+        int start = last - lb + 1;
+        if (start < 0) start = 0;
+        int count_below = 0, count_total = 0;
+        for (int i = start; i <= last; i++) {
+            if (candles[i].close > 0) {
+                double rpct = (candles[i].high - candles[i].low) / candles[i].close;
+                if (rpct < cur_range) count_below++;
+                count_total++;
+            }
+        }
+        snap.range_pct_rank = count_total > 0 ? (double)count_below / count_total : 0.5;
+    }
+
+    /* Volume ratio (current / SMA20 of volume) */
+    if (n >= 20) {
+        double vol_sum = 0;
+        for (int i = last - 19; i <= last; i++) vol_sum += candles[i].volume;
+        double avg_vol = vol_sum / 20.0;
+        snap.vol_ratio = avg_vol > 0 ? candles[last].volume / avg_vol : 1.0;
+    }
+
+    /* EMA12 / SMA20 distance % */
+    if (snap.ema_12 > 0)
+        snap.ema12_dist_pct = (price - snap.ema_12) / snap.ema_12 * 100.0;
+    if (snap.sma_20 > 0)
+        snap.sma20_dist_pct = (price - snap.sma_20) / snap.sma_20 * 100.0;
+
+    /* Consecutive green/red candles */
+    for (int i = last; i >= 0; i--) {
+        if (candles[i].close > candles[i].open) {
+            if (snap.consec_red > 0) break;
+            snap.consec_green++;
+        } else if (candles[i].close < candles[i].open) {
+            if (snap.consec_green > 0) break;
+            snap.consec_red++;
+        } else {
+            break;  /* doji breaks streak */
+        }
+    }
+
+    /* Candle patterns */
+    if (last >= 1) {
+        double o  = candles[last].open,   h  = candles[last].high;
+        double lo = candles[last].low,     c  = candles[last].close;
+        double po = candles[last-1].open,  pc = candles[last-1].close;
+        double body = fabs(c - o);
+        double range = h - lo;
+        double upper_wick = h - fmax(o, c);
+        double lower_wick = fmin(o, c) - lo;
+
+        /* Doji: body < 10% of range */
+        snap.doji = (range > 0 && body < range * 0.10);
+
+        /* Shooting star: upper wick > 2x body, small lower wick, bearish */
+        snap.shooting_star = (body > 0 && upper_wick > body * 2.0 &&
+                              lower_wick < body * 0.5 && c < o);
+
+        /* Hammer: lower wick > 2x body, small upper wick, bullish */
+        snap.hammer = (body > 0 && lower_wick > body * 2.0 &&
+                       upper_wick < body * 0.5 && c > o);
+
+        /* Bullish engulfing: prev red, current green, body engulfs prev */
+        snap.bullish_engulf = (pc < po && c > o && o <= pc && c >= po);
+
+        /* Bearish engulfing: prev green, current red, body engulfs prev */
+        snap.bearish_engulf = (pc > po && c < o && o >= pc && c <= po);
+    }
+
+    /* DI crossover */
+    snap.di_bull = (snap.plus_di > snap.minus_di);
+    snap.di_bear = (snap.minus_di > snap.plus_di);
+
+    /* RSI divergence (simplified: 10-bar lookback) */
+    if (n >= 25) {
+        tb_rsi(candles, n, 14, buf);
+        int lb = 10;
+        int div_start = last - lb;
+        if (div_start < 15) div_start = 15;  /* RSI needs 15 bars warm-up */
+
+        /* Find bar with lowest low and highest high in lookback */
+        double min_low = candles[last].low;
+        double max_high = candles[last].high;
+        double rsi_at_min = buf[last], rsi_at_max = buf[last];
+        int min_idx = last, max_idx = last;
+
+        for (int i = div_start; i < last; i++) {
+            if (buf[i] > 0) {  /* valid RSI */
+                if (candles[i].low < min_low) {
+                    min_low = candles[i].low;
+                    rsi_at_min = buf[i];
+                    min_idx = i;
+                }
+                if (candles[i].high > max_high) {
+                    max_high = candles[i].high;
+                    rsi_at_max = buf[i];
+                    max_idx = i;
+                }
+            }
+        }
+
+        /* Bull divergence: price lower low but RSI higher low */
+        snap.rsi_bull_div = (min_idx != last &&
+                             candles[last].low <= min_low * 1.001 &&
+                             buf[last] > rsi_at_min + 2.0);
+
+        /* Bear divergence: price higher high but RSI lower high */
+        snap.rsi_bear_div = (max_idx != last &&
+                             candles[last].high >= max_high * 0.999 &&
+                             buf[last] < rsi_at_max - 2.0);
     }
 
     snap.valid = true;

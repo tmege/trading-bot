@@ -31,7 +31,6 @@ fi
 # ── Strategy definitions: name, file, interval ──────────────────────────
 declare -a STRATS=(
     "sniper_1h|strategies/sniper_1h.lua|1h"
-    "multi_signal_1h|strategies/multi_signal_1h.lua|1h"
 )
 
 COINS="ETH BTC"

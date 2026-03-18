@@ -56,12 +56,20 @@ module.exports = function registerBacktestIPC(ipcMain, projectRoot) {
 
   ipcMain.handle('backtest:run', async (event, params) => {
     const {
-      strategy,  // e.g. "bb_scalp_15m.lua"
-      coins,     // e.g. ["ETH"] or ["ETH", "BTC", "SOL"]
+      strategy,
+      coins,
       endDaysAgo = 0,
       nDays = 30,
       interval = '1h',
     } = params;
+
+    /* Input validation */
+    const VALID_INTERVALS = new Set(['5m', '15m', '1h', '4h', '1d']);
+    if (!VALID_INTERVALS.has(interval)) {
+      return { ok: false, error: 'Invalid interval' };
+    }
+    const safeEndDays = Math.max(0, Math.min(9999, Number(endDaysAgo) || 0));
+    const safeNDays = Math.max(1, Math.min(9999, Number(nDays) || 30));
 
     const strategiesDir = path.join(projectRoot, 'strategies');
     const strategyPath = path.resolve(strategiesDir, strategy);
@@ -89,7 +97,7 @@ module.exports = function registerBacktestIPC(ipcMain, projectRoot) {
       try {
         const result = await runSingle(
           binary, strategyPath, coin,
-          String(endDaysAgo), String(nDays), interval,
+          String(safeEndDays), String(safeNDays), interval,
           projectRoot, event
         );
         results.push({ coin, ...result });

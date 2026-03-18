@@ -86,7 +86,7 @@ typedef struct {
 } strategy_entry_t;
 
 static const strategy_entry_t strategies[] = {
-    { "Regime Adaptive", "strategies/regime_adaptive_1h.lua",    "ADX regime detection, ATR SL/TP, OBV confirm" },
+    { "Sniper 1h", "strategies/sniper_1h.lua",    "Ultra-selective high-conviction signals, x7 leverage" },
 };
 
 #define N_STRATEGIES (sizeof(strategies) / sizeof(strategies[0]))

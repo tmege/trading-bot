@@ -161,6 +161,16 @@ typedef struct {
     int      sz_decimals;
 } tb_asset_meta_t;
 
+/* ── Asset context (funding rate, open interest, etc.) ────────────────────── */
+typedef struct {
+    char   coin[16];
+    double funding_rate;
+    double premium;
+    double open_interest;
+    double mark_px;
+    bool   valid;
+} tb_asset_ctx_t;
+
 /* ── Decimal helpers ──────────────────────────────────────────────────────── */
 
 /* Create decimal from double (for config/display only, not for trading math) */

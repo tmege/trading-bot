@@ -1,9 +1,0 @@
-strategy,coin,interval,return_pct,sharpe_oos,sortino_oos,dd_pct,pf,win_rate,trades,alpha,verdict
-ema_adx_trend_4h,ETH,4h,0,0,0,0,0,0,0,0,ERROR
-ema_adx_trend_4h,BTC,4h,0,0,0,0,0,0,0,0,ERROR
-donchian_breakout_1d,ETH,1d,-2.75,-2.53,-2.52,5.8,0.02,15.2,33,218.02,ABANDON
-donchian_breakout_1d,BTC,1d,1.05,2.05,45.96,1.4,11.19,12.5,32,85.12,A_OPTIMISER
-williams_obv_4h,ETH,4h,50.46,13.38,64.29,1.3,12.68,70.1,67,276.81,DEPLOYABLE
-williams_obv_4h,BTC,4h,68.62,18.71,1049.64,0.2,99.99,76.1,71,155.94,DEPLOYABLE
-ichimoku_trend_4h,ETH,4h,543.75,39.50,223.57,1.6,20.54,72.7,407,770.10,DEPLOYABLE
-ichimoku_trend_4h,BTC,4h,612.97,44.80,322.07,1.0,38.59,72.5,425,700.30,DEPLOYABLE

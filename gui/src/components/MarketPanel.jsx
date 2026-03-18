@@ -70,10 +70,10 @@ const PHASES = {
 };
 
 const PHASE_STRATEGIES = {
-  BULL:     ['regime_adaptive_1h'],
-  BEAR:     ['regime_adaptive_1h'],
-  RANGE:    ['regime_adaptive_1h'],
-  HIGH_VOL: ['regime_adaptive_1h'],
+  BULL:     ['sniper_1h'],
+  BEAR:     ['sniper_1h'],
+  RANGE:    ['sniper_1h'],
+  HIGH_VOL: ['sniper_1h'],
 };
 
 function detectMarketPhase(macro) {

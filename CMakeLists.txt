@@ -89,7 +89,6 @@ set(TB_SOURCES
     src/core/config.c
     src/core/logging.c
     src/core/engine.c
-    src/core/error.c
     src/core/db.c
     src/core/decimal.c
     src/exchange/keccak256.c
@@ -108,7 +107,6 @@ set(TB_SOURCES
     src/data/fear_greed.c
     src/data/data_manager.c
     src/report/dashboard.c
-    src/report/report_gen.c
     src/backtest/backtest_engine.c
     src/exchange/paper_exchange.c
 )

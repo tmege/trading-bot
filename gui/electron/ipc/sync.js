@@ -18,8 +18,8 @@ module.exports = function registerSyncIPC(ipcMain, projectRoot, getWindow) {
     return new Promise((resolve) => {
       syncProcess = spawn(binary, [
         '--days', '1461',
-        '--coins', 'ETH,BTC,SOL,DOGE,HYPE,PUMP',
-        '--intervals', '5m,15m,1h,4h,1d',
+        '--coins', 'ETH,BTC,SOL,DOGE',
+        '--intervals', '5m',
         '--db', dbPath,
       ], { cwd: projectRoot });
 
@@ -119,8 +119,8 @@ module.exports = function registerSyncIPC(ipcMain, projectRoot, getWindow) {
       // Run sync silently in background
       const proc = spawn(binary, [
         '--days', '1461',
-        '--coins', 'ETH,BTC,SOL,DOGE,HYPE,PUMP',
-        '--intervals', '5m,15m,1h,4h,1d',
+        '--coins', 'ETH,BTC,SOL,DOGE',
+        '--intervals', '5m',
         '--db', dbPath,
       ], { cwd: projectRoot, stdio: 'ignore' });
 

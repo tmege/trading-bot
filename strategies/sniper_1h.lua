@@ -1,31 +1,18 @@
 --[[
-  Sniper 1h — Ultra-selective high-conviction strategy
+  Sniper 1h — Ultra-selective high-conviction strategy (BTC only)
 
   Philosophy: Trade like a sniper, not a machine gun.
-  ~1.7 trades/month/coin, maximum conviction, aggressive sizing.
+  ~1.2 trades/month, maximum conviction, aggressive sizing.
 
-  Based on probabilistic analysis of 74k+ ETH candles and grid-searched BTC params.
+  Grid-searched on 424k+ BTC 5m candles (8.6 years).
   x7 leverage + 90% equity = 630% exposure per trade.
 
-  ETH (4 signals, ~0.5/month):
-    L1: RSI>65 + LowVol + MACD decel      TP 3.0%/SL 3.0%
-    L3: RSI>65 + ADX>25 + LowVol          TP 2.0%/SL 3.0%
-    S1: RSI<30 + MACD<0 + LowVol          TP 4.0%/SL 3.0%
-    S2: RSI<30 + LowVol + SMA20<SMA50     TP 4.0%/SL 5.0%
-
-  BTC (2 signals, ~1.2/month):
-    L1: RSI>65 + LowVol + MACD decel      TP 2.0%/SL 2.0%
-    S1: RSI<30 + MACD<0 + LowVol          TP 2.0%/SL 2.0%
-
-  SOL (3 signals, backup):
-    L1: RSI<45 + HighVol + DI+>DI-        TP 4.0%/SL 5.0%
-    S1: EMA down + MACD<0 + LowVol        TP 5.0%/SL 3.0%
-    S2: <BB_mid + LowVol + OBV<SMA        TP 5.0%/SL 3.0%
+  BTC (2 signals):
+    L1: RSI>65 + LowVol(ATR<0.4%) + MACD decel   TP 2.0%/SL 2.0%
+    S1: RSI<30 + MACD<0 + LowVol(ATR<0.4%)        TP 2.0%/SL 2.0%
 
   Backtest results (730j, x7, 90% equity):
-    ETH: +289.6%, 12 trades, 92% WR, DD 24.5%, PF 4.31
-    BTC: +275.2%, 28 trades, 75% WR, DD 20.7%, PF 5.39
-    Combined: ~11.6%/month
+    BTC: +275.2%, 28 trades, 75% WR, DD 20.7%, PF 5.39, ~11.3%/month
 
   Fees: 0.06% round-trip included in all EV calculations.
 ]]
@@ -54,77 +41,6 @@ local config = {
 -- Signal Definitions: {name, side, tp, sl, check(ind, mid, hist)}
 local COIN_SIGNALS = {}
 
-COIN_SIGNALS["ETH"] = {
-    -- LONG L1: Momentum haussier + faible volatilite + MACD decelerant
-    -- 54 occ/8yr, WR 79.6%, EV 1.54%, PF 9.09
-    { name = "L1_momentum_calm", side = "long", tp = 3.0, sl = 3.0,
-      check = function(ind, mid, h)
-          return ind.rsi > 65
-             and (ind.atr / mid) < 0.005
-             and h.prev_macd ~= nil and h.prev2_macd ~= nil
-             and ind.macd_histogram < h.prev_macd
-             and h.prev_macd < h.prev2_macd
-      end },
-
-    -- LONG L3: Momentum fort + faible volatilite (complemente L1)
-    -- 124 occ/8yr, WR ~88% backtest, EV 1.05%
-    { name = "L3_strong_trend_calm", side = "long", tp = 2.0, sl = 3.0,
-      check = function(ind, mid, h)
-          return ind.rsi > 65
-             and ind.adx > 25
-             and (ind.atr / mid) < 0.005
-      end },
-
-    -- SHORT S1: Momentum baissier + faible volatilite
-    -- 53 occ/8yr, WR 73.6%, EV 2.59%, PF 16.31
-    { name = "S1_bear_momentum", side = "short", tp = 4.0, sl = 3.0,
-      check = function(ind, mid, h)
-          return ind.rsi < 30
-             and ind.macd_histogram < 0
-             and (ind.atr / mid) < 0.005
-      end },
-
-    -- SHORT S2: RSI oversold + low vol + downtrend confirme
-    -- 51 occ/8yr, WR ~100% backtest, EV 2.55%
-    { name = "S2_oversold_downtrend", side = "short", tp = 4.0, sl = 5.0,
-      check = function(ind, mid, h)
-          return ind.rsi < 30
-             and (ind.atr / mid) < 0.005
-             and ind.sma_20 < ind.sma_50
-      end },
-}
-
-COIN_SIGNALS["SOL"] = {
-    -- LONG L1: Pullback volatil avec DI haussier
-    -- 66 occ/5.5yr, WR 80.3%, EV 2.36%, PF 4.50
-    { name = "L1_vol_pullback", side = "long", tp = 4.0, sl = 5.0,
-      check = function(ind, mid, h)
-          return ind.rsi < 45
-             and (ind.atr / mid) > 0.012
-             and ind.plus_di > ind.minus_di
-      end },
-
-    -- SHORT S1: Alignement baissier complet + calme (WR 96.4%!)
-    -- 56 occ/5.5yr, EV 3.44%, PF 29.87
-    { name = "S1_full_bear_calm", side = "short", tp = 5.0, sl = 3.0,
-      check = function(ind, mid, h)
-          return ind.ema_12 < ind.ema_26
-             and ind.macd_histogram < 0
-             and (ind.atr / mid) < 0.005
-      end },
-
-    -- SHORT S2: Prix faible + volume declinant + calme
-    -- 72 occ/5.5yr, WR 93.1%, EV 3.34%, PF 15.18
-    { name = "S2_bb_obv_calm", side = "short", tp = 5.0, sl = 3.0,
-      check = function(ind, mid, h)
-          return mid < ind.bb_middle
-             and (ind.atr / mid) < 0.005
-             and ind.obv < ind.obv_sma
-      end },
-}
-
--- BTC signals (adapted from ETH — high correlation, lower volatility)
--- Grid-searched: atr<0.004 TP/SL=2.0/2.0 = best (47.98%, 23tr, 74% WR, DD 15.7%)
 COIN_SIGNALS["BTC"] = {
     -- LONG L1: Momentum haussier + faible volatilite + MACD decelerant
     { name = "L1_momentum_calm", side = "long", tp = 2.0, sl = 2.0,
@@ -146,7 +62,7 @@ COIN_SIGNALS["BTC"] = {
 }
 
 -- Instance Setup
-local signals = COIN_SIGNALS[config.coin:upper()] or COIN_SIGNALS["ETH"]
+local signals = COIN_SIGNALS[config.coin:upper()] or COIN_SIGNALS["BTC"]
 local instance_name = "sniper_1h_" .. config.coin:lower()
 
 -- Position sizing with drawdown guard
@@ -306,7 +222,7 @@ end
 -- Callbacks
 function on_init()
     if not COIN_SIGNALS[config.coin:upper()] then
-        bot.log("warn", string.format("%s: coin %s not supported (ETH/SOL only)",
+        bot.log("warn", string.format("%s: coin %s not supported (BTC only)",
             instance_name, config.coin))
         config.enabled = false
     end

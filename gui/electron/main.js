@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
 
 const registerBotIPC = require('./ipc/bot');
@@ -65,6 +65,26 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  /* Content-Security-Policy — defense-in-depth against XSS */
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const scriptSrc = isDev
+      ? "script-src 'self' 'unsafe-inline'; "   // Vite HMR needs inline scripts
+      : "script-src 'self'; ";
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self'; " +
+          scriptSrc +
+          "style-src 'self' 'unsafe-inline'; " +
+          "connect-src 'self' https://api.hyperliquid.xyz https://api.coingecko.com https://api.alternative.me https://api.frankfurter.app wss://api.hyperliquid.xyz; " +
+          "img-src 'self' data:; " +
+          "font-src 'self';"
+        ],
+      },
+    });
+  });
+
   createWindow();
 
   // Register all IPC handlers

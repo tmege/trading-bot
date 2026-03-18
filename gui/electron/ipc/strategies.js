@@ -48,7 +48,9 @@ module.exports = function registerStrategiesIPC(ipcMain, projectRoot) {
 
   ipcMain.handle('strategies:read', async (_event, filename) => {
     try {
-      // Path traversal protection
+      if (typeof filename !== 'string' || !filename.endsWith('.lua')) {
+        return { ok: false, error: 'Invalid filename' };
+      }
       if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
         return { ok: false, error: 'Invalid filename' };
       }
@@ -67,7 +69,10 @@ module.exports = function registerStrategiesIPC(ipcMain, projectRoot) {
 
   ipcMain.handle('strategies:toggle', async (_event, filename, enabled) => {
     try {
-      if (filename.includes('..') || filename.includes('/')) {
+      if (typeof filename !== 'string' || !filename.endsWith('.lua')) {
+        return { ok: false, error: 'Invalid filename' };
+      }
+      if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
         return { ok: false, error: 'Invalid filename' };
       }
 

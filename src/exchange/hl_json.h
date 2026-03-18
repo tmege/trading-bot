@@ -7,6 +7,11 @@
 /* Parse meta response → asset list */
 int hl_json_parse_meta(yyjson_val *root, tb_asset_meta_t *assets, int *count);
 
+/* Parse asset contexts from metaAndAssetCtxs response → funding/OI data */
+int hl_json_parse_asset_ctxs(yyjson_val *root,
+                             const tb_asset_meta_t *assets, int n_assets,
+                             tb_asset_ctx_t *out, int *out_count);
+
 /* Parse allMids response → mid prices */
 int hl_json_parse_all_mids(yyjson_val *root, tb_mid_t *mids, int *count);
 

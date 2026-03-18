@@ -446,6 +446,7 @@ typedef struct {
 
 static price_sanity_entry_t g_price_cache[PRICE_CACHE_MAX];
 static int g_price_cache_n = 0;
+static pthread_mutex_t g_price_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static price_sanity_entry_t *price_sanity_find(const char *coin) {
     for (int i = 0; i < g_price_cache_n; i++) {
@@ -461,6 +462,8 @@ static bool price_sanity_check(const char *coin, double mid) {
         return false;
     }
 
+    pthread_mutex_lock(&g_price_lock);
+
     price_sanity_entry_t *e = price_sanity_find(coin);
     if (!e) {
         /* First price for this coin — accept but log */
@@ -470,11 +473,13 @@ static bool price_sanity_check(const char *coin, double mid) {
             e->last_price = mid;
             e->tick_count = 1;
         }
+        pthread_mutex_unlock(&g_price_lock);
         return true;
     }
 
     double deviation = fabs(mid - e->last_price) / e->last_price;
     if (deviation > PRICE_MAX_DEVIATION) {
+        pthread_mutex_unlock(&g_price_lock);
         tb_log_warn("price sanity: REJECTED %s mid=%.4f (%.1f%% deviation from %.4f)",
                      coin, mid, deviation * 100.0, e->last_price);
         return false;
@@ -482,6 +487,7 @@ static bool price_sanity_check(const char *coin, double mid) {
 
     e->last_price = mid;
     e->tick_count++;
+    pthread_mutex_unlock(&g_price_lock);
     return true;
 }
 

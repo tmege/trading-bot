@@ -814,7 +814,7 @@ static int api_get_indicators(lua_State *L) {
     free(input);
 
     /* Build Lua table */
-    lua_createtable(L, 0, 50);
+    lua_createtable(L, 0, 86);
 
     lua_pushboolean(L, snap.valid);        lua_setfield(L, -2, "valid");
 
@@ -881,6 +881,42 @@ static int api_get_indicators(lua_State *L) {
     lua_pushnumber(L, snap.ichi_senkou_b); lua_setfield(L, -2, "ichi_senkou_b");
     lua_pushnumber(L, snap.ichi_chikou);   lua_setfield(L, -2, "ichi_chikou");
 
+    /* CMF */
+    lua_pushnumber(L, snap.cmf_20);        lua_setfield(L, -2, "cmf");
+
+    /* MFI */
+    lua_pushnumber(L, snap.mfi_14);        lua_setfield(L, -2, "mfi");
+
+    /* Squeeze Momentum */
+    lua_pushnumber(L, snap.squeeze_mom);   lua_setfield(L, -2, "squeeze_mom");
+    lua_pushboolean(L, snap.squeeze_on);   lua_setfield(L, -2, "squeeze_on");
+
+    /* ROC */
+    lua_pushnumber(L, snap.roc_12);        lua_setfield(L, -2, "roc");
+
+    /* Z-Score */
+    lua_pushnumber(L, snap.zscore_20);     lua_setfield(L, -2, "zscore");
+
+    /* FVG */
+    lua_pushboolean(L, snap.fvg_bull);     lua_setfield(L, -2, "fvg_bull");
+    lua_pushboolean(L, snap.fvg_bear);     lua_setfield(L, -2, "fvg_bear");
+    lua_pushnumber(L, snap.fvg_size);      lua_setfield(L, -2, "fvg_size");
+
+    /* Supertrend */
+    lua_pushnumber(L, snap.supertrend);    lua_setfield(L, -2, "supertrend");
+    lua_pushboolean(L, snap.supertrend_up);lua_setfield(L, -2, "supertrend_up");
+
+    /* Parabolic SAR */
+    lua_pushnumber(L, snap.psar);          lua_setfield(L, -2, "psar");
+    lua_pushboolean(L, snap.psar_up);      lua_setfield(L, -2, "psar_up");
+
+    /* Aliases (match backtest engine for strategy compatibility) */
+    lua_pushnumber(L, snap.sma_20);    lua_setfield(L, -2, "sma");
+    lua_pushnumber(L, snap.ema_12);    lua_setfield(L, -2, "ema");
+    lua_pushnumber(L, snap.ema_12);    lua_setfield(L, -2, "ema_fast");
+    lua_pushnumber(L, snap.ema_26);    lua_setfield(L, -2, "ema_slow");
+    lua_pushnumber(L, snap.bb_middle); lua_setfield(L, -2, "bb_mid");
+
     /* Signals */
     lua_pushboolean(L, snap.above_sma_200);     lua_setfield(L, -2, "above_sma200");
     lua_pushboolean(L, snap.golden_cross);       lua_setfield(L, -2, "golden_cross");
@@ -892,6 +928,118 @@ static int api_get_indicators(lua_State *L) {
     lua_pushboolean(L, snap.kc_squeeze);         lua_setfield(L, -2, "kc_squeeze");
     lua_pushboolean(L, snap.ichi_bullish);       lua_setfield(L, -2, "ichi_bullish");
 
+    /* ── New derived indicators ── */
+
+    /* Volatility percentile */
+    lua_pushnumber(L, snap.atr_pct);           lua_setfield(L, -2, "atr_pct");
+    lua_pushnumber(L, snap.atr_pct_rank);      lua_setfield(L, -2, "atr_pct_rank");
+
+    /* Range percentile */
+    lua_pushnumber(L, snap.range_pct_rank);    lua_setfield(L, -2, "range_pct_rank");
+
+    /* Volume ratio */
+    lua_pushnumber(L, snap.vol_ratio);         lua_setfield(L, -2, "vol_ratio");
+
+    /* Distance to MAs (%) */
+    lua_pushnumber(L, snap.ema12_dist_pct);    lua_setfield(L, -2, "ema12_dist_pct");
+    lua_pushnumber(L, snap.sma20_dist_pct);    lua_setfield(L, -2, "sma20_dist_pct");
+
+    /* Consecutive candles */
+    lua_pushinteger(L, snap.consec_green);     lua_setfield(L, -2, "consec_green");
+    lua_pushinteger(L, snap.consec_red);       lua_setfield(L, -2, "consec_red");
+
+    /* Candle patterns */
+    lua_pushboolean(L, snap.bullish_engulf);   lua_setfield(L, -2, "bullish_engulf");
+    lua_pushboolean(L, snap.bearish_engulf);   lua_setfield(L, -2, "bearish_engulf");
+    lua_pushboolean(L, snap.shooting_star);    lua_setfield(L, -2, "shooting_star");
+    lua_pushboolean(L, snap.hammer);           lua_setfield(L, -2, "hammer");
+    lua_pushboolean(L, snap.doji);             lua_setfield(L, -2, "doji");
+
+    /* MACD momentum */
+    lua_pushboolean(L, snap.macd_hist_incr);   lua_setfield(L, -2, "macd_accelerating");
+    lua_pushboolean(L, snap.macd_hist_decr);   lua_setfield(L, -2, "macd_decelerating");
+
+    /* DI cross */
+    lua_pushboolean(L, snap.di_bull);          lua_setfield(L, -2, "di_bull");
+    lua_pushboolean(L, snap.di_bear);          lua_setfield(L, -2, "di_bear");
+
+    /* RSI divergence */
+    lua_pushboolean(L, snap.rsi_bull_div);     lua_setfield(L, -2, "rsi_bull_divergence");
+    lua_pushboolean(L, snap.rsi_bear_div);     lua_setfield(L, -2, "rsi_bear_divergence");
+
+    return 1;
+}
+
+/* ── Asset context cache (funding rate, open interest) ──────────────────── */
+#define ASSET_CTX_CACHE_TTL_MS 60000
+
+static tb_asset_ctx_t g_asset_ctx_cache[TB_MAX_ASSETS];
+static int            g_asset_ctx_count = 0;
+static int64_t        g_asset_ctx_fetched_ms = 0;
+
+/* Cached meta for asset_ctxs parsing */
+static tb_asset_meta_t g_cached_assets[TB_MAX_ASSETS];
+static int             g_cached_assets_count = 0;
+
+static const tb_asset_ctx_t *find_asset_ctx(const char *coin) {
+    for (int i = 0; i < g_asset_ctx_count; i++) {
+        if (strcmp(g_asset_ctx_cache[i].coin, coin) == 0)
+            return &g_asset_ctx_cache[i];
+    }
+    return NULL;
+}
+
+static int refresh_asset_ctxs(hl_rest_t *rest) {
+    int64_t now = cache_now_ms();
+    if (g_asset_ctx_count > 0 && (now - g_asset_ctx_fetched_ms) < ASSET_CTX_CACHE_TTL_MS)
+        return 0;
+
+    /* Fetch meta first if not cached */
+    if (g_cached_assets_count == 0) {
+        if (hl_rest_get_meta(rest, g_cached_assets, &g_cached_assets_count) != 0)
+            return -1;
+    }
+
+    int count = 0;
+    if (hl_rest_get_asset_ctxs(rest, g_cached_assets, g_cached_assets_count,
+                                g_asset_ctx_cache, &count) != 0)
+        return -1;
+
+    g_asset_ctx_count = count;
+    g_asset_ctx_fetched_ms = now;
+    return 0;
+}
+
+/* bot.get_funding_rate(coin) → {rate, premium, mark_px} or nil */
+static int api_get_funding_rate(lua_State *L) {
+    tb_lua_ctx_t *ctx = get_ctx(L);
+    if (!ctx || !ctx->rest) { lua_pushnil(L); return 1; }
+
+    const char *coin = luaL_checkstring(L, 1);
+    if (refresh_asset_ctxs(ctx->rest) != 0) { lua_pushnil(L); return 1; }
+
+    const tb_asset_ctx_t *ac = find_asset_ctx(coin);
+    if (!ac) { lua_pushnil(L); return 1; }
+
+    lua_createtable(L, 0, 3);
+    lua_pushnumber(L, ac->funding_rate);  lua_setfield(L, -2, "rate");
+    lua_pushnumber(L, ac->premium);       lua_setfield(L, -2, "premium");
+    lua_pushnumber(L, ac->mark_px);       lua_setfield(L, -2, "mark_px");
+    return 1;
+}
+
+/* bot.get_open_interest(coin) → number or nil */
+static int api_get_open_interest(lua_State *L) {
+    tb_lua_ctx_t *ctx = get_ctx(L);
+    if (!ctx || !ctx->rest) { lua_pushnil(L); return 1; }
+
+    const char *coin = luaL_checkstring(L, 1);
+    if (refresh_asset_ctxs(ctx->rest) != 0) { lua_pushnil(L); return 1; }
+
+    const tb_asset_ctx_t *ac = find_asset_ctx(coin);
+    if (!ac) { lua_pushnil(L); return 1; }
+
+    lua_pushnumber(L, ac->open_interest);
     return 1;
 }
 
@@ -916,6 +1064,8 @@ static const luaL_Reg bot_funcs[] = {
     {"get_sentiment",   api_get_sentiment},
     {"get_fear_greed",  api_get_fear_greed},
     {"get_indicators",      api_get_indicators},
+    {"get_funding_rate",    api_get_funding_rate},
+    {"get_open_interest",   api_get_open_interest},
     {NULL, NULL}
 };
 

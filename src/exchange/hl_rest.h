@@ -13,6 +13,9 @@ void       hl_rest_destroy(hl_rest_t *rest);
 /* ── Info endpoints (POST /info, no auth) ─────────────────────────────────── */
 int hl_rest_get_meta(hl_rest_t *rest, tb_asset_meta_t *out_assets, int *out_count);
 int hl_rest_get_all_mids(hl_rest_t *rest, tb_mid_t *out_mids, int *out_count);
+int hl_rest_get_asset_ctxs(hl_rest_t *rest,
+                           const tb_asset_meta_t *assets, int n_assets,
+                           tb_asset_ctx_t *out, int *out_count);
 int hl_rest_get_l2_book(hl_rest_t *rest, const char *coin, tb_book_t *out_book);
 int hl_rest_get_candles(hl_rest_t *rest, const char *coin, const char *interval,
                         int64_t start_ms, int64_t end_ms,

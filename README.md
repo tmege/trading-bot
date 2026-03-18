@@ -10,7 +10,7 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 - **Backtesting** — multi-timeframe 5m simulation, walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Desktop GUI** — Electron + React (dashboard, market overview, strategy browser, interactive backtesting, settings)
 - **Paper trading** — real market data, simulated execution
-- **15+ technical indicators** — SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, and more
+- **18+ technical indicators** — SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, CMF, MFI, Squeeze Momentum, and more
 
 ## Build
 
@@ -97,7 +97,7 @@ Backtests use **5m candle simulation** with indicator aggregation to the strateg
 ./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
 
 # Single strategy (last arg = strategy TF, simulation always uses 5m)
-./build/backtest_json strategies/regime_adaptive_1h.lua ETH 0 90 1h
+./build/backtest_json strategies/sniper_1h.lua ETH 0 90 1h
 
 # All strategies batch
 ./scripts/backtest_all.sh 365 0
@@ -116,7 +116,7 @@ python3 tools/regime_analyzer.py --coin ETH,SOL --tf 1h --validate --montecarlo
 python3 tools/strategy_analyzer.py --coin ETH --tf 1h
 ```
 
-See [docs/strategies.md](docs/strategies.md) for strategy details and [docs/backtest-report.md](docs/backtest-report.md) for results.
+See [docs/strategies.md](docs/strategies.md) for strategy details and [docs/backtest-market-periods.md](docs/backtest-market-periods.md) for results.
 
 ## Dependencies
 

@@ -18,6 +18,12 @@ logs/
 *.key
 scripts/license_codes.txt
 
+# Generated analysis/backtest outputs
+*.bak
+data/analysis/*.csv
+data/backtest_results/*.json
+data/backtest_results/*.csv
+
 # IDE
 .vscode/
 .idea/

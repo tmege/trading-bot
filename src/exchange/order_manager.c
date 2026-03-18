@@ -198,12 +198,14 @@ static bool find_strategy_by_coin_trigger(const char *coin, char *out, size_t ou
 /* ── Cache OID → strategy (ring buffer + SQLite) ──────────────────────────── */
 static void cache_oid_strategy(tb_order_mgr_t *mgr, uint64_t oid,
                                 const char *strategy, const char *coin) {
-    /* Ring buffer (single-writer, no lock needed) */
+    /* Ring buffer — protected by orders_lock (called from submit + WS fill) */
+    pthread_rwlock_wrlock(&mgr->orders_lock);
     unsigned idx = mgr->oid_cache_idx & (OID_CACHE_SIZE - 1);
     mgr->oid_cache[idx].oid = oid;
     snprintf(mgr->oid_cache[idx].strategy, sizeof(mgr->oid_cache[idx].strategy),
              "%s", strategy);
     mgr->oid_cache_idx++;
+    pthread_rwlock_unlock(&mgr->orders_lock);
 
     /* 2. SQLite persistent table */
     if (mgr->stmt_insert_oid_strat) {
@@ -232,12 +234,15 @@ static bool find_strategy_for_oid(tb_order_mgr_t *mgr, uint64_t oid,
     pthread_rwlock_unlock(&mgr->orders_lock);
 
     /* 2. Check ring buffer cache (survives reconciliation removal) */
+    pthread_rwlock_rdlock(&mgr->orders_lock);
     for (int i = 0; i < OID_CACHE_SIZE; i++) {
         if (mgr->oid_cache[i].oid == oid) {
             snprintf(out, out_len, "%s", mgr->oid_cache[i].strategy);
+            pthread_rwlock_unlock(&mgr->orders_lock);
             return true;
         }
     }
+    pthread_rwlock_unlock(&mgr->orders_lock);
 
     /* 3. Check SQLite persistent table (survives restart) */
     if (mgr->stmt_find_oid_strat) {
@@ -886,6 +891,7 @@ int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
 
 int tb_order_mgr_get_open_orders(tb_order_mgr_t *mgr, const char *coin,
                                   tb_order_t *out, int *count) {
+    if (!mgr || !count) return -1;
     int max_out = *count;
     pthread_rwlock_rdlock(&mgr->orders_lock);
     int n = 0;

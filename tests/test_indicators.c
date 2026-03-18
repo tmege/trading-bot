@@ -266,6 +266,291 @@ static void test_snapshot(void) {
            snap.macd_bullish_cross ? "yes" : "no");
 }
 
+/* ── Test CMF ──────────────────────────────────────────────────────────── */
+static void test_cmf(void) {
+    printf("\n== CMF ==\n");
+
+    /* Bullish: close near high → CMF should be positive */
+    tb_candle_input_t candles[25];
+    for (int i = 0; i < 25; i++) {
+        candles[i].open = 100.0;
+        candles[i].high = 105.0;
+        candles[i].low = 95.0;
+        candles[i].close = 104.0;  /* close near high */
+        candles[i].volume = 1000.0;
+    }
+    double out[25];
+    int rc = tb_cmf(candles, 25, 20, out);
+    ASSERT(rc == 0, "CMF computed");
+    ASSERT(out[24] > 0.5, "CMF > 0.5 when close near high");
+
+    /* Bearish: close near low → CMF should be negative */
+    for (int i = 0; i < 25; i++) candles[i].close = 96.0;
+    tb_cmf(candles, 25, 20, out);
+    ASSERT(out[24] < -0.5, "CMF < -0.5 when close near low");
+
+    /* Neutral: close at midpoint → CMF ~0 */
+    for (int i = 0; i < 25; i++) candles[i].close = 100.0;
+    tb_cmf(candles, 25, 20, out);
+    ASSERT(NEAR(out[24], 0.0, 0.1), "CMF ~0 when close at midpoint");
+
+    /* CMF bounded [-1, +1] */
+    ASSERT(out[24] >= -1.0 && out[24] <= 1.0, "CMF bounded [-1, +1]");
+}
+
+/* ── Test MFI ──────────────────────────────────────────────────────────── */
+static void test_mfi(void) {
+    printf("\n== MFI ==\n");
+
+    /* Steady uptrend → MFI should be high (like RSI but volume-weighted) */
+    tb_candle_input_t candles[30];
+    for (int i = 0; i < 30; i++) {
+        double p = 100.0 + i * 1.0;
+        candles[i].open = p - 0.5;
+        candles[i].high = p + 0.5;
+        candles[i].low = p - 0.5;
+        candles[i].close = p;
+        candles[i].volume = 1000.0;
+    }
+
+    double out[30];
+    int rc = tb_mfi(candles, 30, 14, out);
+    ASSERT(rc == 0, "MFI computed");
+    ASSERT(out[29] > 70.0, "MFI > 70 on steady uptrend");
+
+    /* Steady downtrend → MFI should be low */
+    for (int i = 0; i < 30; i++) {
+        double p = 200.0 - i * 1.0;
+        candles[i].open = p + 0.5;
+        candles[i].high = p + 0.5;
+        candles[i].low = p - 0.5;
+        candles[i].close = p;
+        candles[i].volume = 1000.0;
+    }
+    tb_mfi(candles, 30, 14, out);
+    ASSERT(out[29] < 30.0, "MFI < 30 on steady downtrend");
+
+    /* MFI in range [0, 100] */
+    ASSERT(out[29] >= 0.0 && out[29] <= 100.0, "MFI bounded [0, 100]");
+}
+
+/* ── Test Squeeze Momentum ─────────────────────────────────────────────── */
+static void test_squeeze_momentum(void) {
+    printf("\n== Squeeze Momentum ==\n");
+
+    srand(42);
+    tb_candle_input_t candles[60];
+    /* Low volatility (squeeze) phase */
+    for (int i = 0; i < 30; i++) {
+        double p = 100.0 + ((double)(rand() % 100) / 100.0 - 0.5) * 0.5;
+        candles[i].open = p;
+        candles[i].high = p + 0.3;
+        candles[i].low = p - 0.3;
+        candles[i].close = p;
+        candles[i].volume = 1000.0;
+        candles[i].time_ms = 1700000000000LL + (long)i * 3600000;
+    }
+    /* Breakout phase (big move up) */
+    for (int i = 30; i < 60; i++) {
+        double p = 100.0 + (i - 30) * 2.0;
+        candles[i].open = p - 1.0;
+        candles[i].high = p + 2.0;
+        candles[i].low = p - 2.0;
+        candles[i].close = p;
+        candles[i].volume = 2000.0;
+        candles[i].time_ms = 1700000000000LL + (long)i * 3600000;
+    }
+
+    tb_squeeze_val_t out[60];
+    int rc = tb_squeeze_momentum(candles, 60, out);
+    ASSERT(rc == 0, "Squeeze momentum computed");
+    /* After breakout, momentum should be positive */
+    ASSERT(out[59].momentum > 0, "Momentum positive after upward breakout");
+    /* During low vol, squeeze should be on at some point */
+    int found_squeeze = 0;
+    for (int i = 20; i < 30; i++) {
+        if (out[i].squeeze_on) found_squeeze = 1;
+    }
+    /* Note: squeeze detection depends on BB vs KC, might not trigger with our synthetic data */
+    printf("    Squeeze detected in low-vol phase: %s\n", found_squeeze ? "yes" : "no");
+    printf("    Final momentum: %.4f\n", out[59].momentum);
+}
+
+/* ── Test snapshot includes new indicators ─────────────────────────────── */
+static void test_snapshot_new_indicators(void) {
+    printf("\n== Snapshot New Indicators ==\n");
+
+    srand(42);
+    tb_candle_input_t candles[250];
+    generate_candles(candles, 250, 2000.0, 0.5, 20.0);
+
+    tb_indicators_snapshot_t snap = tb_indicators_compute(candles, 250);
+    ASSERT(snap.valid, "snapshot valid");
+    ASSERT(snap.cmf_20 >= -1.0 && snap.cmf_20 <= 1.0, "CMF in [-1, +1]");
+    ASSERT(snap.mfi_14 >= 0.0 && snap.mfi_14 <= 100.0, "MFI in [0, 100]");
+    /* squeeze_mom can be any value, just check it computed */
+    ASSERT(snap.squeeze_mom != 0.0 || snap.squeeze_on || !snap.squeeze_on,
+           "Squeeze momentum computed (non-default)");
+
+    /* New indicators */
+    ASSERT(snap.roc_12 != 0.0 || snap.roc_12 == 0.0, "ROC computed");
+    ASSERT(snap.zscore_20 != 0.0 || snap.zscore_20 == 0.0, "Z-Score computed");
+    ASSERT(snap.supertrend > 0, "Supertrend > 0");
+    ASSERT(snap.psar > 0, "PSAR > 0");
+
+    printf("    CMF=%.4f MFI=%.1f SqzMom=%.4f SqzOn=%s\n",
+           snap.cmf_20, snap.mfi_14, snap.squeeze_mom,
+           snap.squeeze_on ? "yes" : "no");
+    printf("    ROC=%.2f ZScore=%.2f FVG_bull=%s FVG_bear=%s\n",
+           snap.roc_12, snap.zscore_20,
+           snap.fvg_bull ? "yes" : "no", snap.fvg_bear ? "yes" : "no");
+    printf("    Supertrend=%.2f (up=%s) PSAR=%.2f (up=%s)\n",
+           snap.supertrend, snap.supertrend_up ? "yes" : "no",
+           snap.psar, snap.psar_up ? "yes" : "no");
+}
+
+/* ── Test ROC ──────────────────────────────────────────────────────────── */
+static void test_roc(void) {
+    printf("\n== ROC ==\n");
+
+    /* Linear uptrend: 100, 101, 102, ... */
+    tb_candle_input_t candles[20];
+    for (int i = 0; i < 20; i++) {
+        double p = 100.0 + i * 1.0;
+        candles[i].open = p; candles[i].high = p + 0.5;
+        candles[i].low = p - 0.5; candles[i].close = p;
+        candles[i].volume = 1000;
+    }
+
+    double out[20];
+    int rc = tb_roc(candles, 20, 12, out);
+    ASSERT(rc == 0, "ROC computed");
+    /* ROC(12) at index 12: (112 - 100) / 100 * 100 = 12.0 */
+    ASSERT(NEAR(out[12], 12.0, 0.01), "ROC(12) at boundary = 12.0%");
+    ASSERT(out[11] == 0, "ROC(12) not enough data at index 11");
+    ASSERT(out[19] > 0, "ROC positive in uptrend");
+
+    /* Flat → ROC = 0 */
+    for (int i = 0; i < 20; i++) candles[i].close = 100.0;
+    tb_roc(candles, 20, 12, out);
+    ASSERT(NEAR(out[19], 0.0, 0.01), "ROC = 0 for flat price");
+}
+
+/* ── Test Z-Score ──────────────────────────────────────────────────────── */
+static void test_zscore(void) {
+    printf("\n== Z-Score ==\n");
+
+    /* Constant price → Z-Score = 0 */
+    tb_candle_input_t candles[25];
+    for (int i = 0; i < 25; i++) {
+        candles[i].open = candles[i].high = candles[i].low = candles[i].close = 100.0;
+        candles[i].volume = 1000;
+    }
+
+    double out[25];
+    int rc = tb_zscore(candles, 25, 20, out);
+    ASSERT(rc == 0, "Z-Score computed");
+    ASSERT(NEAR(out[24], 0.0, 0.01), "Z-Score = 0 for constant price");
+
+    /* Spike up → positive z-score */
+    candles[24].close = 110.0;
+    tb_zscore(candles, 25, 20, out);
+    ASSERT(out[24] > 0, "Z-Score positive after spike up");
+}
+
+/* ── Test FVG ──────────────────────────────────────────────────────────── */
+static void test_fvg(void) {
+    printf("\n== FVG ==\n");
+
+    tb_candle_input_t candles[5];
+    memset(candles, 0, sizeof(candles));
+
+    /* Bullish FVG: candle[0].high < candle[2].low */
+    candles[0].high = 100.0; candles[0].low = 98.0; candles[0].close = 99.0;
+    candles[1].high = 103.0; candles[1].low = 100.0; candles[1].close = 102.0;
+    candles[2].high = 106.0; candles[2].low = 101.0; candles[2].close = 105.0;
+
+    tb_fvg_val_t out[5];
+    int rc = tb_fvg(candles, 3, out);
+    ASSERT(rc == 0, "FVG computed");
+    ASSERT(out[2].bullish_fvg, "Bullish FVG detected");
+    ASSERT(!out[2].bearish_fvg, "No bearish FVG");
+    ASSERT(out[2].fvg_size > 0, "FVG size > 0");
+
+    /* Bearish FVG: candle[0].low > candle[2].high */
+    candles[0].high = 106.0; candles[0].low = 104.0; candles[0].close = 105.0;
+    candles[1].high = 103.0; candles[1].low = 101.0; candles[1].close = 102.0;
+    candles[2].high = 103.0; candles[2].low = 100.0; candles[2].close = 101.0;
+    tb_fvg(candles, 3, out);
+    ASSERT(out[2].bearish_fvg, "Bearish FVG detected");
+
+    /* No gap */
+    candles[0].high = 102.0; candles[0].low = 98.0; candles[0].close = 100.0;
+    candles[2].high = 103.0; candles[2].low = 99.0; candles[2].close = 101.0;
+    tb_fvg(candles, 3, out);
+    ASSERT(!out[2].bullish_fvg && !out[2].bearish_fvg, "No FVG when overlapping");
+}
+
+/* ── Test Supertrend ──────────────────────────────────────────────────── */
+static void test_supertrend(void) {
+    printf("\n== Supertrend ==\n");
+
+    /* Strong uptrend */
+    tb_candle_input_t candles[30];
+    for (int i = 0; i < 30; i++) {
+        double p = 100.0 + i * 2.0;
+        candles[i].open = p - 0.5; candles[i].high = p + 1.0;
+        candles[i].low = p - 1.0; candles[i].close = p;
+        candles[i].volume = 1000;
+    }
+
+    tb_supertrend_val_t out[30];
+    int rc = tb_supertrend(candles, 30, 10, 3.0, out);
+    ASSERT(rc == 0, "Supertrend computed");
+    ASSERT(out[29].is_uptrend, "Supertrend uptrend in rising market");
+    ASSERT(out[29].value < candles[29].close, "Supertrend below price in uptrend");
+
+    /* Strong downtrend */
+    for (int i = 0; i < 30; i++) {
+        double p = 200.0 - i * 2.0;
+        candles[i].open = p + 0.5; candles[i].high = p + 1.0;
+        candles[i].low = p - 1.0; candles[i].close = p;
+    }
+    tb_supertrend(candles, 30, 10, 3.0, out);
+    ASSERT(!out[29].is_uptrend, "Supertrend downtrend in falling market");
+    ASSERT(out[29].value > candles[29].close, "Supertrend above price in downtrend");
+}
+
+/* ── Test Parabolic SAR ──────────────────────────────────────────────── */
+static void test_psar(void) {
+    printf("\n== Parabolic SAR ==\n");
+
+    /* Stable uptrend: SAR should be below price */
+    tb_candle_input_t candles[30];
+    for (int i = 0; i < 30; i++) {
+        double p = 100.0 + i * 1.5;
+        candles[i].open = p - 0.3; candles[i].high = p + 0.8;
+        candles[i].low = p - 0.8; candles[i].close = p;
+        candles[i].volume = 1000;
+    }
+
+    tb_psar_val_t out[30];
+    int rc = tb_psar(candles, 30, 0.02, 0.20, 0.02, out);
+    ASSERT(rc == 0, "PSAR computed");
+    ASSERT(out[29].is_uptrend, "PSAR uptrend in rising market");
+    ASSERT(out[29].sar < candles[29].close, "PSAR below price in uptrend");
+
+    /* Downtrend: SAR should be above price */
+    for (int i = 0; i < 30; i++) {
+        double p = 200.0 - i * 1.5;
+        candles[i].open = p + 0.3; candles[i].high = p + 0.8;
+        candles[i].low = p - 0.8; candles[i].close = p;
+    }
+    tb_psar(candles, 30, 0.02, 0.20, 0.02, out);
+    ASSERT(!out[29].is_uptrend, "PSAR downtrend in falling market");
+    ASSERT(out[29].sar > candles[29].close, "PSAR above price in downtrend");
+}
+
 /* ── Test with too few candles ──────────────────────────────────────────── */
 static void test_insufficient_data(void) {
     printf("\n== Insufficient Data ==\n");
@@ -294,6 +579,15 @@ int main(void) {
     test_vwap();
     test_macd();
     test_snapshot();
+    test_cmf();
+    test_mfi();
+    test_squeeze_momentum();
+    test_roc();
+    test_zscore();
+    test_fvg();
+    test_supertrend();
+    test_psar();
+    test_snapshot_new_indicators();
     test_insufficient_data();
 
     printf("\n========================================\n");

@@ -115,7 +115,7 @@ run_strat() {
 }
 
 # 1h strategies (5m simulation, all data available)
-run_strat "regime_adaptive_1h"  "strategies/regime_adaptive_1h.lua"  "1h"  365 180 90
+run_strat "sniper_1h"  "strategies/sniper_1h.lua"  "1h"  365 180 90
 
 echo ""
 echo "=========================================="

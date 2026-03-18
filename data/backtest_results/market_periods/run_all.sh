@@ -6,7 +6,7 @@ BT="./build/backtest_json"
 DIR="./data/backtest_results/market_periods"
 
 STRATEGIES=(
-    "strategies/regime_adaptive_1h.lua:1h"
+    "strategies/sniper_1h.lua:1h"
 )
 
 COINS=("ETH" "SOL")
