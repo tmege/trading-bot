@@ -151,6 +151,14 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
                         }
                     }
 
+                    /* Parse optional per-strategy paper_mode and paper_balance */
+                    yyjson_val *pm = yyjson_obj_get(item, "paper_mode");
+                    if (yyjson_is_bool(pm)) {
+                        cfg->strategy_paper_set[i] = true;
+                        cfg->strategy_paper_mode[i] = yyjson_get_bool(pm);
+                    }
+                    cfg->strategy_paper_balance[i] = json_num(item, "paper_balance", 0);
+
                     cfg->n_active_strategies++;
                 }
             }
@@ -194,8 +202,17 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
     yyjson_doc_free(doc);
 
     /* Load secrets from environment variables.
-     * In paper trading mode, private key and wallet address are optional. */
-    bool creds_required = !cfg->paper_trading;
+     * Credentials required if any strategy runs in live mode. */
+    bool any_live = false;
+    for (int i = 0; i < cfg->n_active_strategies; i++) {
+        bool is_paper = cfg->strategy_paper_set[i]
+            ? cfg->strategy_paper_mode[i]
+            : cfg->paper_trading;
+        if (!is_paper) { any_live = true; break; }
+    }
+    /* If no active strategies, fall back to global flag */
+    if (cfg->n_active_strategies == 0) any_live = !cfg->paper_trading;
+    bool creds_required = any_live;
     int rc = 0;
     rc |= load_env_secret("TB_PRIVATE_KEY", cfg->private_key_hex,
                            sizeof(cfg->private_key_hex), creds_required);
@@ -228,8 +245,18 @@ void tb_config_dump(const tb_config_t *cfg) {
                 strncat(coins_buf, cfg->strategy_coins[i][c],
                         sizeof(coins_buf) - strlen(coins_buf) - 1);
             }
-            tb_log_info("CONFIG: strategy[%d]=%s (%s) coins=[%s]", i,
-                        cfg->active_strategies[i], cfg->strategy_roles[i], coins_buf);
+            if (cfg->strategy_paper_set[i]) {
+                tb_log_info("CONFIG: strategy[%d]=%s (%s) coins=[%s] paper=%s%s", i,
+                            cfg->active_strategies[i], cfg->strategy_roles[i], coins_buf,
+                            cfg->strategy_paper_mode[i] ? "true" : "false",
+                            cfg->strategy_paper_balance[i] > 0 ? "" : "");
+                if (cfg->strategy_paper_balance[i] > 0) {
+                    tb_log_info("CONFIG:   paper_balance=$%.0f", cfg->strategy_paper_balance[i]);
+                }
+            } else {
+                tb_log_info("CONFIG: strategy[%d]=%s (%s) coins=[%s]", i,
+                            cfg->active_strategies[i], cfg->strategy_roles[i], coins_buf);
+            }
         } else {
             tb_log_info("CONFIG: strategy[%d]=%s (%s)", i,
                         cfg->active_strategies[i], cfg->strategy_roles[i]);

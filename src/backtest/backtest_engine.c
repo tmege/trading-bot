@@ -786,24 +786,27 @@ static int bt_lua_get_candles(lua_State *L) {
         for (int i = start; i <= bt->current_tf_idx && i < bt->n_candles_tf; i++) {
             n++;
             lua_newtable(L);
-            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].open));
-            lua_setfield(L, -2, "open");
-            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].high));
-            lua_setfield(L, -2, "high");
-            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].low));
-            lua_setfield(L, -2, "low");
-            /* Inject current 5m close as live_price into last candle */
-            if (i == bt->current_tf_idx)
-                lua_pushnumber(L, bt->current_mid);
-            else
-                lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].close));
-            lua_setfield(L, -2, "close");
-            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].volume));
-            lua_setfield(L, -2, "volume");
-            lua_pushnumber(L, tb_decimal_to_double(bt->candles_tf[i].volume));
-            lua_setfield(L, -2, "v");
-            lua_pushinteger(L, bt->candles_tf[i].time_open);
-            lua_setfield(L, -2, "time");
+            double o_val = tb_decimal_to_double(bt->candles_tf[i].open);
+            double h_val = tb_decimal_to_double(bt->candles_tf[i].high);
+            double l_val = tb_decimal_to_double(bt->candles_tf[i].low);
+            double c_val = (i == bt->current_tf_idx)
+                ? bt->current_mid
+                : tb_decimal_to_double(bt->candles_tf[i].close);
+            double v_val = tb_decimal_to_double(bt->candles_tf[i].volume);
+            int64_t t_val = bt->candles_tf[i].time_open;
+
+            lua_pushnumber(L, o_val); lua_setfield(L, -2, "open");
+            lua_pushnumber(L, o_val); lua_setfield(L, -2, "o");
+            lua_pushnumber(L, h_val); lua_setfield(L, -2, "high");
+            lua_pushnumber(L, h_val); lua_setfield(L, -2, "h");
+            lua_pushnumber(L, l_val); lua_setfield(L, -2, "low");
+            lua_pushnumber(L, l_val); lua_setfield(L, -2, "l");
+            lua_pushnumber(L, c_val); lua_setfield(L, -2, "close");
+            lua_pushnumber(L, c_val); lua_setfield(L, -2, "c");
+            lua_pushnumber(L, v_val); lua_setfield(L, -2, "volume");
+            lua_pushnumber(L, v_val); lua_setfield(L, -2, "v");
+            lua_pushinteger(L, t_val); lua_setfield(L, -2, "time");
+            lua_pushinteger(L, t_val); lua_setfield(L, -2, "t");
             lua_rawseti(L, -2, n);
         }
         return 1;
@@ -818,20 +821,25 @@ static int bt_lua_get_candles(lua_State *L) {
     for (int i = start; i <= bt->current_idx; i++) {
         n++;
         lua_newtable(L);
-        lua_pushnumber(L, tb_decimal_to_double(bt->candles[i].open));
-        lua_setfield(L, -2, "open");
-        lua_pushnumber(L, tb_decimal_to_double(bt->candles[i].high));
-        lua_setfield(L, -2, "high");
-        lua_pushnumber(L, tb_decimal_to_double(bt->candles[i].low));
-        lua_setfield(L, -2, "low");
-        lua_pushnumber(L, tb_decimal_to_double(bt->candles[i].close));
-        lua_setfield(L, -2, "close");
-        lua_pushnumber(L, tb_decimal_to_double(bt->candles[i].volume));
-        lua_setfield(L, -2, "volume");
-        lua_pushnumber(L, tb_decimal_to_double(bt->candles[i].volume));
-        lua_setfield(L, -2, "v");
-        lua_pushinteger(L, bt->candles[i].time_open);
-        lua_setfield(L, -2, "time");
+        double o_val = tb_decimal_to_double(bt->candles[i].open);
+        double h_val = tb_decimal_to_double(bt->candles[i].high);
+        double l_val = tb_decimal_to_double(bt->candles[i].low);
+        double c_val = tb_decimal_to_double(bt->candles[i].close);
+        double v_val = tb_decimal_to_double(bt->candles[i].volume);
+        int64_t t_val = bt->candles[i].time_open;
+
+        lua_pushnumber(L, o_val); lua_setfield(L, -2, "open");
+        lua_pushnumber(L, o_val); lua_setfield(L, -2, "o");
+        lua_pushnumber(L, h_val); lua_setfield(L, -2, "high");
+        lua_pushnumber(L, h_val); lua_setfield(L, -2, "h");
+        lua_pushnumber(L, l_val); lua_setfield(L, -2, "low");
+        lua_pushnumber(L, l_val); lua_setfield(L, -2, "l");
+        lua_pushnumber(L, c_val); lua_setfield(L, -2, "close");
+        lua_pushnumber(L, c_val); lua_setfield(L, -2, "c");
+        lua_pushnumber(L, v_val); lua_setfield(L, -2, "volume");
+        lua_pushnumber(L, v_val); lua_setfield(L, -2, "v");
+        lua_pushinteger(L, t_val); lua_setfield(L, -2, "time");
+        lua_pushinteger(L, t_val); lua_setfield(L, -2, "t");
         lua_rawseti(L, -2, n);
     }
     return 1;

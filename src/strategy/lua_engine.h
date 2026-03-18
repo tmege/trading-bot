@@ -13,6 +13,7 @@ typedef struct tb_risk_mgr tb_risk_mgr_t;
 typedef struct hl_rest hl_rest_t;
 typedef struct tb_data_mgr tb_data_mgr_t;
 typedef struct tb_lua_engine tb_lua_engine_t;
+typedef struct tb_paper_exchange tb_paper_exchange_t;
 
 /* ── Strategy info ──────────────────────────────────────────────────────── */
 #define TB_MAX_STRATEGIES 32
@@ -34,6 +35,7 @@ typedef struct {
     tb_data_mgr_t           *data_mgr;
     const tb_config_t       *config;
     const char              *strategy_name; /* current strategy being called */
+    tb_paper_exchange_t     *paper;         /* non-NULL if strategy is in paper mode */
 } tb_lua_ctx_t;
 
 /* ── Engine lifecycle ───────────────────────────────────────────────────── */
@@ -79,5 +81,9 @@ int tb_lua_engine_get_strategies(const tb_lua_engine_t *engine,
 
 /* Enable/disable a strategy by name */
 int tb_lua_engine_set_enabled(tb_lua_engine_t *engine, const char *name, bool enabled);
+
+/* Assign a paper exchange to a strategy slot by name */
+void tb_lua_engine_set_strategy_paper(tb_lua_engine_t *engine,
+                                       const char *name, tb_paper_exchange_t *paper);
 
 #endif /* TB_LUA_ENGINE_H */

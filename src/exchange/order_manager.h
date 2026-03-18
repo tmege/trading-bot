@@ -58,8 +58,13 @@ int tb_order_mgr_get_open_orders(tb_order_mgr_t *mgr, const char *coin,
 /* Get total number of open orders */
 int tb_order_mgr_open_order_count(tb_order_mgr_t *mgr);
 
-/* Set paper exchange (routes orders through paper instead of REST) */
+/* Set global paper exchange (routes ALL orders through paper instead of REST) */
 void tb_order_mgr_set_paper(tb_order_mgr_t *mgr, tb_paper_exchange_t *paper);
+
+/* Set per-strategy paper exchange (only this strategy routes to paper) */
+void tb_order_mgr_set_strategy_paper(tb_order_mgr_t *mgr,
+                                      const char *strategy_name,
+                                      tb_paper_exchange_t *paper);
 
 /* Register fill callback */
 void tb_order_mgr_set_fill_callback(tb_order_mgr_t *mgr, tb_on_fill_cb cb,

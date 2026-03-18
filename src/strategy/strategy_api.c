@@ -2,6 +2,7 @@
 #include "strategy/lua_engine.h"
 #include "exchange/order_manager.h"
 #include "exchange/position_tracker.h"
+#include "exchange/paper_exchange.h"
 #include "exchange/hl_rest.h"
 #include "risk/risk_manager.h"
 #include "data/data_manager.h"
@@ -381,7 +382,7 @@ static int api_cancel_all_exchange(lua_State *L) {
 /* ── bot.get_position(coin) → table or nil ──────────────────────────────── */
 static int api_get_position(lua_State *L) {
     tb_lua_ctx_t *ctx = get_ctx(L);
-    if (!ctx || !ctx->pos_tracker) {
+    if (!ctx) {
         lua_pushnil(L);
         return 1;
     }
@@ -392,7 +393,16 @@ static int api_get_position(lua_State *L) {
         return 1;
     }
     tb_position_t pos;
-    if (tb_pos_tracker_get(ctx->pos_tracker, coin, &pos) != 0) {
+    int found;
+    if (ctx->paper) {
+        found = tb_paper_get_position(ctx->paper, coin, &pos);
+    } else if (ctx->pos_tracker) {
+        found = tb_pos_tracker_get(ctx->pos_tracker, coin, &pos);
+    } else {
+        lua_pushnil(L);
+        return 1;
+    }
+    if (found != 0) {
         lua_pushnil(L);
         return 1;
     }
@@ -552,22 +562,30 @@ static int api_get_candles(lua_State *L) {
 /* ── bot.get_account_value() → number ───────────────────────────────────── */
 static int api_get_account_value(lua_State *L) {
     tb_lua_ctx_t *ctx = get_ctx(L);
-    if (!ctx || !ctx->pos_tracker) {
+    if (!ctx) { lua_pushnumber(L, 0); return 1; }
+
+    if (ctx->paper) {
+        lua_pushnumber(L, tb_paper_get_account_value(ctx->paper));
+    } else if (ctx->pos_tracker) {
+        lua_pushnumber(L, tb_pos_tracker_account_value(ctx->pos_tracker));
+    } else {
         lua_pushnumber(L, 0);
-        return 1;
     }
-    lua_pushnumber(L, tb_pos_tracker_account_value(ctx->pos_tracker));
     return 1;
 }
 
 /* ── bot.get_daily_pnl() → number ──────────────────────────────────────── */
 static int api_get_daily_pnl(lua_State *L) {
     tb_lua_ctx_t *ctx = get_ctx(L);
-    if (!ctx || !ctx->pos_tracker) {
+    if (!ctx) { lua_pushnumber(L, 0); return 1; }
+
+    if (ctx->paper) {
+        lua_pushnumber(L, tb_paper_get_daily_pnl(ctx->paper));
+    } else if (ctx->pos_tracker) {
+        lua_pushnumber(L, tb_pos_tracker_daily_pnl(ctx->pos_tracker));
+    } else {
         lua_pushnumber(L, 0);
-        return 1;
     }
-    lua_pushnumber(L, tb_pos_tracker_daily_pnl(ctx->pos_tracker));
     return 1;
 }
 

@@ -33,7 +33,8 @@ struct tb_engine {
     hl_ws_t                 *ws;            /* real-time prices */
 
     /* Paper trading */
-    tb_paper_exchange_t     *paper;         /* NULL in live mode */
+    tb_paper_exchange_t     *paper;         /* global paper (NULL in live/mixed mode) */
+    tb_paper_exchange_t     *paper_exchanges[8]; /* per-strategy paper (indexed by config) */
 
     /* Position & risk */
     tb_position_tracker_t    pos_tracker;
@@ -212,13 +213,16 @@ int tb_engine_start(tb_engine_t *engine) {
     }
     tb_log_info("WebSocket connected and subscribed to allMids");
 
-    /* 4. Paper exchange (if paper trading mode) */
+    /* 4. Paper exchange(s) — global or per-strategy */
     engine->paper = NULL;
+    memset(engine->paper_exchanges, 0, sizeof(engine->paper_exchanges));
+
     if (cfg->paper_trading) {
+        /* Global paper mode: all strategies share one paper exchange */
         double initial_balance = cfg->paper_initial_balance > 0
             ? cfg->paper_initial_balance
             : 100.0;
-        tb_log_info("paper: starting with bankroll $%.2f", initial_balance);
+        tb_log_info("paper: starting with global bankroll $%.2f", initial_balance);
 
         tb_paper_config_t paper_cfg = {
             .initial_balance = initial_balance,
@@ -233,6 +237,34 @@ int tb_engine_start(tb_engine_t *engine) {
         tb_paper_set_fill_cb(engine->paper, engine_on_paper_fill, engine);
         tb_log_info("paper exchange created (balance=%.2f USDC)",
                     paper_cfg.initial_balance);
+    } else {
+        /* Check per-strategy paper mode overrides */
+        for (int i = 0; i < cfg->n_active_strategies; i++) {
+            if (!cfg->strategy_paper_set[i] || !cfg->strategy_paper_mode[i])
+                continue;
+
+            double balance = cfg->strategy_paper_balance[i] > 0
+                ? cfg->strategy_paper_balance[i]
+                : cfg->paper_initial_balance > 0
+                    ? cfg->paper_initial_balance
+                    : 100.0;
+
+            tb_paper_config_t paper_cfg = {
+                .initial_balance = balance,
+                .maker_fee_rate  = 0.0002,
+                .taker_fee_rate  = 0.0005,
+            };
+            engine->paper_exchanges[i] = tb_paper_create(&paper_cfg);
+            if (!engine->paper_exchanges[i]) {
+                tb_log_error("failed to create paper exchange for strategy %s",
+                             cfg->active_strategies[i]);
+                goto fail;
+            }
+            tb_paper_set_fill_cb(engine->paper_exchanges[i],
+                                  engine_on_paper_fill, engine);
+            tb_log_info("paper exchange created for strategy '%s' (balance=%.2f USDC)",
+                        cfg->active_strategies[i], balance);
+        }
     }
 
     /* 5. Position tracker */
@@ -264,6 +296,49 @@ int tb_engine_start(tb_engine_t *engine) {
 
     if (engine->paper) {
         tb_order_mgr_set_paper(engine->order_mgr, engine->paper);
+    }
+
+    /* Register per-strategy paper exchanges in order manager */
+    for (int i = 0; i < cfg->n_active_strategies; i++) {
+        if (!engine->paper_exchanges[i]) continue;
+
+        /* Register each coin slot for this strategy */
+        for (int c = 0; c < cfg->n_strategy_coins[i]; c++) {
+            char coin_lower[16];
+            snprintf(coin_lower, sizeof(coin_lower), "%s", cfg->strategy_coins[i][c]);
+            for (char *p = coin_lower; *p; p++) {
+                if (*p >= 'A' && *p <= 'Z') *p += 32;
+            }
+            char base_name[64];
+            char *dot = strrchr(cfg->active_strategies[i], '.');
+            if (dot) {
+                size_t len = (size_t)(dot - cfg->active_strategies[i]);
+                if (len >= sizeof(base_name)) len = sizeof(base_name) - 1;
+                memcpy(base_name, cfg->active_strategies[i], len);
+                base_name[len] = '\0';
+            } else {
+                snprintf(base_name, sizeof(base_name), "%s", cfg->active_strategies[i]);
+            }
+            char slot_name[64];
+            snprintf(slot_name, sizeof(slot_name), "%s_%s", base_name, coin_lower);
+            tb_order_mgr_set_strategy_paper(engine->order_mgr, slot_name,
+                                             engine->paper_exchanges[i]);
+        }
+        /* Fallback: if no coins, register by filename without extension */
+        if (cfg->n_strategy_coins[i] == 0) {
+            char base_name[64];
+            char *dot = strrchr(cfg->active_strategies[i], '.');
+            if (dot) {
+                size_t len = (size_t)(dot - cfg->active_strategies[i]);
+                if (len >= sizeof(base_name)) len = sizeof(base_name) - 1;
+                memcpy(base_name, cfg->active_strategies[i], len);
+                base_name[len] = '\0';
+            } else {
+                snprintf(base_name, sizeof(base_name), "%s", cfg->active_strategies[i]);
+            }
+            tb_order_mgr_set_strategy_paper(engine->order_mgr, base_name,
+                                             engine->paper_exchanges[i]);
+        }
     }
 
     /* Set fill callback on order manager */
@@ -300,6 +375,33 @@ int tb_engine_start(tb_engine_t *engine) {
         goto fail;
     } else if (n_loaded == 0) {
         tb_log_warn("no strategies loaded");
+    }
+
+    /* Wire per-strategy paper exchanges to Lua slots */
+    for (int i = 0; i < cfg->n_active_strategies; i++) {
+        if (!engine->paper_exchanges[i]) continue;
+
+        for (int c = 0; c < cfg->n_strategy_coins[i]; c++) {
+            char coin_lower[16];
+            snprintf(coin_lower, sizeof(coin_lower), "%s", cfg->strategy_coins[i][c]);
+            for (char *p = coin_lower; *p; p++) {
+                if (*p >= 'A' && *p <= 'Z') *p += 32;
+            }
+            char base_name[64];
+            char *dot = strrchr(cfg->active_strategies[i], '.');
+            if (dot) {
+                size_t len = (size_t)(dot - cfg->active_strategies[i]);
+                if (len >= sizeof(base_name)) len = sizeof(base_name) - 1;
+                memcpy(base_name, cfg->active_strategies[i], len);
+                base_name[len] = '\0';
+            } else {
+                snprintf(base_name, sizeof(base_name), "%s", cfg->active_strategies[i]);
+            }
+            char slot_name[64];
+            snprintf(slot_name, sizeof(slot_name), "%s_%s", base_name, coin_lower);
+            tb_lua_engine_set_strategy_paper(engine->lua_engine, slot_name,
+                                              engine->paper_exchanges[i]);
+        }
     }
 
     tb_lua_engine_on_init(engine->lua_engine);
@@ -339,8 +441,15 @@ int tb_engine_start(tb_engine_t *engine) {
         engine->timer_running = false;
     }
 
-    tb_log_info("engine started (mode: %s)",
-                cfg->paper_trading ? "PAPER" : "LIVE");
+    /* Determine mode label */
+    bool has_per_strategy_paper = false;
+    for (int i = 0; i < cfg->n_active_strategies; i++) {
+        if (engine->paper_exchanges[i]) { has_per_strategy_paper = true; break; }
+    }
+    const char *mode_label = cfg->paper_trading ? "PAPER"
+                           : has_per_strategy_paper ? "MIXED (some paper)"
+                           : "LIVE";
+    tb_log_info("engine started (mode: %s)", mode_label);
     return 0;
 
 fail:
@@ -417,10 +526,16 @@ void tb_engine_stop(tb_engine_t *engine) {
     /* Position tracker */
     tb_pos_tracker_destroy(&engine->pos_tracker);
 
-    /* Paper exchange */
+    /* Paper exchange(s) */
     if (engine->paper) {
         tb_paper_destroy(engine->paper);
         engine->paper = NULL;
+    }
+    for (int p = 0; p < 8; p++) {
+        if (engine->paper_exchanges[p]) {
+            tb_paper_destroy(engine->paper_exchanges[p]);
+            engine->paper_exchanges[p] = NULL;
+        }
     }
 
     /* Signer */
@@ -513,9 +628,13 @@ static void engine_on_mids(const tb_mid_t *mids, int n_mids, void *userdata) {
             tb_lua_engine_on_tick(engine->lua_engine, mids[i].coin, mid);
         }
 
-        /* Feed to paper exchange for order matching */
+        /* Feed to paper exchange(s) for order matching */
         if (engine->paper) {
             tb_paper_feed_mid(engine->paper, mids[i].coin, mid);
+        }
+        for (int p = 0; p < engine->cfg.n_active_strategies; p++) {
+            if (engine->paper_exchanges[p])
+                tb_paper_feed_mid(engine->paper_exchanges[p], mids[i].coin, mid);
         }
     }
 }
@@ -666,6 +785,10 @@ static void *engine_timer_thread(void *arg) {
                         tb_risk_reset_daily(engine->risk_mgr);
                     if (engine->paper)
                         tb_paper_reset_daily(engine->paper);
+                    for (int p = 0; p < engine->cfg.n_active_strategies; p++) {
+                        if (engine->paper_exchanges[p])
+                            tb_paper_reset_daily(engine->paper_exchanges[p]);
+                    }
                     tb_pos_tracker_reset_daily(&engine->pos_tracker);
                 }
             }

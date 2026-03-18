@@ -235,6 +235,21 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
                       }`}>
                         {(entry.role || 'secondary').toUpperCase()}
                       </span>
+                      {/* Per-strategy paper/live badge */}
+                      {(() => {
+                        const isPaper = entry.paper_mode != null
+                          ? entry.paper_mode
+                          : !!config.mode?.paper_trading;
+                        return (
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${
+                            isPaper
+                              ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                              : 'bg-profit/20 text-profit border border-profit/30'
+                          }`}>
+                            {isPaper ? 'PAPER' : 'LIVE'}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <span className="text-xs text-gray-500">
                       {entry.coins ? `${entry.coins.length} coins` : 'legacy mode'}
@@ -342,6 +357,61 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
                           )}
                         </div>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Per-strategy paper mode toggle */}
+                  {!config.mode?.paper_trading && (
+                    <div className="px-4 py-3 border-t border-surface-border">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-xs text-gray-400">Paper mode</span>
+                          <p className="text-[10px] text-gray-600 mt-0.5">
+                            Override global mode for this strategy only.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const updated = JSON.parse(JSON.stringify(config));
+                            const e = updated.strategies.active[stratIdx];
+                            if (e.paper_mode) {
+                              delete e.paper_mode;
+                              delete e.paper_balance;
+                            } else {
+                              e.paper_mode = true;
+                              if (!e.paper_balance) e.paper_balance = config.mode?.paper_initial_balance || 500;
+                            }
+                            saveConfig(updated);
+                          }}
+                        >
+                          {entry.paper_mode ? (
+                            <ToggleRight size={24} className="text-yellow-400" />
+                          ) : (
+                            <ToggleLeft size={24} className="text-gray-600" />
+                          )}
+                        </button>
+                      </div>
+                      {entry.paper_mode && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <label className="text-[10px] text-gray-500">Balance:</label>
+                          <input
+                            type="number"
+                            min="10"
+                            max="100000"
+                            step="10"
+                            value={entry.paper_balance ?? config.mode?.paper_initial_balance ?? 500}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              if (isNaN(val) || val < 10 || val > 100000) return;
+                              const updated = JSON.parse(JSON.stringify(config));
+                              updated.strategies.active[stratIdx].paper_balance = val;
+                              saveConfig(updated);
+                            }}
+                            className="w-24 px-2 py-1 bg-surface-bg border border-yellow-500/30 rounded text-xs text-white font-mono outline-none focus:border-yellow-400"
+                          />
+                          <span className="text-[10px] text-gray-600">USDC</span>
+                        </div>
+                      )}
                     </div>
                   )}
 

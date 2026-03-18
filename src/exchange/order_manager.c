@@ -23,13 +23,22 @@ typedef struct {
     char     strategy[64];
 } oid_cache_entry_t;
 
+#define MAX_PAPER_STRATEGIES 8
+
 struct tb_order_mgr {
     hl_rest_t              *rest;
     hl_ws_t                *ws;
     tb_risk_mgr_t          *risk;
     tb_position_tracker_t  *pos_tracker;
     sqlite3                *db;
-    tb_paper_exchange_t    *paper;  /* non-NULL = paper trading mode */
+    tb_paper_exchange_t    *paper;  /* global paper (non-NULL = all-paper mode) */
+
+    /* Per-strategy paper exchanges (mixed mode: some paper, some live) */
+    struct {
+        char                name[64];
+        tb_paper_exchange_t *paper;
+    } paper_map[MAX_PAPER_STRATEGIES];
+    int                     n_paper_map;
 
     char                    user_addr[44];
 
@@ -63,6 +72,10 @@ struct tb_order_mgr {
     sqlite3_stmt           *stmt_find_oid_strat;
     sqlite3_stmt           *stmt_cleanup_oid_strat;
 };
+
+/* Forward declarations */
+static tb_paper_exchange_t *find_paper_for_strategy(const tb_order_mgr_t *mgr,
+                                                      const char *strategy_name);
 
 /* ── SQLite trade logging ──────────────────────────────────────────────────── */
 
@@ -343,13 +356,15 @@ void tb_order_mgr_handle_ws_fills(tb_order_mgr_t *mgr,
             }
         }
 
-        /* Update position tracker */
-        tb_pos_tracker_on_fill(mgr->pos_tracker, fill);
-
-        /* Update risk manager */
-        tb_risk_update_pnl(mgr->risk,
-                           tb_decimal_to_double(fill->closed_pnl),
-                           tb_decimal_to_double(fill->fee));
+        /* Only update position tracker + risk for live fills.
+         * Paper fills are tracked by their own paper_exchange_t. */
+        tb_paper_exchange_t *fill_paper = find_paper_for_strategy(mgr, strategy);
+        if (!fill_paper) {
+            tb_pos_tracker_on_fill(mgr->pos_tracker, fill);
+            tb_risk_update_pnl(mgr->risk,
+                               tb_decimal_to_double(fill->closed_pnl),
+                               tb_decimal_to_double(fill->fee));
+        }
 
         /* Log to database */
         log_trade_to_db(mgr, fill, strategy);
@@ -421,6 +436,18 @@ static const tb_asset_meta_t *find_asset(const tb_order_mgr_t *mgr,
         }
     }
     return NULL;
+}
+
+/* Find paper exchange for a strategy (per-strategy first, then global fallback) */
+static tb_paper_exchange_t *find_paper_for_strategy(const tb_order_mgr_t *mgr,
+                                                      const char *strategy_name) {
+    if (strategy_name) {
+        for (int i = 0; i < mgr->n_paper_map; i++) {
+            if (strcmp(mgr->paper_map[i].name, strategy_name) == 0)
+                return mgr->paper_map[i].paper;
+        }
+    }
+    return mgr->paper;  /* global fallback */
 }
 
 /* Round price to max 5 significant figures (Hyperliquid requirement).
@@ -520,10 +547,11 @@ int tb_order_mgr_start(tb_order_mgr_t *mgr, const char *user_addr) {
     snprintf(mgr->user_addr, sizeof(mgr->user_addr), "%s",
              user_addr ? user_addr : "paper");
 
-    if (mgr->paper) {
-        /* Paper mode: no WS subscriptions or REST reconciliation needed */
+    /* All-paper mode: no WS/REST needed.
+     * In mixed mode (some paper, some live), we need WS+REST for live strats. */
+    if (mgr->paper && mgr->n_paper_map == 0) {
         mgr->running = true;
-        tb_log_info("order manager started in PAPER mode");
+        tb_log_info("order manager started in PAPER mode (all strategies)");
         return 0;
     }
 
@@ -556,7 +584,8 @@ int tb_order_mgr_start(tb_order_mgr_t *mgr, const char *user_addr) {
 void tb_order_mgr_stop(tb_order_mgr_t *mgr) {
     if (!mgr->running) return;
     mgr->running = false;
-    if (!mgr->paper) {
+    /* Join recon thread if it was started (not all-paper mode) */
+    if (!(mgr->paper && mgr->n_paper_map == 0)) {
         pthread_join(mgr->recon_thread, NULL);
     }
     tb_log_info("order manager stopped");
@@ -564,15 +593,24 @@ void tb_order_mgr_stop(tb_order_mgr_t *mgr) {
 
 int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
                         uint64_t *out_oid) {
+    /* Resolve paper exchange for this strategy */
+    tb_paper_exchange_t *paper = find_paper_for_strategy(mgr, submit->strategy_name);
+
     /* Risk check — use coin name from order for position lookup */
     const char *coin = submit->order.coin;
     tb_position_t current_pos;
     tb_position_t *pos_ptr = NULL;
-    if (coin[0] && tb_pos_tracker_get(mgr->pos_tracker, coin, &current_pos) == 0) {
-        pos_ptr = &current_pos;
+    if (paper) {
+        if (coin[0] && tb_paper_get_position(paper, coin, &current_pos) == 0)
+            pos_ptr = &current_pos;
+    } else {
+        if (coin[0] && tb_pos_tracker_get(mgr->pos_tracker, coin, &current_pos) == 0)
+            pos_ptr = &current_pos;
     }
 
-    double account_val = tb_pos_tracker_account_value(mgr->pos_tracker);
+    double account_val = paper
+        ? tb_paper_get_account_value(paper)
+        : tb_pos_tracker_account_value(mgr->pos_tracker);
 
     tb_risk_result_t risk_rc = tb_risk_check_order(
         mgr->risk, &submit->order, pos_ptr, account_val
@@ -586,7 +624,7 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
 
     /* Resolve asset ID and normalize price/size precision for exchange */
     tb_order_request_t resolved = submit->order;
-    if (!mgr->paper) {
+    if (!paper) {
         const tb_asset_meta_t *meta = find_asset(mgr, coin);
         if (!meta) {
             tb_log_error("unknown asset '%s' — not in exchange metadata", coin);
@@ -623,8 +661,8 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
     memset(&fill_info, 0, sizeof(fill_info));
     int n_filled = 0;
 
-    if (mgr->paper) {
-        rc = tb_paper_place_order(mgr->paper, &submit->order, &oid);
+    if (paper) {
+        rc = tb_paper_place_order(paper, &submit->order, &oid);
     } else {
         rc = hl_rest_place_orders_ex(mgr->rest, &resolved, 1,
                                       resolved.grouping,
@@ -682,7 +720,7 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
                 submit->strategy_name);
 
     /* IOC fill confirmed by REST — real fill arrives via WS userFills */
-    if (!mgr->paper && fill_info.filled && fill_info.avg_px > 0) {
+    if (!paper && fill_info.filled && fill_info.avg_px > 0) {
         tb_log_debug("REST confirms fill: %s %.6f @ %.2f (oid=%llu, awaiting WS)",
                      coin, fill_info.total_sz, fill_info.avg_px,
                      (unsigned long long)oid);
@@ -692,9 +730,18 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
 }
 
 int tb_order_mgr_cancel(tb_order_mgr_t *mgr, uint32_t asset, uint64_t oid) {
+    /* Find which paper exchange owns this OID (if any) */
+    char strat_name[64] = "";
+    tb_paper_exchange_t *paper = NULL;
+    if (find_strategy_for_oid(mgr, oid, strat_name, sizeof(strat_name))) {
+        paper = find_paper_for_strategy(mgr, strat_name);
+    } else {
+        paper = mgr->paper; /* global fallback */
+    }
+
     int rc;
-    if (mgr->paper) {
-        rc = tb_paper_cancel_order(mgr->paper, asset, oid);
+    if (paper) {
+        rc = tb_paper_cancel_order(paper, asset, oid);
     } else {
         rc = hl_rest_cancel_order(mgr->rest, asset, oid);
     }
@@ -715,9 +762,10 @@ int tb_order_mgr_cancel_by_coin(tb_order_mgr_t *mgr, const char *coin,
 }
 
 int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
-    /* Collect all oids for this coin */
+    /* Collect all oids for this coin, grouped by paper/live */
     uint32_t assets[MAX_OPEN_ORDERS];
     uint64_t oids[MAX_OPEN_ORDERS];
+    char     strategies[MAX_OPEN_ORDERS][64];
     int n = 0;
 
     pthread_rwlock_rdlock(&mgr->orders_lock);
@@ -726,6 +774,7 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
             (coin[0] == '\0')) { /* empty = cancel all */
             assets[n] = mgr->orders[i].order.asset;
             oids[n] = mgr->orders[i].order.oid;
+            snprintf(strategies[n], sizeof(strategies[0]), "%s", mgr->orders[i].strategy);
             n++;
         }
     }
@@ -733,14 +782,28 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
 
     if (n == 0) return 0;
 
-    int rc;
-    if (mgr->paper) {
-        rc = 0;
-        for (int i = 0; i < n && rc == 0; i++)
-            rc = tb_paper_cancel_order(mgr->paper, assets[i], oids[i]);
-    } else {
-        rc = hl_rest_cancel_orders(mgr->rest, assets, oids, n);
+    /* Cancel each order via its appropriate exchange */
+    int rc = 0;
+    uint32_t live_assets[MAX_OPEN_ORDERS];
+    uint64_t live_oids[MAX_OPEN_ORDERS];
+    int n_live = 0;
+
+    for (int i = 0; i < n; i++) {
+        tb_paper_exchange_t *paper = find_paper_for_strategy(mgr, strategies[i]);
+        if (paper) {
+            int r = tb_paper_cancel_order(paper, assets[i], oids[i]);
+            if (r != 0) rc = r;
+        } else {
+            live_assets[n_live] = assets[i];
+            live_oids[n_live] = oids[i];
+            n_live++;
+        }
     }
+    if (n_live > 0) {
+        int r = hl_rest_cancel_orders(mgr->rest, live_assets, live_oids, n_live);
+        if (r != 0) rc = r;
+    }
+
     if (rc == 0) {
         for (int i = 0; i < n; i++) {
             remove_tracked_order(mgr, oids[i]);
@@ -760,8 +823,9 @@ int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
                                                      const char *strategy) {
     if (!coin || coin[0] == '\0') return -1;
 
-    /* In paper mode, fall back to local-only cancel (filtered by strategy) */
-    if (mgr->paper) {
+    /* Check if this strategy routes to a paper exchange */
+    tb_paper_exchange_t *strat_paper = find_paper_for_strategy(mgr, strategy);
+    if (strat_paper) {
         if (!strategy) {
             return tb_order_mgr_cancel_all_coin(mgr, coin);
         }
@@ -781,7 +845,7 @@ int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
         pthread_rwlock_unlock(&mgr->orders_lock);
         int rc = 0;
         for (int i = 0; i < n && rc == 0; i++)
-            rc = tb_paper_cancel_order(mgr->paper, assets[i], oids[i]);
+            rc = tb_paper_cancel_order(strat_paper, assets[i], oids[i]);
         if (rc == 0) {
             for (int i = 0; i < n; i++)
                 remove_tracked_order(mgr, oids[i]);
@@ -919,8 +983,31 @@ int tb_order_mgr_open_order_count(tb_order_mgr_t *mgr) {
 
 void tb_order_mgr_set_paper(tb_order_mgr_t *mgr, tb_paper_exchange_t *paper) {
     mgr->paper = paper;
-    tb_log_info("order manager: paper exchange %s",
+    tb_log_info("order manager: global paper exchange %s",
                 paper ? "enabled" : "disabled");
+}
+
+void tb_order_mgr_set_strategy_paper(tb_order_mgr_t *mgr,
+                                      const char *strategy_name,
+                                      tb_paper_exchange_t *paper) {
+    if (!mgr || !strategy_name || !paper) return;
+    if (mgr->n_paper_map >= MAX_PAPER_STRATEGIES) {
+        tb_log_error("order manager: paper_map full, cannot add %s", strategy_name);
+        return;
+    }
+    /* Update existing entry if present */
+    for (int i = 0; i < mgr->n_paper_map; i++) {
+        if (strcmp(mgr->paper_map[i].name, strategy_name) == 0) {
+            mgr->paper_map[i].paper = paper;
+            tb_log_info("order manager: updated paper exchange for strategy '%s'", strategy_name);
+            return;
+        }
+    }
+    snprintf(mgr->paper_map[mgr->n_paper_map].name,
+             sizeof(mgr->paper_map[0].name), "%s", strategy_name);
+    mgr->paper_map[mgr->n_paper_map].paper = paper;
+    mgr->n_paper_map++;
+    tb_log_info("order manager: paper exchange set for strategy '%s'", strategy_name);
 }
 
 void tb_order_mgr_set_fill_callback(tb_order_mgr_t *mgr, tb_on_fill_cb cb,
@@ -931,7 +1018,8 @@ void tb_order_mgr_set_fill_callback(tb_order_mgr_t *mgr, tb_on_fill_cb cb,
 
 int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
     if (!mgr->user_addr[0]) return -1;
-    if (mgr->paper) return 0; /* No REST reconciliation in paper mode */
+    /* No REST reconciliation in all-paper mode */
+    if (mgr->paper && mgr->n_paper_map == 0) return 0;
 
     /* Fetch account state */
     tb_account_t account;
@@ -948,8 +1036,14 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
                                  MAX_OPEN_ORDERS) == 0) {
         pthread_rwlock_wrlock(&mgr->orders_lock);
 
-        /* Remove local orders not on exchange */
+        /* Remove local LIVE orders not on exchange.
+         * Paper orders are managed by their paper_exchange_t, not exchange. */
         for (int i = mgr->n_orders - 1; i >= 0; i--) {
+            /* Skip paper strategy orders — they won't be on the exchange */
+            tb_paper_exchange_t *order_paper = find_paper_for_strategy(
+                mgr, mgr->orders[i].strategy);
+            if (order_paper) continue;
+
             bool found = false;
             for (int j = 0; j < n_exchange; j++) {
                 if (mgr->orders[i].order.oid == exchange_orders[j].oid) {

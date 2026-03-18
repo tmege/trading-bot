@@ -86,7 +86,7 @@ typedef struct {
 } strategy_entry_t;
 
 static const strategy_entry_t strategies[] = {
-    { "Sniper 1h", "strategies/sniper_1h.lua",    "Ultra-selective high-conviction signals, x7 leverage" },
+    { "Sniper 1h", "strategies/btc_sniper_1h.lua",    "Ultra-selective high-conviction signals, x7 leverage" },
 };
 
 #define N_STRATEGIES (sizeof(strategies) / sizeof(strategies[0]))

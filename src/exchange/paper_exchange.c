@@ -404,6 +404,27 @@ double tb_paper_get_daily_pnl(tb_paper_exchange_t *pe) {
     return pnl;
 }
 
+int tb_paper_get_position(tb_paper_exchange_t *pe, const char *coin,
+                           tb_position_t *out) {
+    if (!pe || !coin || !out) return -1;
+    pthread_mutex_lock(&pe->lock);
+    paper_position_t *p = find_position(pe, coin);
+    if (!p || fabs(p->size) < 1e-12) {
+        pthread_mutex_unlock(&pe->lock);
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    strncpy(out->coin, p->coin, sizeof(out->coin) - 1);
+    out->asset = p->asset;
+    out->size = tb_decimal_from_double(p->size, 6);
+    out->entry_px = tb_decimal_from_double(p->entry_px, 6);
+    out->unrealized_pnl = tb_decimal_from_double(p->unrealized_pnl, 6);
+    out->realized_pnl = tb_decimal_from_double(p->realized_pnl, 6);
+    out->leverage = p->leverage > 0 ? p->leverage : 1;
+    pthread_mutex_unlock(&pe->lock);
+    return 0;
+}
+
 void tb_paper_reset_daily(tb_paper_exchange_t *pe) {
     pthread_mutex_lock(&pe->lock);
     pe->daily_pnl = 0;

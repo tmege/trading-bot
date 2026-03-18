@@ -14,7 +14,7 @@ src/                    C engine source
   risk/                 risk_manager.c
   report/               dashboard.c
   backtest/             backtest_engine.c
-strategies/             sniper_1h.lua (active) + strategy_template.lua (template)
+strategies/             btc_sniper_1h.lua (active) + strategy_template.lua (template)
 config/                 bot_config.json (no secrets — secrets in .env)
 gui/                    Electron + React desktop app
   electron/             main.js, preload.js, license.js, ipc/ (bot, config, strategies, backtest, db, logs, ws, market, sync, license)
@@ -49,7 +49,7 @@ cd gui && npm install && npm run dev
 ./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
 
 # Backtest (always uses 5m candles internally, last arg = strategy TF)
-./build/backtest_json strategies/sniper_1h.lua ETH 0 90 1h
+./build/backtest_json strategies/btc_sniper_1h.lua BTC 0 90 1h
 ./scripts/backtest_all.sh 365 0
 ```
 
@@ -76,6 +76,7 @@ cd gui && npm install && npm run dev
 - **Config**: `config/bot_config.json` — exchange URLs, risk params, active strategies+coins, paper mode
 - **Multi-coin**: `"coins": ["ETH","SOL"]` in strategy config, engine injects `COIN` global
 - **Coin exclusivity**: each coin must belong to exactly one strategy — enforced at engine startup (rejects duplicates), GUI Settings (grays out taken coins), and Lua (no cross-strategy guards needed)
+- **Paper mode**: global (`mode.paper_trading`) or per-strategy (`"paper_mode": true, "paper_balance": 500` in strategy config). Per-strategy paper creates an isolated `tb_paper_exchange_t` with its own balance/positions/orders. Mixed mode (some paper, some live) is supported. Lua global `PAPER_MODE` is injected per slot.
 - **Risk (%-based)**: daily_loss_pct=6, emergency_close_pct=5, max_leverage=10, max_position_pct=700
 
 ## Conventions
@@ -114,12 +115,12 @@ Maker: 0.0150%, Taker: 0.0450%. ALO entries (maker), trigger exits (taker). Roun
 libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all via Homebrew). yyjson via CMake FetchContent.
 
 ## Strategies (production — $672 capital)
-- **Active**: `sniper_1h.lua` — ultra-selective high-conviction (x7 leverage, 90% equity, 4h cooldown)
-  - ETH: 4 signals (L1 momentum+calm, L3 trend+calm, S1 bear+calm, S2 oversold+downtrend)
-  - BTC: 2 signals (L1 momentum+calm, S1 bear+calm) — TP/SL 2.0%/2.0%, ATR<0.4%
-  - SOL: 3 signals (backup, not deployed) — inconsistent long-term
+- **BTC**: `btc_sniper_1h.lua` — ultra-selective high-conviction (x7, 90% equity, 2 signals L1+S1, ATR<0.4%, TP/SL 2.0%/2.0%)
+- **DOGE**: `doge_sniper_relaxed_1h.lua` — low-vol sniper RR 3:1 (x5, 50% equity, 4 signals L1+L3+S1+S2, ATR<0.9%, TP/SL 4.5%/1.5%)
+- **SOL**: `sol_range_breakout_1h.lua` v2.0.0 — range breakout + bear complement (x5, 40% equity, RB TP/SL 4.5%/1.5%, B1 TP/SL 6.0%/2.0%)
+- **ETH**: aucune strategie active — ATR<0.4% jamais atteint, en recherche
 - **Template**: `strategy_template.lua` — skeleton for new strategies
-- Coins: ETH, BTC (1 coin = 1 strategy instance, exclusive)
+- Coins: BTC, DOGE, SOL (1 coin = 1 strategy instance, exclusive)
 - Risk: daily_loss 6%, emergency 5%, max_leverage 10x, max_position 700%
 - **Mode: LIVE**
 

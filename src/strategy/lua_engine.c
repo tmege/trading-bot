@@ -202,9 +202,11 @@ static int load_strategy_file(tb_lua_engine_t *engine, tb_strategy_slot_t *slot)
     /* Set instruction count limit to prevent infinite loops */
     lua_sethook(L, lua_instruction_hook, LUA_MASKCOUNT, LUA_MAX_INSTRUCTIONS);
 
-    /* Set up strategy-specific context */
+    /* Set up strategy-specific context (preserve paper from previous slot) */
+    tb_paper_exchange_t *saved_paper = slot->ctx.paper;
     slot->ctx = *engine->shared_ctx;
     slot->ctx.strategy_name = slot->name;
+    slot->ctx.paper = saved_paper;
 
     /* Register bot.* API */
     tb_strategy_api_register(L, &slot->ctx);
@@ -214,6 +216,10 @@ static int load_strategy_file(tb_lua_engine_t *engine, tb_strategy_slot_t *slot)
         lua_pushstring(L, slot->coin);
         lua_setglobal(L, "COIN");
     }
+
+    /* Inject PAPER_MODE global */
+    lua_pushboolean(L, slot->ctx.paper != NULL);
+    lua_setglobal(L, "PAPER_MODE");
 
     /* Load and execute the file */
     if (luaL_dofile(L, slot->path) != LUA_OK) {
@@ -306,11 +312,13 @@ void tb_lua_engine_set_context(tb_lua_engine_t *engine, tb_lua_ctx_t *ctx) {
     pthread_mutex_lock(&engine->lock);
     engine->shared_ctx = ctx;
 
-    /* Update context in already-loaded strategies */
+    /* Update context in already-loaded strategies (preserve per-strategy paper) */
     for (int i = 0; i < engine->n_strategies; i++) {
         if (engine->slots[i].loaded && engine->slots[i].L) {
+            tb_paper_exchange_t *saved = engine->slots[i].ctx.paper;
             engine->slots[i].ctx = *ctx;
             engine->slots[i].ctx.strategy_name = engine->slots[i].name;
+            engine->slots[i].ctx.paper = saved;
             tb_strategy_api_set_context(engine->slots[i].L, &engine->slots[i].ctx);
         }
     }
@@ -662,4 +670,27 @@ int tb_lua_engine_set_enabled(tb_lua_engine_t *engine, const char *name, bool en
     pthread_mutex_unlock(&engine->lock);
     tb_log_warn("lua: strategy '%s' not found", name);
     return -1;
+}
+
+void tb_lua_engine_set_strategy_paper(tb_lua_engine_t *engine,
+                                       const char *name,
+                                       tb_paper_exchange_t *paper) {
+    if (!engine || !name) return;
+    pthread_mutex_lock(&engine->lock);
+    for (int i = 0; i < engine->n_strategies; i++) {
+        if (strcmp(engine->slots[i].name, name) == 0) {
+            engine->slots[i].ctx.paper = paper;
+            /* Update PAPER_MODE global in Lua state */
+            if (engine->slots[i].L) {
+                lua_pushboolean(engine->slots[i].L, paper != NULL);
+                lua_setglobal(engine->slots[i].L, "PAPER_MODE");
+            }
+            tb_log_info("lua: strategy '%s' paper=%s", name,
+                        paper ? "true" : "false");
+            pthread_mutex_unlock(&engine->lock);
+            return;
+        }
+    }
+    pthread_mutex_unlock(&engine->lock);
+    tb_log_warn("lua: set_strategy_paper: '%s' not found", name);
 }

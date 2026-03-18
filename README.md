@@ -9,7 +9,7 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 - **Risk management** — daily loss limit, emergency close, circuit breaker, velocity guard, losing streak pause
 - **Backtesting** — multi-timeframe 5m simulation, walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Desktop GUI** — Electron + React (dashboard, market overview, strategy browser, interactive backtesting, settings)
-- **Paper trading** — real market data, simulated execution
+- **Paper trading** — real market data, simulated execution, per-strategy paper/live mode (mixed mode)
 - **18+ technical indicators** — SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, CMF, MFI, Squeeze Momentum, and more
 
 ## Build
@@ -47,6 +47,20 @@ chmod 600 .env
 ### Config File
 
 `config/bot_config.json` — exchange URLs, risk parameters, active strategies with coins, paper mode. See the file for full options.
+
+Paper trading can be configured globally or per-strategy:
+
+```json
+{
+  "mode": { "paper_trading": false },
+  "active_strategies": [
+    {"file": "btc_sniper_1h.lua", "coins": ["BTC"]},
+    {"file": "new_strategy.lua", "coins": ["ETH"], "paper_mode": true, "paper_balance": 500}
+  ]
+}
+```
+
+When `paper_mode` is set on a strategy, it overrides the global flag. Each paper strategy gets an isolated simulated exchange (own balance, positions, orders). Strategies without `paper_mode` inherit the global setting.
 
 ## License Activation
 
@@ -88,6 +102,15 @@ node scripts/license_admin.js list
 cd gui && npm install && npm run dev
 ```
 
+## Strategies actives
+
+| Asset | Fichier | Statut | Note /10 |
+|-------|---------|--------|----------|
+| BTC | `btc_sniper_1h.lua` | LIVE | 6.5 |
+| DOGE | `doge_sniper_relaxed_1h.lua` | LIVE | 7.5 |
+| SOL | `sol_range_breakout_1h.lua` | LIVE | 5.5 |
+| ETH | — | RECHERCHE | — |
+
 ## Backtesting
 
 Backtests use **5m candle simulation** with indicator aggregation to the strategy's native timeframe. This prevents the same-candle fill bug (entry + SL/TP filling on the same bar) and produces realistic results.
@@ -97,7 +120,7 @@ Backtests use **5m candle simulation** with indicator aggregation to the strateg
 ./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
 
 # Single strategy (last arg = strategy TF, simulation always uses 5m)
-./build/backtest_json strategies/sniper_1h.lua ETH 0 90 1h
+./build/backtest_json strategies/btc_sniper_1h.lua BTC 0 90 1h
 
 # All strategies batch
 ./scripts/backtest_all.sh 365 0

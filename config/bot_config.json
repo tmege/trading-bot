@@ -15,11 +15,15 @@
         "reload_interval_sec": 5,
         "active": [
             {
-                "file": "sniper_1h.lua",
+                "file": "doge_sniper_relaxed_1h.lua",
                 "role": "primary",
                 "coins": [
-                    "BTC"
+                    "DOGE"
                 ]
+            },
+            {
+                "file": "sol_range_breakout_1h.lua",
+                "role": "secondary"
             }
         ]
     },

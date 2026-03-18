@@ -53,6 +53,10 @@ int tb_paper_get_positions(tb_paper_exchange_t *pe,
 double tb_paper_get_account_value(tb_paper_exchange_t *pe);
 double tb_paper_get_daily_pnl(tb_paper_exchange_t *pe);
 
+/* Get a single position by coin. Returns 0 if found, -1 if not. */
+int tb_paper_get_position(tb_paper_exchange_t *pe, const char *coin,
+                           tb_position_t *out);
+
 /* Reset daily P&L (call at midnight UTC). */
 void tb_paper_reset_daily(tb_paper_exchange_t *pe);
 

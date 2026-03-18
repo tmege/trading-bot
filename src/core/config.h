@@ -29,6 +29,11 @@ typedef struct {
     char     strategy_coins[8][TB_MAX_STRATEGY_COINS][16];
     int      n_strategy_coins[8];
 
+    /* Per-strategy paper mode (optional override of global paper_trading) */
+    bool     strategy_paper_mode[8];     /* per-strategy paper flag */
+    bool     strategy_paper_set[8];      /* true if explicitly set in config */
+    double   strategy_paper_balance[8];  /* paper balance (0 = use global) */
+
     /* Database */
     char     db_path[512];
 
