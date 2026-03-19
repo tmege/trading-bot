@@ -15,6 +15,8 @@ typedef struct {
     double      taker_fee_rate;    /* e.g. 0.0005 (5 bps) */
     double      slippage_bps;      /* simulated slippage in basis points */
     int64_t     strategy_interval_ms; /* strategy TF in ms (e.g. 3600000 for 1h) */
+    double      grid_tp;             /* TP% override for grid search (0 = no override) */
+    double      grid_sl;             /* SL% override for grid search (0 = no override) */
 } tb_backtest_config_t;
 
 /* ── Per-trade log entry ───────────────────────────────────────────────── */
@@ -86,6 +88,13 @@ void                  tb_backtest_destroy(tb_backtest_engine_t *bt);
    interval: "1h", "15m", "1d", etc. */
 int tb_backtest_load_candles(tb_backtest_engine_t *bt,
                              const tb_candle_t *candles, int n_candles);
+
+/* Load historical funding rates from SQLite for use in backtest.
+   Returns number of records loaded, or -1 on error. */
+int tb_backtest_load_funding_rates_from_db(tb_backtest_engine_t *bt,
+                                            const char *db_path,
+                                            const char *coin,
+                                            int64_t start_ms, int64_t end_ms);
 
 /* Run the backtest. Returns 0 on success. */
 int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out);

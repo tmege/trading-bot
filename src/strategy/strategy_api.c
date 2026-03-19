@@ -512,9 +512,9 @@ static int api_get_candles(lua_State *L) {
     }
     const char *interval = luaL_optstring(L, 2, "1h");
     if (!is_safe_json_value(interval, 4)) interval = "1h";
-    int req_count = (int)luaL_optinteger(L, 3, 100);
+    int req_count = (int)luaL_optinteger(L, 3, 5000);
     if (req_count < 1) req_count = 1;
-    if (req_count > 500) req_count = 500;
+    if (req_count > 10000) req_count = 10000;
 
     /* Fetch recent candles */
     int64_t now_ms = (int64_t)time(NULL) * 1000;
@@ -753,8 +753,8 @@ static int api_get_indicators(lua_State *L) {
     }
     const char *interval = luaL_optstring(L, 2, "1h");
     if (!is_safe_json_value(interval, 4)) interval = "1h";
-    int req_count = (int)luaL_optinteger(L, 3, 200);
-    if (req_count > 500) req_count = 500;
+    int req_count = (int)luaL_optinteger(L, 3, 5000);
+    if (req_count > 10000) req_count = 10000;
     if (req_count < 20) req_count = 20;
     /* Optional 4th arg: current mid_price for live indicator updates.
      * Without this, RSI/BB only update when a new candle closes. */

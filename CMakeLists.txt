@@ -348,6 +348,54 @@ if(TB_BUILD_TESTS)
         ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
         ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
     )
+
+    # Signal Scanner — C-native signal combo scanner
+    add_executable(signal_scanner tools/signal_scanner.c ${TB_LIB_SOURCES})
+    target_include_directories(signal_scanner PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${LUA_INCLUDE_DIRS}
+        ${LWS_INCLUDE_DIRS}
+        ${SECP256K1_INCLUDE_DIRS}
+        ${MSGPACK_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
+    )
+    target_link_libraries(signal_scanner PRIVATE
+        yyjson CURL::libcurl OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+        ${LUA_LIBRARIES} ${LWS_LIBRARIES} ${SECP256K1_LIBRARIES}
+        ${MSGPACK_LIBRARIES} ${SQLITE3_LIBRARIES}
+    )
+    target_link_directories(signal_scanner PRIVATE
+        ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
+        ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
+    )
+
+    # Funding Rate Fetcher — Download historical funding rates from Binance
+    add_executable(funding_fetcher tools/funding_fetcher.c)
+    target_include_directories(funding_fetcher PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(funding_fetcher PRIVATE
+        yyjson CURL::libcurl ${SQLITE3_LIBRARIES}
+    )
+    target_link_directories(funding_fetcher PRIVATE ${SQLITE3_LIBRARY_DIRS})
+
+    # Regime Analyzer — Per-regime signal analysis with walk-forward and Monte Carlo
+    add_executable(regime_analyzer tools/regime_analyzer.c ${TB_LIB_SOURCES})
+    target_include_directories(regime_analyzer PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${LUA_INCLUDE_DIRS}
+        ${LWS_INCLUDE_DIRS}
+        ${SECP256K1_INCLUDE_DIRS}
+        ${MSGPACK_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
+    )
+    target_link_libraries(regime_analyzer PRIVATE
+        yyjson CURL::libcurl OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+        ${LUA_LIBRARIES} ${LWS_LIBRARIES} ${SECP256K1_LIBRARIES}
+        ${MSGPACK_LIBRARIES} ${SQLITE3_LIBRARIES}
+    )
+    target_link_directories(regime_analyzer PRIVATE
+        ${LWS_LIBRARY_DIRS} ${SECP256K1_LIBRARY_DIRS} ${MSGPACK_LIBRARY_DIRS}
+        ${SQLITE3_LIBRARY_DIRS} ${LUA_LIBRARY_DIRS}
+    )
 endif()
 
 # ── Install ──────────────────────────────────────────────────────────────────

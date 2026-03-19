@@ -1,69 +1,86 @@
 --[[
-  Sniper 1h — Ultra-selective high-conviction strategy (BTC only)
+  BTC Swing Levels 4h — Family A (PWH/PWL/PMH/PML)
 
-  Philosophy: Trade like a sniper, not a machine gun.
-  ~1.2 trades/month, maximum conviction, aggressive sizing.
+  Rebond/rejet sur niveaux cles hebdo/mensuels avec confirmation de bougie.
+  Filtrage funding rate (strong): Long si FR<0, Short si FR>0.
 
-  Grid-searched on 424k+ BTC 5m candles (8.6 years).
-  x7 leverage + 50% equity = 350% exposure per trade.
+  HC Scanner results (walk-forward 6-fold, 50% equity):
+    x7 + Filter 2 (strong): +7.4%/m, WR 50%, DD 4.0%, PF 5.55, Sharpe 0.49
+    x7 baseline:            +5.2%/m, WR 48%, DD 7.3%, PF 3.63, Sharpe 0.36
 
-  BTC (2 signals):
-    L1: RSI>65 + LowVol(ATR<0.4%) + MACD decel   TP 2.0%/SL 2.0%
-    S1: RSI<30 + MACD<0 + LowVol(ATR<0.4%)        TP 2.0%/SL 2.0%
+  Signal logic:
+    LONG  — price touches PWL or PML (buffer 0.3%), bullish candle, RSI<45
+    SHORT — price touches PWH or PMH (buffer 0.3%), bearish candle, RSI>55
+    + Funding filter: Long only if last FR < 0, Short only if last FR > 0
 
-  Backtest results (730j, x7, 90% equity):
-    BTC: +275.2%, 28 trades, 75% WR, DD 20.7%, PF 5.39, ~11.3%/month
-
-  Fees: 0.06% round-trip included in all EV calculations.
+  Fees: 0.06% round-trip included.
 ]]
 
 -- Configuration
 local config = {
     coin          = COIN or "BTC",
 
-    -- Sizing (50% equity, x7 — worst SL = -$700 sur $10k)
     equity_pct    = 0.50,          -- 50% equity per trade
     leverage      = 7,             -- x7 leverage
     max_size      = 9999.0,
-    entry_size    = 100.0,         -- fallback minimum
+    entry_size    = 100.0,
 
-    -- Patient timing
     check_sec     = 60,
-    cooldown_sec  = 14400,         -- 4h between trades (signals are rare enough)
-    max_hold_sec  = 172800,         -- 48h max hold
+    cooldown_sec  = 14400,         -- 4h cooldown (1 bar)
+    max_hold_sec  = 172800,        -- 48h max hold (12 bars 4h)
 
-    -- Guard
+    -- Swing level params
+    buffer_pct    = 0.003,         -- 0.3% buffer around levels
+    body_ratio    = 0.5,           -- confirmation candle body ratio
+    rsi_long_max  = 45,            -- RSI < 45 for long
+    rsi_short_min = 55,            -- RSI > 55 for short
+
+    -- Funding filter
+    use_funding   = true,          -- enable funding rate filter
+
     min_atr_pct   = 0.001,
-
     enabled       = true,
 }
 
--- Signal Definitions: {name, side, tp, sl, check(ind, mid, hist)}
-local COIN_SIGNALS = {}
+local instance_name = "swing_levels_4h_" .. (config.coin:lower())
 
-COIN_SIGNALS["BTC"] = {
-    -- LONG L1: Momentum haussier + faible volatilite + MACD decelerant
-    { name = "L1_momentum_calm", side = "long", tp = 2.0, sl = 2.0,
-      check = function(ind, mid, h)
-          return ind.rsi > 65
-             and (ind.atr / mid) < 0.004
-             and h.prev_macd ~= nil and h.prev2_macd ~= nil
-             and ind.macd_histogram < h.prev_macd
-             and h.prev_macd < h.prev2_macd
-      end },
+-- State: weekly/monthly high-low tracking
+local prev_week_high  = nil
+local prev_week_low   = nil
+local prev_month_high = nil
+local prev_month_low  = nil
+local cur_week_high   = nil
+local cur_week_low    = nil
+local cur_month_high  = nil
+local cur_month_low   = nil
+local last_week_key   = nil
+local last_month_key  = nil
 
-    -- SHORT S1: Momentum baissier + faible volatilite
-    { name = "S1_bear_momentum", side = "short", tp = 2.0, sl = 2.0,
-      check = function(ind, mid, h)
-          return ind.rsi < 30
-             and ind.macd_histogram < 0
-             and (ind.atr / mid) < 0.004
-      end },
-}
+-- Pure Lua timestamp decomposition (no os.date — not available in sandbox)
+-- Howard Hinnant algorithm: https://howardhinnant.github.io/date_algorithms.html
+local function ts_to_year_month(ts_sec)
+    local z = math.floor(ts_sec / 86400) + 719468
+    local era
+    if z >= 0 then
+        era = math.floor(z / 146097)
+    else
+        era = math.floor((z - 146096) / 146097)
+    end
+    local doe = z - era * 146097
+    local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524)
+                            - math.floor(doe / 146096)) / 365)
+    local y = yoe + era * 400
+    local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+    local mp = math.floor((5 * doy + 2) / 153)
+    local m = mp + (mp < 10 and 3 or -9)
+    if m <= 2 then y = y + 1 end
+    return y, m
+end
 
--- Instance Setup
-local signals = COIN_SIGNALS[config.coin:upper()] or COIN_SIGNALS["BTC"]
-local instance_name = "sniper_1h_" .. config.coin:lower()
+local function ts_to_week_key(ts_sec)
+    -- Epoch 1970-01-01 was Thursday. Shift +3 days so Monday=0.
+    return math.floor((ts_sec + 259200) / 604800)
+end
 
 -- Position sizing with drawdown guard
 local peak_equity    = 0
@@ -73,22 +90,19 @@ local function get_trade_size()
     local acct = bot.get_account_value()
     if not acct or acct <= 0 then return config.entry_size end
 
-    -- Track peak equity for drawdown guard
     if acct > peak_equity then peak_equity = acct end
 
-    -- Drawdown guard: reduce sizing after consecutive losses
     local dd_mult = 1.0
     if consec_losses >= 3 then
-        dd_mult = 0.25     -- 3+ losses: quarter size
+        dd_mult = 0.25
     elseif consec_losses >= 2 then
-        dd_mult = 0.50     -- 2 losses: half size
+        dd_mult = 0.50
     end
 
-    -- Also reduce if in significant drawdown from peak
     if peak_equity > 0 then
         local dd_pct = (peak_equity - acct) / peak_equity * 100
         if dd_pct > 20 then
-            dd_mult = 0    -- >20% DD: stop trading
+            dd_mult = 0
         elseif dd_pct > 15 then
             dd_mult = math.min(dd_mult, 0.25)
         elseif dd_pct > 10 then
@@ -102,7 +116,7 @@ local function get_trade_size()
     return math.min(size, config.max_size)
 end
 
--- State
+-- Position state
 local last_check     = 0
 local last_trade     = 0
 local in_position    = false
@@ -117,16 +131,9 @@ local ENTRY_TIMEOUT  = 90
 local trade_count    = 0
 local win_count      = 0
 
--- Per-signal TP/SL for active position
-local active_tp      = 0
-local active_sl      = 0
+local active_tp      = 4.0
+local active_sl      = 1.0
 local active_signal  = ""
-
--- MACD history for cross/deceleration detection
-local last_hour      = 0
-local last_macd_val  = nil
-local prev_macd      = nil
-local prev2_macd     = nil
 
 -- Helpers
 local function place_entry(side, mid)
@@ -210,26 +217,95 @@ local function close_position(reason)
     bot.save_state("has_position", "false")
 end
 
-local function indicators_valid(ind)
-    return ind.rsi and ind.atr and ind.macd_histogram
-       and ind.adx and ind.ema_12 and ind.ema_26
-       and ind.sma_20 and ind.sma_50
-       and ind.stoch_rsi_k and ind.plus_di and ind.minus_di
-       and ind.bb_lower and ind.bb_middle
-       and ind.obv and ind.obv_sma
+-- Swing level computation from 4h candles (sandbox-safe, no os.date)
+local function update_levels(candles)
+    if not candles or #candles < 2 then return end
+
+    -- Reset tracking state for full recompute from candle history
+    last_week_key = nil
+    last_month_key = nil
+    cur_week_high = nil
+    cur_week_low = nil
+    cur_month_high = nil
+    cur_month_low = nil
+    prev_week_high = nil
+    prev_week_low = nil
+    prev_month_high = nil
+    prev_month_low = nil
+
+    for _, c in ipairs(candles) do
+        local ts = c.time / 1000  -- candle time is ms
+        local wk = ts_to_week_key(ts)
+        local y, m = ts_to_year_month(ts)
+        local mk = y * 100 + m   -- unique month key (e.g. 202603)
+
+        -- Week tracking
+        if last_week_key == nil then
+            last_week_key = wk
+            cur_week_high = c.high
+            cur_week_low = c.low
+        elseif wk ~= last_week_key then
+            prev_week_high = cur_week_high
+            prev_week_low = cur_week_low
+            cur_week_high = c.high
+            cur_week_low = c.low
+            last_week_key = wk
+        else
+            if c.high > cur_week_high then cur_week_high = c.high end
+            if c.low < cur_week_low then cur_week_low = c.low end
+        end
+
+        -- Month tracking
+        if last_month_key == nil then
+            last_month_key = mk
+            cur_month_high = c.high
+            cur_month_low = c.low
+        elseif mk ~= last_month_key then
+            prev_month_high = cur_month_high
+            prev_month_low = cur_month_low
+            cur_month_high = c.high
+            cur_month_low = c.low
+            last_month_key = mk
+        else
+            if c.high > cur_month_high then cur_month_high = c.high end
+            if c.low < cur_month_low then cur_month_low = c.low end
+        end
+    end
+end
+
+-- Check if price is near a support level (PWL/PML)
+local function near_support(low_price)
+    local buf = config.buffer_pct
+    for _, level in ipairs({prev_week_low, prev_month_low}) do
+        if level and level > 0 then
+            if math.abs(low_price - level) / level < buf then
+                return true, level
+            end
+        end
+    end
+    return false, nil
+end
+
+-- Check if price is near a resistance level (PWH/PMH)
+local function near_resistance(high_price)
+    local buf = config.buffer_pct
+    for _, level in ipairs({prev_week_high, prev_month_high}) do
+        if level and level > 0 then
+            if math.abs(high_price - level) / level < buf then
+                return true, level
+            end
+        end
+    end
+    return false, nil
 end
 
 -- Callbacks
 function on_init()
-    if not COIN_SIGNALS[config.coin:upper()] then
-        bot.log("warn", string.format("%s: coin %s not supported (BTC only)",
-            instance_name, config.coin))
-        config.enabled = false
-    end
-
     bot.log("info", string.format(
-        "%s: Sniper 1h [%d signals, EQ=%.0f%%, x%d, max=$%.0f]",
-        instance_name, #signals, config.equity_pct * 100, config.leverage, config.max_size))
+        "%s: Swing Levels 4h [EQ=%.0f%%, x%d, TP=%.1f%%, SL=%.1f%%, buf=%.1f%%, funding=%s]",
+        instance_name, config.equity_pct * 100, config.leverage,
+        active_tp, active_sl, config.buffer_pct * 100,
+        config.use_funding and "ON" or "OFF"))
 
     local saved = bot.load_state("enabled")
     if saved == "false" then config.enabled = false end
@@ -242,13 +318,6 @@ function on_init()
     local sp = bot.load_state("peak_equity")
     if sp then peak_equity = tonumber(sp) or 0 end
 
-    -- Restore active signal TP/SL
-    local stp = bot.load_state("active_tp")
-    if stp then active_tp = tonumber(stp) or 0 end
-    local ssl = bot.load_state("active_sl")
-    if ssl then active_sl = tonumber(ssl) or 0 end
-    active_signal = bot.load_state("active_signal") or ""
-
     local had = bot.load_state("has_position")
     if had == "true" then
         local pos = bot.get_position(config.coin)
@@ -258,11 +327,9 @@ function on_init()
             position_side = pos.size > 0 and "long" or "short"
             entry_time = bot.time()
             bot.cancel_all_exchange(config.coin)
-            if active_tp == 0 then active_tp = 3.0 end
-            if active_sl == 0 then active_sl = 3.0 end
             place_sl_tp(entry_price, position_side, math.abs(pos.size), active_tp, active_sl)
-            bot.log("info", string.format("%s: restored %s @ $%.2f [%s TP=%.1f%% SL=%.1f%%]",
-                instance_name, position_side, entry_price, active_signal, active_tp, active_sl))
+            bot.log("info", string.format("%s: restored %s @ $%.2f",
+                instance_name, position_side, entry_price))
         else
             bot.save_state("has_position", "false")
         end
@@ -308,10 +375,10 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Global cooldown (48h between trades on same coin)
+    -- Cooldown
     if now - last_trade < config.cooldown_sec then return end
 
-    -- Guard: sync in_position with actual exchange position
+    -- Orphan position guard
     local guard_pos = bot.get_position(config.coin)
     if guard_pos and guard_pos.size ~= 0 then
         in_position = true
@@ -322,46 +389,78 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Get 1h indicators (full history)
-    local ind = bot.get_indicators(config.coin, "1h", 0, mid_price)
-    if not ind then return end
-    if not indicators_valid(ind) then return end
+    -- Get 4h candles for level computation + indicators
+    local candles = bot.get_candles(config.coin, "4h", 200)
+    if not candles or #candles < 50 then return end
 
-    -- Min volatility guard
+    -- Update PWH/PWL/PMH/PML from candle history
+    update_levels(candles)
+
+    -- Need at least prev week levels
+    if not prev_week_high or not prev_week_low then return end
+
+    -- Get indicators
+    local ind = bot.get_indicators(config.coin, "4h", 50, mid_price)
+    if not ind then return end
+    if not ind.rsi or not ind.atr then return end
+
     local atr_pct = ind.atr / mid_price
     if atr_pct < config.min_atr_pct then return end
 
-    -- MACD history tracking (for ETH L1 deceleration signal)
-    local now_hour = math.floor(now / 3600)
-    if now_hour ~= last_hour then
-        if last_hour > 0 and last_macd_val ~= nil then
-            prev2_macd = prev_macd
-            prev_macd = last_macd_val
-        end
-        last_hour = now_hour
+    -- Get last candle for confirmation
+    local last_c = candles[#candles]
+    if not last_c then return end
+
+    local body = last_c.close - last_c.open
+    local bar_range = last_c.high - last_c.low
+    if bar_range < 1e-10 then return end
+    local body_r = math.abs(body) / bar_range
+    local is_bullish = body > 0 and body_r > config.body_ratio
+    local is_bearish = body < 0 and body_r > config.body_ratio
+
+    -- Funding rate check (live only, nil in backtest)
+    local fr_data = nil
+    if config.use_funding then
+        fr_data = bot.get_funding_rate(config.coin)
     end
-    last_macd_val = ind.macd_histogram
 
-    -- Scan signals (first match wins)
-    local hist = { prev_macd = prev_macd, prev2_macd = prev2_macd }
-
-    for _, sig in ipairs(signals) do
-        local ok, matched = pcall(sig.check, ind, mid_price, hist)
-        if ok and matched then
+    -- LONG signal: near support + bullish candle + RSI < 45
+    local near_sup, sup_level = near_support(last_c.low)
+    if near_sup and is_bullish and ind.rsi < config.rsi_long_max then
+        -- Funding filter: skip if FR >= 0 (crowd is long → don't add)
+        if config.use_funding and fr_data and fr_data.rate >= 0 then
+            bot.log("debug", string.format("%s: LONG skipped — FR=%.4f%% >= 0",
+                instance_name, fr_data.rate * 100))
+        else
+            active_signal = string.format("LONG_support_%.0f", sup_level)
             bot.log("info", string.format(
-                "%s: SIGNAL %s (%s) — RSI=%.0f ADX=%.0f ATR%%=%.3f MACD=%.4f",
-                instance_name, sig.name, string.upper(sig.side),
-                ind.rsi, ind.adx, atr_pct * 100, ind.macd_histogram))
-
-            active_tp = sig.tp
-            active_sl = sig.sl
-            active_signal = sig.name
-            bot.save_state("active_tp", tostring(sig.tp))
-            bot.save_state("active_sl", tostring(sig.sl))
-            bot.save_state("active_signal", sig.name)
-
+                "%s: SIGNAL %s RSI=%.0f ATR%%=%.3f lvl=$%.0f FR=%s",
+                instance_name, active_signal, ind.rsi, atr_pct * 100, sup_level,
+                fr_data and string.format("%.4f%%", fr_data.rate * 100) or "N/A"))
+            bot.save_state("active_signal", active_signal)
             entry_time = now
-            local oid = place_entry(sig.side, mid_price)
+            local oid = place_entry("long", mid_price)
+            if oid then last_trade = now end
+            return
+        end
+    end
+
+    -- SHORT signal: near resistance + bearish candle + RSI > 55
+    local near_res, res_level = near_resistance(last_c.high)
+    if near_res and is_bearish and ind.rsi > config.rsi_short_min then
+        -- Funding filter: skip if FR <= 0 (crowd is short → don't add)
+        if config.use_funding and fr_data and fr_data.rate <= 0 then
+            bot.log("debug", string.format("%s: SHORT skipped — FR=%.4f%% <= 0",
+                instance_name, fr_data.rate * 100))
+        else
+            active_signal = string.format("SHORT_resist_%.0f", res_level)
+            bot.log("info", string.format(
+                "%s: SIGNAL %s RSI=%.0f ATR%%=%.3f lvl=$%.0f FR=%s",
+                instance_name, active_signal, ind.rsi, atr_pct * 100, res_level,
+                fr_data and string.format("%.4f%%", fr_data.rate * 100) or "N/A"))
+            bot.save_state("active_signal", active_signal)
+            entry_time = now
+            local oid = place_entry("short", mid_price)
             if oid then last_trade = now end
             return
         end
@@ -374,7 +473,7 @@ function on_fill(fill)
     bot.log("info", string.format("%s: FILL %s %.5f @ $%.2f pnl=%.4f [%s]",
         instance_name, fill.side, fill.size, fill.price, fill.closed_pnl, active_signal))
 
-    -- Entry fill (closed_pnl == 0)
+    -- Entry fill
     if fill.closed_pnl == 0 then
         if not in_position then
             in_position = true
@@ -409,8 +508,8 @@ function on_fill(fill)
     bot.save_state("consec_losses", tostring(consec_losses))
 
     bot.log("info", string.format(
-        "%s: EXIT pnl=%.4f [%s TP=%.1f%% SL=%.1f%%] (W/L: %d/%d = %.0f%%, consec_loss=%d)",
-        instance_name, fill.closed_pnl, active_signal, active_tp, active_sl,
+        "%s: EXIT pnl=%.4f [%s] (W/L: %d/%d = %.0f%%, consec_loss=%d)",
+        instance_name, fill.closed_pnl, active_signal,
         win_count, trade_count,
         trade_count > 0 and (win_count / trade_count * 100) or 0,
         consec_losses))
@@ -452,8 +551,6 @@ function on_shutdown()
     bot.save_state("win_count", tostring(win_count))
     bot.save_state("consec_losses", tostring(consec_losses))
     bot.save_state("has_position", tostring(in_position))
-    bot.save_state("active_tp", tostring(active_tp))
-    bot.save_state("active_sl", tostring(active_sl))
     bot.save_state("active_signal", active_signal or "")
 
     local acct = bot.get_account_value()

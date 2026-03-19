@@ -6,6 +6,7 @@
 #include <lauxlib.h>
 #include <lualib.h>
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +95,12 @@ struct tb_backtest_engine {
     /* Trade log */
     tb_backtest_result_t *result;
 
+    /* Funding rate history (sorted by time, loaded from SQLite) */
+    double  *fr_times;     /* time_ms as double */
+    double  *fr_rates;     /* funding rates */
+    double  *fr_marks;     /* mark prices */
+    int      fr_count;
+
     /* Running stat accumulators (not capped by trade log size) */
     int    stat_total;
     int    stat_wins;
@@ -129,6 +136,8 @@ static int bt_lua_save_state(lua_State *L);
 static int bt_lua_load_state(lua_State *L);
 static int bt_lua_get_sentiment(lua_State *L);
 static int bt_lua_get_fear_greed(lua_State *L);
+static int bt_lua_get_funding_rate(lua_State *L);
+static int bt_lua_get_open_interest(lua_State *L);
 /* ── Record a trade ────────────────────────────────────────────────────── */
 static void record_trade(tb_backtest_engine_t *bt, const char *side,
                          double price, double size, double pnl, double fee) {
@@ -471,6 +480,47 @@ static int bt_lua_get_fear_greed(lua_State *L) {
     return 1;
 }
 
+/* ── Funding rate binary lookup ─────────────────────────────────────────── */
+/* Returns index of last FR entry with time <= time_ms, or -1 if none. */
+static int fr_lookup(const tb_backtest_engine_t *bt, int64_t time_ms) {
+    if (!bt->fr_times || bt->fr_count <= 0) return -1;
+    double t = (double)time_ms;
+    int lo = 0, hi = bt->fr_count - 1, result = -1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (bt->fr_times[mid] <= t) {
+            result = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return result;
+}
+
+static int bt_lua_get_funding_rate(lua_State *L) {
+    tb_backtest_engine_t *bt = get_bt(L);
+    int idx = fr_lookup(bt, bt->current_time);
+    if (idx < 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushnumber(L, bt->fr_rates[idx]);
+    lua_setfield(L, -2, "rate");
+    lua_pushnumber(L, 0.0);  /* premium not available in historical data */
+    lua_setfield(L, -2, "premium");
+    lua_pushnumber(L, bt->fr_marks[idx]);
+    lua_setfield(L, -2, "mark_px");
+    return 1;
+}
+
+static int bt_lua_get_open_interest(lua_State *L) {
+    (void)L;
+    lua_pushnil(L);  /* No historical OI data available */
+    return 1;
+}
+
 /* ── Lua sandbox setup ─────────────────────────────────────────────────── */
 static void setup_lua_sandbox(tb_backtest_engine_t *bt) {
     lua_State *L = bt->L;
@@ -536,6 +586,8 @@ static void setup_lua_sandbox(tb_backtest_engine_t *bt) {
         {"get_indicators",   bt_lua_get_indicators},
         {"get_sentiment",    bt_lua_get_sentiment},
         {"get_fear_greed",   bt_lua_get_fear_greed},
+        {"get_funding_rate", bt_lua_get_funding_rate},
+        {"get_open_interest",bt_lua_get_open_interest},
         {"log",              bt_lua_log},
         {"time",             bt_lua_time},
         {"save_state",       bt_lua_save_state},
@@ -847,13 +899,14 @@ static int bt_lua_get_candles(lua_State *L) {
 
 static int bt_lua_get_indicators(lua_State *L) {
     tb_backtest_engine_t *bt = get_bt(L);
-    /* bot.get_indicators(coin, interval, limit) */
-    int limit = 250;
+    /* bot.get_indicators(coin, interval, limit) — 0 = full history */
+    int limit = 0;
     if (lua_isnumber(L, 3)) limit = (int)lua_tointeger(L, 3);
 
     /* Use aggregated TF candles if available */
     int use_tf = (bt->candles_tf && bt->n_candles_tf > 0);
     int cur_idx = use_tf ? bt->current_tf_idx : bt->current_idx;
+    if (limit <= 0) limit = cur_idx + 1;  /* 0 = full history */
     int start = cur_idx - limit + 1;
     if (start < 0) start = 0;
     int n = cur_idx - start + 1;
@@ -1092,6 +1145,9 @@ void tb_backtest_destroy(tb_backtest_engine_t *bt) {
     bt->L = NULL;
     free(bt->candles);
     free(bt->candles_tf);
+    free(bt->fr_times);
+    free(bt->fr_rates);
+    free(bt->fr_marks);
     free(bt);
 }
 
@@ -1104,6 +1160,80 @@ int tb_backtest_load_candles(tb_backtest_engine_t *bt,
     memcpy(bt->candles, candles, sizeof(tb_candle_t) * n_candles);
     bt->n_candles = n_candles;
     return 0;
+}
+
+int tb_backtest_load_funding_rates_from_db(tb_backtest_engine_t *bt,
+                                            const char *db_path,
+                                            const char *coin,
+                                            int64_t start_ms, int64_t end_ms) {
+    if (!bt || !db_path || !coin) return -1;
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    /* Count rows first to allocate exact size */
+    sqlite3_stmt *cnt_stmt;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT COUNT(*) FROM funding_rates WHERE coin=? AND time_ms>=? AND time_ms<=?",
+        -1, &cnt_stmt, NULL);
+    if (rc != SQLITE_OK) { sqlite3_close(db); return -1; }
+
+    sqlite3_bind_text(cnt_stmt, 1, coin, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(cnt_stmt, 2, start_ms);
+    sqlite3_bind_int64(cnt_stmt, 3, end_ms);
+
+    int count = 0;
+    if (sqlite3_step(cnt_stmt) == SQLITE_ROW)
+        count = sqlite3_column_int(cnt_stmt, 0);
+    sqlite3_finalize(cnt_stmt);
+
+    if (count <= 0) { sqlite3_close(db); return 0; }
+
+    /* Allocate arrays */
+    free(bt->fr_times); free(bt->fr_rates); free(bt->fr_marks);
+    bt->fr_times = malloc(sizeof(double) * (size_t)count);
+    bt->fr_rates = malloc(sizeof(double) * (size_t)count);
+    bt->fr_marks = malloc(sizeof(double) * (size_t)count);
+    if (!bt->fr_times || !bt->fr_rates || !bt->fr_marks) {
+        free(bt->fr_times); free(bt->fr_rates); free(bt->fr_marks);
+        bt->fr_times = bt->fr_rates = bt->fr_marks = NULL;
+        bt->fr_count = 0;
+        sqlite3_close(db);
+        return -1;
+    }
+
+    /* Load data */
+    sqlite3_stmt *stmt;
+    rc = sqlite3_prepare_v2(db,
+        "SELECT time_ms, rate, mark_price FROM funding_rates "
+        "WHERE coin=? AND time_ms>=? AND time_ms<=? ORDER BY time_ms ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        free(bt->fr_times); free(bt->fr_rates); free(bt->fr_marks);
+        bt->fr_times = bt->fr_rates = bt->fr_marks = NULL;
+        bt->fr_count = 0;
+        sqlite3_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, coin, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, start_ms);
+    sqlite3_bind_int64(stmt, 3, end_ms);
+
+    int n = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && n < count) {
+        bt->fr_times[n] = (double)sqlite3_column_int64(stmt, 0);
+        bt->fr_rates[n] = sqlite3_column_double(stmt, 1);
+        bt->fr_marks[n] = sqlite3_column_double(stmt, 2);
+        n++;
+    }
+    bt->fr_count = n;
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return n;
 }
 
 /* ── Aggregate a 5m candle into the strategy TF ───────────────────────── */
@@ -1215,6 +1345,16 @@ int tb_backtest_run(tb_backtest_engine_t *bt, tb_backtest_result_t *out) {
     if (bt->cfg.coin[0] != '\0') {
         lua_pushstring(bt->L, bt->cfg.coin);
         lua_setglobal(bt->L, "COIN");
+    }
+
+    /* Inject GRID_TP / GRID_SL globals for grid search (0 = no override) */
+    if (bt->cfg.grid_tp > 0) {
+        lua_pushnumber(bt->L, bt->cfg.grid_tp);
+        lua_setglobal(bt->L, "GRID_TP");
+    }
+    if (bt->cfg.grid_sl > 0) {
+        lua_pushnumber(bt->L, bt->cfg.grid_sl);
+        lua_setglobal(bt->L, "GRID_SL");
     }
 
     /* Load strategy */

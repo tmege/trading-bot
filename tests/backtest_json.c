@@ -175,6 +175,9 @@ static bnh_result_t compute_buy_and_hold(const tb_candle_t *candles, int n,
 }
 
 /* ── Run backtest on a candle slice ────────────────────────────────────── */
+static double g_grid_tp = 0.0;
+static double g_grid_sl = 0.0;
+
 static int run_backtest_on_slice(const char *strat_path, const char *coin,
                                   const tb_candle_t *candles, int n,
                                   int64_t strategy_interval_ms,
@@ -188,6 +191,8 @@ static int run_backtest_on_slice(const char *strat_path, const char *coin,
         .taker_fee_rate      = TAKER_FEE,
         .slippage_bps        = SLIPPAGE_BPS,
         .strategy_interval_ms = strategy_interval_ms,
+        .grid_tp             = g_grid_tp,
+        .grid_sl             = g_grid_sl,
     };
 
     tb_backtest_engine_t *bt = tb_backtest_create(&cfg);
@@ -197,6 +202,13 @@ static int run_backtest_on_slice(const char *strat_path, const char *coin,
     if (rc != 0) {
         tb_backtest_destroy(bt);
         return -1;
+    }
+
+    /* Load funding rates from cache DB (best-effort, non-fatal if absent) */
+    if (n > 0) {
+        tb_backtest_load_funding_rates_from_db(bt, CACHE_DB_PATH, coin,
+                                                candles[0].time_open,
+                                                candles[n-1].time_open);
     }
 
     rc = tb_backtest_run(bt, result);
@@ -292,6 +304,154 @@ static int run_backtest_isolated(const char *strat_path, const char *coin,
     return -1;
 }
 
+/* ── Monte Carlo bootstrap ─────────────────────────────────────────────── */
+
+/* xoshiro256** PRNG */
+static uint64_t mc_s[4];
+
+static uint64_t mc_rotl(uint64_t x, int k) {
+    return (x << k) | (x >> (64 - k));
+}
+
+static void mc_seed(uint64_t seed) {
+    for (int i = 0; i < 4; i++) {
+        seed += 0x9e3779b97f4a7c15ULL;
+        uint64_t z = seed;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+        mc_s[i] = z ^ (z >> 31);
+    }
+}
+
+static uint64_t mc_next(void) {
+    uint64_t result = mc_rotl(mc_s[1] * 5, 7) * 9;
+    uint64_t t = mc_s[1] << 17;
+    mc_s[2] ^= mc_s[0]; mc_s[3] ^= mc_s[1];
+    mc_s[1] ^= mc_s[2]; mc_s[0] ^= mc_s[3];
+    mc_s[2] ^= t;
+    mc_s[3] = mc_rotl(mc_s[3], 45);
+    return result;
+}
+
+static int mc_rand_int(int max) {
+    return (int)(mc_next() % (uint64_t)max);
+}
+
+static int cmp_double_mc(const void *a, const void *b) {
+    double da = *(const double *)a, db = *(const double *)b;
+    return (da > db) - (da < db);
+}
+
+static double mc_percentile(const double *sorted, int n, double p) {
+    if (n <= 0) return 0;
+    double idx = p / 100.0 * (n - 1);
+    int lo = (int)idx, hi = lo + 1;
+    if (hi >= n) return sorted[n - 1];
+    double frac = idx - lo;
+    return sorted[lo] * (1.0 - frac) + sorted[hi] * frac;
+}
+
+typedef struct {
+    bool   valid;
+    int    n_sims;
+    int    n_trades;
+    double p_ruin;
+    double p95_drawdown;
+    double p99_drawdown;
+    double median_return;
+    double mean_return;
+    double p5_return;
+    double p95_return;
+    double median_final_equity;
+    double p5_final_equity;
+} mc_result_t;
+
+#define MC_N_SIMS 10000
+
+static mc_result_t run_monte_carlo(const tb_bt_trade_t *trades, int n_trade_log,
+                                     double initial_balance) {
+    mc_result_t mc = {0};
+
+    /* Extract per-trade returns (exits only: pnl != 0) */
+    double *returns = malloc((size_t)n_trade_log * sizeof(double));
+    if (!returns) return mc;
+
+    int n_returns = 0;
+    for (int i = 0; i < n_trade_log; i++) {
+        if (fabs(trades[i].pnl) < 1e-12) continue;
+        double balance_before = trades[i].balance_after - trades[i].pnl + trades[i].fee;
+        if (balance_before <= 0) continue;
+        returns[n_returns++] = trades[i].pnl / balance_before;
+    }
+
+    if (n_returns < 5) {
+        free(returns);
+        return mc;
+    }
+
+    mc_seed(42);
+
+    double *final_returns = malloc((size_t)MC_N_SIMS * sizeof(double));
+    double *max_dds       = malloc((size_t)MC_N_SIMS * sizeof(double));
+    double *final_equities = malloc((size_t)MC_N_SIMS * sizeof(double));
+    if (!final_returns || !max_dds || !final_equities) {
+        free(returns); free(final_returns); free(max_dds); free(final_equities);
+        return mc;
+    }
+
+    int ruin_count = 0;
+    double ruin_level = initial_balance * 0.5;
+    double return_sum = 0;
+
+    for (int sim = 0; sim < MC_N_SIMS; sim++) {
+        double equity = initial_balance;
+        double peak = initial_balance;
+        double max_dd = 0;
+        bool ruined = false;
+
+        for (int t = 0; t < n_returns; t++) {
+            int idx = mc_rand_int(n_returns);
+            equity *= (1.0 + returns[idx]);
+
+            if (equity > peak) peak = equity;
+            double dd = (peak - equity) / peak * 100.0;
+            if (dd > max_dd) max_dd = dd;
+
+            if (equity < ruin_level) { ruined = true; break; }
+        }
+
+        if (ruined) ruin_count++;
+        double ret = (equity - initial_balance) / initial_balance * 100.0;
+        final_returns[sim] = ret;
+        max_dds[sim] = max_dd;
+        final_equities[sim] = equity;
+        return_sum += ret;
+    }
+
+    qsort(final_returns, MC_N_SIMS, sizeof(double), cmp_double_mc);
+    qsort(max_dds, MC_N_SIMS, sizeof(double), cmp_double_mc);
+    qsort(final_equities, MC_N_SIMS, sizeof(double), cmp_double_mc);
+
+    mc.valid = true;
+    mc.n_sims = MC_N_SIMS;
+    mc.n_trades = n_returns;
+    mc.p_ruin = (double)ruin_count / MC_N_SIMS * 100.0;
+    mc.p95_drawdown = mc_percentile(max_dds, MC_N_SIMS, 95.0);
+    mc.p99_drawdown = mc_percentile(max_dds, MC_N_SIMS, 99.0);
+    mc.median_return = mc_percentile(final_returns, MC_N_SIMS, 50.0);
+    mc.mean_return = return_sum / MC_N_SIMS;
+    mc.p5_return = mc_percentile(final_returns, MC_N_SIMS, 5.0);
+    mc.p95_return = mc_percentile(final_returns, MC_N_SIMS, 95.0);
+    mc.median_final_equity = mc_percentile(final_equities, MC_N_SIMS, 50.0);
+    mc.p5_final_equity = mc_percentile(final_equities, MC_N_SIMS, 5.0);
+
+    free(returns);
+    free(final_returns);
+    free(max_dds);
+    free(final_equities);
+    return mc;
+}
+
 /* ── Verdict logic (returns plain text, no ANSI) ──────────────────────── */
 static const char *verdict_str(const tb_backtest_result_t *oos,
                                 const bnh_result_t *bnh_oos) {
@@ -359,7 +519,7 @@ int main(int argc, char *argv[]) {
 
     if (argc < 5) {
         fprintf(stderr,
-            "Usage: %s <strategy.lua> <coin> <end_days_ago> <n_days> [interval]\n",
+            "Usage: %s <strategy.lua> <coin> <end_days_ago> <n_days> [interval] [tp] [sl]\n",
             argv[0]);
         return 1;
     }
@@ -369,6 +529,8 @@ int main(int argc, char *argv[]) {
     int end_days_ago          = atoi(argv[3]);
     int n_days                = atoi(argv[4]);
     const char *interval      = argc >= 6 ? argv[5] : "1h";
+    g_grid_tp                 = argc >= 7 ? atof(argv[6]) : 0.0;
+    g_grid_sl                 = argc >= 8 ? atof(argv[7]) : 0.0;
 
     /* Validate inputs to prevent signed overflow */
     if (n_days < 1) n_days = 1;
@@ -499,6 +661,8 @@ int main(int argc, char *argv[]) {
     yyjson_mut_obj_add_real(doc, cfg, "maker_fee", MAKER_FEE);
     yyjson_mut_obj_add_real(doc, cfg, "taker_fee", TAKER_FEE);
     yyjson_mut_obj_add_real(doc, cfg, "slippage_bps", SLIPPAGE_BPS);
+    if (g_grid_tp > 0) yyjson_mut_obj_add_real(doc, cfg, "grid_tp", g_grid_tp);
+    if (g_grid_sl > 0) yyjson_mut_obj_add_real(doc, cfg, "grid_sl", g_grid_sl);
     yyjson_mut_obj_add_int(doc, cfg, "n_candles", n_candles);
     yyjson_mut_obj_add_val(doc, root, "config", cfg);
 
@@ -571,6 +735,29 @@ int main(int argc, char *argv[]) {
         yyjson_mut_arr_append(equity, pt);
     }
     yyjson_mut_obj_add_val(doc, root, "equity_curve", equity);
+
+    /* Monte Carlo simulation on full-period trades */
+    const tb_backtest_result_t *mc_src = (rc_full == 0) ? &r_full : &r_oos;
+    mc_result_t mc = {0};
+    if (mc_src->trades && mc_src->n_trade_log >= 5) {
+        mc = run_monte_carlo(mc_src->trades, mc_src->n_trade_log, INITIAL_BALANCE);
+    }
+
+    if (mc.valid) {
+        yyjson_mut_val *mc_obj = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_int(doc, mc_obj, "n_sims", mc.n_sims);
+        yyjson_mut_obj_add_int(doc, mc_obj, "n_trades", mc.n_trades);
+        yyjson_mut_obj_add_real(doc, mc_obj, "p_ruin_pct", mc.p_ruin);
+        yyjson_mut_obj_add_real(doc, mc_obj, "p95_drawdown", mc.p95_drawdown);
+        yyjson_mut_obj_add_real(doc, mc_obj, "p99_drawdown", mc.p99_drawdown);
+        yyjson_mut_obj_add_real(doc, mc_obj, "median_return", mc.median_return);
+        yyjson_mut_obj_add_real(doc, mc_obj, "mean_return", mc.mean_return);
+        yyjson_mut_obj_add_real(doc, mc_obj, "p5_return", mc.p5_return);
+        yyjson_mut_obj_add_real(doc, mc_obj, "p95_return", mc.p95_return);
+        yyjson_mut_obj_add_real(doc, mc_obj, "median_final_equity", mc.median_final_equity);
+        yyjson_mut_obj_add_real(doc, mc_obj, "p5_final_equity", mc.p5_final_equity);
+        yyjson_mut_obj_add_val(doc, root, "monte_carlo", mc_obj);
+    }
 
     /* Verdict */
     yyjson_mut_obj_add_str(doc, root, "verdict", verdict_str(&r_oos, &bnh_oos));

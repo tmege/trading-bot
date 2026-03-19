@@ -1,69 +1,45 @@
 --[[
-  Sniper 1h — Ultra-selective high-conviction strategy (BTC only)
+  ETH Momentum Daily — Family D (Momentum Continuation)
 
-  Philosophy: Trade like a sniper, not a machine gun.
-  ~1.2 trades/month, maximum conviction, aggressive sizing.
+  Apres un move Daily >3% avec volume 2x → continuation le lendemain.
+  Filtre EMA20: Long si close > EMA20, Short si close < EMA20.
 
-  Grid-searched on 424k+ BTC 5m candles (8.6 years).
-  x7 leverage + 50% equity = 350% exposure per trade.
+  HC Scanner results (walk-forward 6-fold, 50% equity):
+    equity 50%: +9.1%/m, WR 57%, DD 18.5%, PF 2.38, Sharpe 0.40
+    (verdict GO — DD < 20%)
 
-  BTC (2 signals):
-    L1: RSI>65 + LowVol(ATR<0.4%) + MACD decel   TP 2.0%/SL 2.0%
-    S1: RSI<30 + MACD<0 + LowVol(ATR<0.4%)        TP 2.0%/SL 2.0%
+  Funding note: Funding filter tested but losers NOT correlated with
+  opposing funding (only 12% opposed). Filter provides negligible improvement.
+  Kept disabled by default.
 
-  Backtest results (730j, x7, 90% equity):
-    BTC: +275.2%, 28 trades, 75% WR, DD 20.7%, PF 5.39, ~11.3%/month
+  Signal logic:
+    LONG  — Daily bar return > +3%, volume > 2x SMA20, close > EMA20
+    SHORT — Daily bar return < -3%, volume > 2x SMA20, close < EMA20
 
-  Fees: 0.06% round-trip included in all EV calculations.
+  Fees: 0.06% round-trip included.
 ]]
 
 -- Configuration
 local config = {
-    coin          = COIN or "BTC",
+    coin          = COIN or "ETH",
 
-    -- Sizing (50% equity, x7 — worst SL = -$700 sur $10k)
-    equity_pct    = 0.50,          -- 50% equity per trade
-    leverage      = 7,             -- x7 leverage
+    equity_pct    = 0.50,          -- 50% equity (sizing reduction for DD control)
+    leverage      = 5,             -- x5 leverage
     max_size      = 9999.0,
-    entry_size    = 100.0,         -- fallback minimum
+    entry_size    = 100.0,
 
-    -- Patient timing
     check_sec     = 60,
-    cooldown_sec  = 14400,         -- 4h between trades (signals are rare enough)
-    max_hold_sec  = 172800,         -- 48h max hold
+    cooldown_sec  = 86400,         -- 1 day cooldown
+    max_hold_sec  = 432000,        -- 5 days max hold
 
-    -- Guard
-    min_atr_pct   = 0.001,
+    -- Momentum params
+    move_threshold = 3.0,          -- % move on daily bar
+    vol_ratio_min  = 2.0,          -- volume must be 2x SMA20
 
     enabled       = true,
 }
 
--- Signal Definitions: {name, side, tp, sl, check(ind, mid, hist)}
-local COIN_SIGNALS = {}
-
-COIN_SIGNALS["BTC"] = {
-    -- LONG L1: Momentum haussier + faible volatilite + MACD decelerant
-    { name = "L1_momentum_calm", side = "long", tp = 2.0, sl = 2.0,
-      check = function(ind, mid, h)
-          return ind.rsi > 65
-             and (ind.atr / mid) < 0.004
-             and h.prev_macd ~= nil and h.prev2_macd ~= nil
-             and ind.macd_histogram < h.prev_macd
-             and h.prev_macd < h.prev2_macd
-      end },
-
-    -- SHORT S1: Momentum baissier + faible volatilite
-    { name = "S1_bear_momentum", side = "short", tp = 2.0, sl = 2.0,
-      check = function(ind, mid, h)
-          return ind.rsi < 30
-             and ind.macd_histogram < 0
-             and (ind.atr / mid) < 0.004
-      end },
-}
-
--- Instance Setup
-local signals = COIN_SIGNALS[config.coin:upper()] or COIN_SIGNALS["BTC"]
-local instance_name = "sniper_1h_" .. config.coin:lower()
+local instance_name = "momentum_daily_" .. (config.coin:lower())
 
 -- Position sizing with drawdown guard
 local peak_equity    = 0
@@ -73,22 +49,19 @@ local function get_trade_size()
     local acct = bot.get_account_value()
     if not acct or acct <= 0 then return config.entry_size end
 
-    -- Track peak equity for drawdown guard
     if acct > peak_equity then peak_equity = acct end
 
-    -- Drawdown guard: reduce sizing after consecutive losses
     local dd_mult = 1.0
     if consec_losses >= 3 then
-        dd_mult = 0.25     -- 3+ losses: quarter size
+        dd_mult = 0.25
     elseif consec_losses >= 2 then
-        dd_mult = 0.50     -- 2 losses: half size
+        dd_mult = 0.50
     end
 
-    -- Also reduce if in significant drawdown from peak
     if peak_equity > 0 then
         local dd_pct = (peak_equity - acct) / peak_equity * 100
         if dd_pct > 20 then
-            dd_mult = 0    -- >20% DD: stop trading
+            dd_mult = 0
         elseif dd_pct > 15 then
             dd_mult = math.min(dd_mult, 0.25)
         elseif dd_pct > 10 then
@@ -102,7 +75,7 @@ local function get_trade_size()
     return math.min(size, config.max_size)
 end
 
--- State
+-- Position state
 local last_check     = 0
 local last_trade     = 0
 local in_position    = false
@@ -117,16 +90,12 @@ local ENTRY_TIMEOUT  = 90
 local trade_count    = 0
 local win_count      = 0
 
--- Per-signal TP/SL for active position
-local active_tp      = 0
-local active_sl      = 0
+local active_tp      = 5.0
+local active_sl      = 3.0
 local active_signal  = ""
 
--- MACD history for cross/deceleration detection
-local last_hour      = 0
-local last_macd_val  = nil
-local prev_macd      = nil
-local prev2_macd     = nil
+-- EMA tracking (we compute from candles since bot.get_indicators uses different TF)
+local ema20_val      = nil
 
 -- Helpers
 local function place_entry(side, mid)
@@ -210,26 +179,34 @@ local function close_position(reason)
     bot.save_state("has_position", "false")
 end
 
-local function indicators_valid(ind)
-    return ind.rsi and ind.atr and ind.macd_histogram
-       and ind.adx and ind.ema_12 and ind.ema_26
-       and ind.sma_20 and ind.sma_50
-       and ind.stoch_rsi_k and ind.plus_di and ind.minus_di
-       and ind.bb_lower and ind.bb_middle
-       and ind.obv and ind.obv_sma
+-- Compute EMA20 from daily candle closes
+local function compute_ema20(candles)
+    if not candles or #candles < 20 then return nil end
+    local k = 2.0 / (20 + 1)
+    local ema = candles[1].close
+    for i = 2, #candles do
+        ema = candles[i].close * k + ema * (1 - k)
+    end
+    return ema
+end
+
+-- Compute volume SMA20
+local function compute_vol_sma20(candles)
+    if not candles or #candles < 20 then return nil end
+    local sum = 0
+    local start = #candles - 19
+    for i = start, #candles do
+        sum = sum + candles[i].volume
+    end
+    return sum / 20
 end
 
 -- Callbacks
 function on_init()
-    if not COIN_SIGNALS[config.coin:upper()] then
-        bot.log("warn", string.format("%s: coin %s not supported (BTC only)",
-            instance_name, config.coin))
-        config.enabled = false
-    end
-
     bot.log("info", string.format(
-        "%s: Sniper 1h [%d signals, EQ=%.0f%%, x%d, max=$%.0f]",
-        instance_name, #signals, config.equity_pct * 100, config.leverage, config.max_size))
+        "%s: Momentum Daily [EQ=%.0f%%, x%d, TP=%.1f%%, SL=%.1f%%, move>%.1f%%]",
+        instance_name, config.equity_pct * 100, config.leverage,
+        active_tp, active_sl, config.move_threshold))
 
     local saved = bot.load_state("enabled")
     if saved == "false" then config.enabled = false end
@@ -242,13 +219,6 @@ function on_init()
     local sp = bot.load_state("peak_equity")
     if sp then peak_equity = tonumber(sp) or 0 end
 
-    -- Restore active signal TP/SL
-    local stp = bot.load_state("active_tp")
-    if stp then active_tp = tonumber(stp) or 0 end
-    local ssl = bot.load_state("active_sl")
-    if ssl then active_sl = tonumber(ssl) or 0 end
-    active_signal = bot.load_state("active_signal") or ""
-
     local had = bot.load_state("has_position")
     if had == "true" then
         local pos = bot.get_position(config.coin)
@@ -258,11 +228,9 @@ function on_init()
             position_side = pos.size > 0 and "long" or "short"
             entry_time = bot.time()
             bot.cancel_all_exchange(config.coin)
-            if active_tp == 0 then active_tp = 3.0 end
-            if active_sl == 0 then active_sl = 3.0 end
             place_sl_tp(entry_price, position_side, math.abs(pos.size), active_tp, active_sl)
-            bot.log("info", string.format("%s: restored %s @ $%.2f [%s TP=%.1f%% SL=%.1f%%]",
-                instance_name, position_side, entry_price, active_signal, active_tp, active_sl))
+            bot.log("info", string.format("%s: restored %s @ $%.2f",
+                instance_name, position_side, entry_price))
         else
             bot.save_state("has_position", "false")
         end
@@ -308,10 +276,10 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Global cooldown (48h between trades on same coin)
+    -- Cooldown
     if now - last_trade < config.cooldown_sec then return end
 
-    -- Guard: sync in_position with actual exchange position
+    -- Orphan position guard
     local guard_pos = bot.get_position(config.coin)
     if guard_pos and guard_pos.size ~= 0 then
         in_position = true
@@ -322,49 +290,55 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- Get 1h indicators (full history)
-    local ind = bot.get_indicators(config.coin, "1h", 0, mid_price)
-    if not ind then return end
-    if not indicators_valid(ind) then return end
+    -- Get daily candles (30 for EMA20 + volume SMA20)
+    local candles = bot.get_candles(config.coin, "1d", 30)
+    if not candles or #candles < 21 then return end
 
-    -- Min volatility guard
-    local atr_pct = ind.atr / mid_price
-    if atr_pct < config.min_atr_pct then return end
+    -- Compute EMA20 and volume SMA20
+    ema20_val = compute_ema20(candles)
+    local vol_sma = compute_vol_sma20(candles)
+    if not ema20_val or not vol_sma or vol_sma <= 0 then return end
 
-    -- MACD history tracking (for ETH L1 deceleration signal)
-    local now_hour = math.floor(now / 3600)
-    if now_hour ~= last_hour then
-        if last_hour > 0 and last_macd_val ~= nil then
-            prev2_macd = prev_macd
-            prev_macd = last_macd_val
-        end
-        last_hour = now_hour
+    -- Last completed daily candle
+    local last_c = candles[#candles]
+    if not last_c then return end
+
+    -- Bar return
+    local bar_ret = (last_c.close - last_c.open) / last_c.open * 100
+    -- Volume ratio
+    local vol_ratio = last_c.volume / vol_sma
+
+    -- ATR guard skipped: move_threshold > 3% already ensures volatile market
+    -- (bot.get_indicators TF param ignored in backtest — would get daily, not 1h)
+
+    -- LONG: big up bar + volume spike + above EMA20
+    if bar_ret > config.move_threshold and vol_ratio > config.vol_ratio_min
+       and last_c.close > ema20_val then
+
+        active_signal = string.format("LONG_mom_%.1f%%_vol%.1fx", bar_ret, vol_ratio)
+        bot.log("info", string.format(
+            "%s: SIGNAL %s close=$%.2f ema20=$%.2f",
+            instance_name, active_signal, last_c.close, ema20_val))
+        bot.save_state("active_signal", active_signal)
+        entry_time = now
+        local oid = place_entry("long", mid_price)
+        if oid then last_trade = now end
+        return
     end
-    last_macd_val = ind.macd_histogram
 
-    -- Scan signals (first match wins)
-    local hist = { prev_macd = prev_macd, prev2_macd = prev2_macd }
+    -- SHORT: big down bar + volume spike + below EMA20
+    if bar_ret < -config.move_threshold and vol_ratio > config.vol_ratio_min
+       and last_c.close < ema20_val then
 
-    for _, sig in ipairs(signals) do
-        local ok, matched = pcall(sig.check, ind, mid_price, hist)
-        if ok and matched then
-            bot.log("info", string.format(
-                "%s: SIGNAL %s (%s) — RSI=%.0f ADX=%.0f ATR%%=%.3f MACD=%.4f",
-                instance_name, sig.name, string.upper(sig.side),
-                ind.rsi, ind.adx, atr_pct * 100, ind.macd_histogram))
-
-            active_tp = sig.tp
-            active_sl = sig.sl
-            active_signal = sig.name
-            bot.save_state("active_tp", tostring(sig.tp))
-            bot.save_state("active_sl", tostring(sig.sl))
-            bot.save_state("active_signal", sig.name)
-
-            entry_time = now
-            local oid = place_entry(sig.side, mid_price)
-            if oid then last_trade = now end
-            return
-        end
+        active_signal = string.format("SHORT_mom_%.1f%%_vol%.1fx", bar_ret, vol_ratio)
+        bot.log("info", string.format(
+            "%s: SIGNAL %s close=$%.2f ema20=$%.2f",
+            instance_name, active_signal, last_c.close, ema20_val))
+        bot.save_state("active_signal", active_signal)
+        entry_time = now
+        local oid = place_entry("short", mid_price)
+        if oid then last_trade = now end
+        return
     end
 end
 
@@ -374,7 +348,7 @@ function on_fill(fill)
     bot.log("info", string.format("%s: FILL %s %.5f @ $%.2f pnl=%.4f [%s]",
         instance_name, fill.side, fill.size, fill.price, fill.closed_pnl, active_signal))
 
-    -- Entry fill (closed_pnl == 0)
+    -- Entry fill
     if fill.closed_pnl == 0 then
         if not in_position then
             in_position = true
@@ -409,8 +383,8 @@ function on_fill(fill)
     bot.save_state("consec_losses", tostring(consec_losses))
 
     bot.log("info", string.format(
-        "%s: EXIT pnl=%.4f [%s TP=%.1f%% SL=%.1f%%] (W/L: %d/%d = %.0f%%, consec_loss=%d)",
-        instance_name, fill.closed_pnl, active_signal, active_tp, active_sl,
+        "%s: EXIT pnl=%.4f [%s] (W/L: %d/%d = %.0f%%, consec_loss=%d)",
+        instance_name, fill.closed_pnl, active_signal,
         win_count, trade_count,
         trade_count > 0 and (win_count / trade_count * 100) or 0,
         consec_losses))
@@ -452,8 +426,6 @@ function on_shutdown()
     bot.save_state("win_count", tostring(win_count))
     bot.save_state("consec_losses", tostring(consec_losses))
     bot.save_state("has_position", tostring(in_position))
-    bot.save_state("active_tp", tostring(active_tp))
-    bot.save_state("active_sl", tostring(active_sl))
     bot.save_state("active_signal", active_signal or "")
 
     local acct = bot.get_account_value()

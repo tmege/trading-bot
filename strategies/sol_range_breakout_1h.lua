@@ -51,15 +51,26 @@ local config = {
     range_min       = 0.005,        -- min 0.5% (evite bruit)
     vol_multiplier  = 1.2,
 
-    -- TP/SL — Range breakout
-    rb_tp_pct       = 4.5,
-    rb_sl_pct       = 1.5,
+    -- TP/SL — Range breakout (overridable via GRID_TP/GRID_SL)
+    rb_tp_pct       = GRID_TP or 4.5,
+    rb_sl_pct       = GRID_SL or 1.5,
 
-    -- Bear complement B1 params
-    bear_tp_pct     = 6.0,
-    bear_sl_pct     = 2.0,
+    -- Bear complement B1 params (overridable via GRID_TP/GRID_SL)
+    bear_tp_pct     = GRID_TP or 6.0,
+    bear_sl_pct     = GRID_SL or 2.0,
     bear_atr_threshold = 0.012,     -- ATR < 1.2% du prix
     bear_rsi_short  = 35,
+
+    -- ATR-adaptive sizing
+    atr_baseline    = 0.008,        -- ATR% median historique SOL
+    atr_size_min    = 0.5,          -- min multiplier (haute vol)
+    atr_size_max    = 1.5,          -- max multiplier (basse vol)
+
+    -- Trailing stop (disabled: cuts winners short on RR 3:1 setup)
+    -- To re-enable: set trail_activate to ~3.5% (near TP) with offset ~2.0%
+    trail_activate  = 999,          -- effectively disabled
+    trail_offset    = 1.0,          -- SL trails at best_px - 1.0%
+    trail_step      = 0.5,          -- ratchet by 0.5% increments
 
     -- Guard
     min_atr_pct     = 0.001,
@@ -79,6 +90,9 @@ local MONITOR = {
 }
 
 local instance_name = "sol_rb_bear_1h_" .. config.coin:lower()
+
+-- ATR-adaptive sizing state (set in on_tick before signal scan)
+local current_atr_pct = 0
 
 -- ── Position sizing avec drawdown guard ──────────────────────────────────
 local peak_equity   = 0
@@ -114,7 +128,14 @@ local function get_trade_size()
 
     if dd_mult == 0 then return 0 end
 
-    local size = acct * config.equity_pct * config.leverage * dd_mult
+    -- ATR-adaptive multiplier: smaller in high vol, bigger in low vol
+    local atr_mult = 1.0
+    if current_atr_pct > 0 and config.atr_baseline > 0 then
+        atr_mult = config.atr_baseline / current_atr_pct
+        atr_mult = math.max(config.atr_size_min, math.min(config.atr_size_max, atr_mult))
+    end
+
+    local size = acct * config.equity_pct * config.leverage * dd_mult * atr_mult
     return math.min(size, config.max_size)
 end
 
@@ -133,6 +154,11 @@ local ENTRY_TIMEOUT   = 90
 local trade_count     = 0
 local win_count       = 0
 local active_signal   = ""  -- "RB" or "B1"
+
+-- Trailing stop state
+local trail_active    = false
+local trail_best_px   = 0
+local trail_last_sl   = 0
 
 -- ── Helpers ──────────────────────────────────────────────────────────────
 local function place_entry(side, mid)
@@ -335,16 +361,81 @@ function on_tick(coin, mid_price)
         return
     end
 
-    -- In position: monitor
+    -- In position: monitor + trailing stop
     if in_position then
         local pos = bot.get_position(config.coin)
         if not pos or pos.size == 0 then
             in_position = false
             position_side = nil
             entry_price = 0
+            trail_active = false
+            trail_best_px = 0
+            trail_last_sl = 0
             bot.cancel_all_exchange(config.coin)
             sl_oid = nil
             tp_oid = nil
+            return
+        end
+
+        -- Trailing stop logic
+        if entry_price > 0 and mid_price > 0 then
+            local profit_pct
+            if position_side == "long" then
+                profit_pct = (mid_price - entry_price) / entry_price * 100
+            else
+                profit_pct = (entry_price - mid_price) / entry_price * 100
+            end
+
+            if profit_pct >= config.trail_activate then
+                if not trail_active then
+                    trail_active = true
+                    trail_best_px = mid_price
+                    trail_last_sl = 0
+                    bot.log("info", string.format("%s: TRAIL ACTIVATED at +%.1f%% mid=$%.2f [%s]",
+                        instance_name, profit_pct, mid_price, active_signal))
+                end
+
+                -- Update best price
+                if position_side == "long" and mid_price > trail_best_px then
+                    trail_best_px = mid_price
+                elseif position_side == "short" and mid_price < trail_best_px then
+                    trail_best_px = mid_price
+                end
+
+                -- Calculate new trailing SL
+                local new_sl
+                if position_side == "long" then
+                    new_sl = trail_best_px * (1 - config.trail_offset / 100)
+                else
+                    new_sl = trail_best_px * (1 + config.trail_offset / 100)
+                end
+
+                -- Ratchet: only move SL if it improved by trail_step
+                local should_move = false
+                if trail_last_sl == 0 then
+                    should_move = true
+                elseif position_side == "long" then
+                    should_move = (new_sl - trail_last_sl) / entry_price * 100 >= config.trail_step
+                else
+                    should_move = (trail_last_sl - new_sl) / entry_price * 100 >= config.trail_step
+                end
+
+                if should_move then
+                    if sl_oid then
+                        bot.cancel(config.coin, sl_oid)
+                        sl_oid = nil
+                    end
+                    local pos_size = math.abs(pos.size)
+                    if position_side == "long" then
+                        sl_oid = bot.place_trigger(config.coin, "sell", new_sl, pos_size, new_sl, "sl")
+                    else
+                        sl_oid = bot.place_trigger(config.coin, "buy", new_sl, pos_size, new_sl, "sl")
+                    end
+                    trail_last_sl = new_sl
+                    bot.log("info", string.format("%s: TRAIL SL moved to $%.2f (best=$%.2f, +%.1f%%) [%s]",
+                        instance_name, new_sl, trail_best_px, profit_pct, active_signal))
+                end
+            end
         end
         return
     end
@@ -384,11 +475,12 @@ function on_tick(coin, mid_price)
         end
     end
 
-    -- Get indicators (250 lookback — SMA200 needs 200+)
-    local ind = bot.get_indicators(config.coin, "1h", 250, mid_price)
+    -- Get indicators (full history)
+    local ind = bot.get_indicators(config.coin, "1h", 0, mid_price)
     if not ind or not ind.atr then return end
 
     local atr_pct = ind.atr / mid_price
+    current_atr_pct = atr_pct
     if atr_pct < config.min_atr_pct then return end
 
     -- ── SIGNAL PRIORITY: Bear B1 first (if in bear regime), then Range Breakout
@@ -505,6 +597,9 @@ function on_fill(fill)
     in_position = false
     position_side = nil
     entry_price = 0
+    trail_active = false
+    trail_best_px = 0
+    trail_last_sl = 0
     bot.save_state("has_position", "false")
 end
 
@@ -522,6 +617,9 @@ function on_timer()
         in_position = false
         position_side = nil
         entry_price = 0
+        trail_active = false
+        trail_best_px = 0
+        trail_last_sl = 0
         bot.cancel_all_exchange(config.coin)
         sl_oid = nil
         tp_oid = nil

@@ -5,12 +5,14 @@ An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), 
 ## Features
 
 - **Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders
-- **Lua strategies** — sandboxed, hot-reload (5s), multi-coin per file, regime detection (bull/bear/neutral), dynamic leverage x3→x5, ATR-based sizing, drawdown guard
+- **Lua strategies** — sandboxed, hot-reload (5s), multi-coin per file, trailing stop, ATR-adaptive sizing, drawdown guard
 - **Risk management** — daily loss limit, emergency close, circuit breaker, velocity guard, losing streak pause
 - **Backtesting** — multi-timeframe 5m simulation, walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Desktop GUI** — Electron + React (dashboard, market overview, strategy browser, interactive backtesting, settings)
 - **Paper trading** — real market data, simulated execution, per-strategy paper/live mode (mixed mode)
 - **18+ technical indicators** — SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, CMF, MFI, Squeeze Momentum, and more
+- **Funding rate integration** — historical Binance funding rates in backtest + analysis (12 FR signals)
+- **Monte Carlo simulation** — bootstrap risk estimation integrated in backtest output (P(ruin), P95 DD, worst-case scenarios)
 
 ## Build
 
@@ -119,6 +121,9 @@ Backtests use **5m candle simulation** with indicator aggregation to the strateg
 # Download candle data (required before first backtest)
 ./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
 
+# Download funding rates (optional, enables FR signals in backtest + analysis)
+./build/funding_fetcher --coins BTC,ETH,SOL,DOGE --days 3200
+
 # Single strategy (last arg = strategy TF, simulation always uses 5m)
 ./build/backtest_json strategies/btc_sniper_1h.lua BTC 0 90 1h
 
@@ -129,14 +134,27 @@ Backtests use **5m candle simulation** with indicator aggregation to the strateg
 ./scripts/backtest_full_report.sh
 ```
 
-### Probabilistic Analysis
+### Signal Scanner (C)
+
+```bash
+# C-native signal scanner — 65 signals, combos 1-3, TP/SL grid, walk-forward IS/OOS
+./build/signal_scanner DOGE 2000 both 2      # coin, days, direction, max_combo
+./build/signal_scanner BTC 2000 long 3
+./build/signal_scanner ETH 2000 both 2
+```
+
+### Grid Search TP/SL
+
+```bash
+# Grid search TP/SL for a specific strategy (loops TP 1.0→6.0 × SL 0.5→4.0)
+./scripts/grid_search.sh strategies/doge_sniper_relaxed_1h.lua DOGE 2000 1h
+```
+
+### Regime Analyzer (C)
 
 ```bash
 # Per-regime signal analysis with walk-forward validation and Monte Carlo
-python3 tools/regime_analyzer.py --coin ETH,SOL --tf 1h --validate --montecarlo
-
-# Signal scan (all combinations)
-python3 tools/strategy_analyzer.py --coin ETH --tf 1h
+./build/regime_analyzer ETH 2000 1h --validate --montecarlo
 ```
 
 See [docs/strategies.md](docs/strategies.md) for strategy details and [docs/backtest-market-periods.md](docs/backtest-market-periods.md) for results.
