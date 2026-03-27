@@ -654,20 +654,15 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
         return -1;
     }
 
-    /* Place order via paper exchange or REST */
+    /* Place order via paper exchange */
     uint64_t oid = 0;
     int rc;
-    hl_rest_fill_info_t fill_info;
-    memset(&fill_info, 0, sizeof(fill_info));
-    int n_filled = 0;
 
     if (paper) {
         rc = tb_paper_place_order(paper, &submit->order, &oid);
     } else {
-        rc = hl_rest_place_orders_ex(mgr->rest, &resolved, 1,
-                                      resolved.grouping,
-                                      &fill_info, &n_filled);
-        oid = fill_info.oid;
+        tb_log_error("order rejected: live trading disabled (educational build)");
+        return -1;
     }
     if (rc != 0) return -1;
 
@@ -719,13 +714,6 @@ int tb_order_mgr_submit(tb_order_mgr_t *mgr, const tb_order_submit_t *submit,
                 px_str, sz_str,
                 submit->strategy_name);
 
-    /* IOC fill confirmed by REST — real fill arrives via WS userFills */
-    if (!paper && fill_info.filled && fill_info.avg_px > 0) {
-        tb_log_debug("REST confirms fill: %s %.6f @ %.2f (oid=%llu, awaiting WS)",
-                     coin, fill_info.total_sz, fill_info.avg_px,
-                     (unsigned long long)oid);
-    }
-
     return 0;
 }
 
@@ -743,7 +731,8 @@ int tb_order_mgr_cancel(tb_order_mgr_t *mgr, uint32_t asset, uint64_t oid) {
     if (paper) {
         rc = tb_paper_cancel_order(paper, asset, oid);
     } else {
-        rc = hl_rest_cancel_order(mgr->rest, asset, oid);
+        tb_log_error("cancel rejected: live trading disabled (educational build)");
+        return -1;
     }
     if (rc == 0) {
         remove_tracked_order(mgr, oid);
@@ -800,8 +789,8 @@ int tb_order_mgr_cancel_all_coin(tb_order_mgr_t *mgr, const char *coin) {
         }
     }
     if (n_live > 0) {
-        int r = hl_rest_cancel_orders(mgr->rest, live_assets, live_oids, n_live);
-        if (r != 0) rc = r;
+        tb_log_error("cancel_all rejected: live trading disabled (educational build)");
+        rc = -1;
     }
 
     if (rc == 0) {
@@ -853,6 +842,11 @@ int tb_order_mgr_cancel_all_exchange_coin_strategy(tb_order_mgr_t *mgr,
         return rc;
     }
 
+    /* Educational build: no live exchange access */
+    tb_log_error("cancel_all_exchange: live trading disabled (educational build)");
+    return -1;
+
+    /* Dead code below — kept for reference */
     if (!mgr->user_addr[0]) return -1;
 
     /* Resolve asset ID for this coin (exchange orders don't include it) */
@@ -1131,8 +1125,8 @@ int tb_order_mgr_reconcile(tb_order_mgr_t *mgr) {
             if (mgr->paper) {
                 tb_paper_place_order(mgr->paper, &close_order.order, &close_oid);
             } else {
-                hl_rest_place_order(mgr->rest, &close_order.order,
-                                    TB_GROUP_NA, &close_oid);
+                tb_log_error("emergency close rejected: live trading disabled (educational build)");
+                continue;
             }
             tb_log_warn("EMERGENCY: closing %s position sz=%.4f @ ref=%.2f",
                         positions[p].coin, sz, ref_price);

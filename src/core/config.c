@@ -28,23 +28,6 @@ static bool json_bool(yyjson_val *obj, const char *key, bool fallback) {
     return yyjson_is_bool(val) ? yyjson_get_bool(val) : fallback;
 }
 
-/* Load a secret from environment variable and clear it from env. Returns 0 on success. */
-static int load_env_secret(const char *env_name, char *dst, size_t dst_len,
-                           bool required) {
-    const char *val = getenv(env_name);
-    if (val && val[0]) {
-        snprintf(dst, dst_len, "%s", val);
-        /* Clear from environment to reduce exposure to child processes */
-        unsetenv(env_name);
-        return 0;
-    }
-    dst[0] = '\0';
-    if (required) {
-        fprintf(stderr, "ERROR: required env var %s not set\n", env_name);
-        return -1;
-    }
-    return 0;
-}
 
 int tb_config_load(tb_config_t *cfg, const char *json_path) {
     memset(cfg, 0, sizeof(*cfg));
@@ -201,24 +184,21 @@ int tb_config_load(tb_config_t *cfg, const char *json_path) {
 
     yyjson_doc_free(doc);
 
-    /* Load secrets from environment variables.
-     * Credentials required if any strategy runs in live mode. */
-    bool any_live = false;
-    for (int i = 0; i < cfg->n_active_strategies; i++) {
-        bool is_paper = cfg->strategy_paper_set[i]
-            ? cfg->strategy_paper_mode[i]
-            : cfg->paper_trading;
-        if (!is_paper) { any_live = true; break; }
+    /* ── Educational build: force paper mode unconditionally ────────────── */
+    if (!cfg->paper_trading) {
+        tb_log_warn("CONFIG: paper_trading was false — overridden to true (educational build)");
+        cfg->paper_trading = true;
     }
-    /* If no active strategies, fall back to global flag */
-    if (cfg->n_active_strategies == 0) any_live = !cfg->paper_trading;
-    bool creds_required = any_live;
-    int rc = 0;
-    rc |= load_env_secret("TB_PRIVATE_KEY", cfg->private_key_hex,
-                           sizeof(cfg->private_key_hex), creds_required);
-    rc |= load_env_secret("TB_WALLET_ADDRESS", cfg->wallet_address,
-                           sizeof(cfg->wallet_address), creds_required);
-    return rc;
+    for (int i = 0; i < cfg->n_active_strategies; i++) {
+        cfg->strategy_paper_set[i] = true;
+        cfg->strategy_paper_mode[i] = true;
+    }
+
+    /* Do not load exchange credentials — not needed for paper trading */
+    cfg->private_key_hex[0] = '\0';
+    cfg->wallet_address[0] = '\0';
+
+    return 0;
 }
 
 void tb_config_dump(const tb_config_t *cfg) {

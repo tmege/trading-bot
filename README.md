@@ -1,15 +1,17 @@
-# Trading Bot
+# Trading Bot — Educational
+
+> **EDUCATIONAL USE ONLY** — This project was built by **tmege** as an educational exercise. It runs exclusively in paper trading mode (simulated orders). Live trading is disabled at every level (config, engine, order manager, GUI). No real funds can be placed at risk.
 
 An algorithmic trading bot connected to [Hyperliquid](https://hyperliquid.xyz), written in C for performance with Lua-based strategies for flexibility.
 
 ## Features
 
-- **Hyperliquid connector** — REST + WebSocket, EIP-712 signing, limit/trigger/IOC orders
+- **Hyperliquid connector** — REST + WebSocket, real-time market data, limit/trigger/IOC orders (paper only)
 - **Lua strategies** — sandboxed, hot-reload (5s), multi-coin per file, trailing stop, ATR-adaptive sizing, drawdown guard
 - **Risk management** — daily loss limit, emergency close, circuit breaker, velocity guard, losing streak pause
 - **Backtesting** — multi-timeframe 5m simulation, walk-forward IS/OOS validation, Sharpe/Sortino/drawdown metrics
 - **Desktop GUI** — Electron + React (dashboard, market overview, strategy browser, interactive backtesting, settings)
-- **Paper trading** — real market data, simulated execution, per-strategy paper/live mode (mixed mode)
+- **Paper trading** — real market data, simulated execution
 - **18+ technical indicators** — SMA, EMA, RSI, MACD, BB, ATR, VWAP, ADX, Keltner, Ichimoku, CMF, MFI, Squeeze Momentum, and more
 - **Funding rate integration** — historical Binance funding rates in backtest + analysis (12 FR signals)
 - **Monte Carlo simulation** — bootstrap risk estimation integrated in backtest output (P(ruin), P95 DD, worst-case scenarios)
@@ -29,17 +31,30 @@ cmake --build build && ctest --test-dir build --output-on-failure
 
 6 test suites, 128 tests.
 
-## Configuration
+## Data Setup
 
-### Environment Variables
+The repository ships without market data. You need to download candles before running the bot or backtesting.
 
 ```bash
-# Required in LIVE mode (optional in paper trading)
-TB_PRIVATE_KEY=0x...        # Hyperliquid API Wallet private key
-TB_WALLET_ADDRESS=0x...     # Main wallet address
+# Download 5m candles from Binance (required — ~300 MB, takes a few minutes)
+./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
+
+# Download funding rates (optional, enables FR signals in backtest + analysis)
+./build/funding_fetcher --coins BTC,ETH,SOL,DOGE --days 3200
 ```
 
-Store credentials in `.env` (auto-loaded by `scripts/start.sh`):
+This creates `data/candle_cache.db` (SQLite) with up to 8+ years of 5-minute candles per coin. The database is used by the backtest engine, signal scanner, and regime analyzer.
+
+## Configuration
+
+### Environment Variables (optional)
+
+```bash
+# Anthropic API (optional — enables AI daily digest)
+TB_ANTHROPIC_API_KEY=sk-...
+```
+
+Store in `.env` (auto-loaded by `scripts/start.sh`):
 
 ```bash
 cp .env.template .env
@@ -49,20 +64,6 @@ chmod 600 .env
 ### Config File
 
 `config/bot_config.json` — exchange URLs, risk parameters, active strategies with coins, paper mode. See the file for full options.
-
-Paper trading can be configured globally or per-strategy:
-
-```json
-{
-  "mode": { "paper_trading": false },
-  "active_strategies": [
-    {"file": "btc_sniper_1h.lua", "coins": ["BTC"]},
-    {"file": "new_strategy.lua", "coins": ["ETH"], "paper_mode": true, "paper_balance": 500}
-  ]
-}
-```
-
-When `paper_mode` is set on a strategy, it overrides the global flag. Each paper strategy gets an isolated simulated exchange (own balance, positions, orders). Strategies without `paper_mode` inherit the global setting.
 
 ## License Activation
 
@@ -104,26 +105,19 @@ node scripts/license_admin.js list
 cd gui && npm install && npm run dev
 ```
 
-## Strategies actives
+## Strategies
 
-| Asset | Fichier | Statut | Note /10 |
-|-------|---------|--------|----------|
-| BTC | `btc_sniper_1h.lua` | LIVE | 6.5 |
-| DOGE | `doge_sniper_relaxed_1h.lua` | LIVE | 7.5 |
-| SOL | `sol_range_breakout_1h.lua` | LIVE | 5.5 |
-| ETH | — | RECHERCHE | — |
+| Asset | File | Mode |
+|-------|------|------|
+| BTC | `btc_sniper_1h.lua` | Paper |
+| DOGE | `doge_sniper_relaxed_1h.lua` | Paper |
+| SOL | `sol_range_breakout_1h.lua` | Paper |
 
 ## Backtesting
 
 Backtests use **5m candle simulation** with indicator aggregation to the strategy's native timeframe. This prevents the same-candle fill bug (entry + SL/TP filling on the same bar) and produces realistic results.
 
 ```bash
-# Download candle data (required before first backtest)
-./build/candle_fetcher --coins BTC,ETH,SOL,DOGE --intervals 5m --days 3200
-
-# Download funding rates (optional, enables FR signals in backtest + analysis)
-./build/funding_fetcher --coins BTC,ETH,SOL,DOGE --days 3200
-
 # Single strategy (last arg = strategy TF, simulation always uses 5m)
 ./build/backtest_json strategies/btc_sniper_1h.lua BTC 0 90 1h
 
@@ -170,8 +164,12 @@ libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all 
 | [docs/strategies.md](docs/strategies.md) | Strategy description and parameters |
 | [docs/backtest-market-periods.md](docs/backtest-market-periods.md) | Multi-period backtest results (5m simulation) |
 | [docs/pentest.md](docs/pentest.md) | Security audit report |
-| [docs/marcus_venn_audit.md](docs/marcus_venn_audit.md) | Trading audit & $500 deployment plan |
+| [docs/architecture_prompt.md](docs/architecture_prompt.md) | Architecture specification (Python port prompt) |
 | [CLAUDE.md](CLAUDE.md) | AI-friendly project map (architecture, conventions, key files) |
+
+## Author
+
+Built by **tmege** as an educational project.
 
 ## License
 

@@ -40,16 +40,14 @@ export default function Dashboard({ botStatus, paperMode }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Paper trading banner */}
-      {paperMode && (
-        <div className="bg-yellow-500/15 border-b border-yellow-500/30 px-4 py-2 flex items-center justify-center gap-2 shrink-0">
-          <span className="text-yellow-400 text-xs font-bold tracking-widest uppercase">
-            Paper Trading
-          </span>
-          <span className="text-yellow-500/60 text-xs">
-            — Simulated orders, no real funds
-          </span>
-        </div>
-      )}
+      <div className="bg-yellow-500/15 border-b border-yellow-500/30 px-4 py-2 flex items-center justify-center gap-2 shrink-0">
+        <span className="text-yellow-400 text-xs font-bold tracking-widest uppercase">
+          Paper Trading — Educational
+        </span>
+        <span className="text-yellow-500/60 text-xs">
+          — Simulated orders, no real funds
+        </span>
+      </div>
 
       {/* Top bar: controls + account */}
       <div className="p-4 pb-0 flex items-center justify-between">

@@ -1,32 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Settings as SettingsIcon, ToggleLeft, ToggleRight, Plus, X, AlertTriangle } from 'lucide-react';
-import ConfirmModal from '../components/ConfirmModal';
+import { Settings as SettingsIcon, Plus, X, AlertTriangle } from 'lucide-react';
 
 const POPULAR_COINS = ['ETH', 'BTC', 'SOL', 'DOGE', 'HYPE', 'PUMP', 'AVAX', 'ARB', 'OP', 'MATIC', 'LINK', 'UNI', 'AAVE', 'MKR', 'SNX', 'PEPE', 'WIF', 'BONK', 'JUP', 'TIA', 'SEI', 'SUI', 'APT', 'INJ', 'FTM', 'NEAR', 'ATOM', 'DOT', 'ADA', 'XRP', 'LTC', 'BCH'];
 
 const COIN_RE = /^[A-Z]{2,10}$/;
 
-export default function Settings({ paperMode, onPaperModeChange, botStatus, addToast, closeModalRef }) {
+export default function Settings({ botStatus, addToast }) {
   const [config, setConfig] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [addingCoin, setAddingCoin] = useState(null);
   const [newCoin, setNewCoin] = useState('');
-  const [showLiveConfirm, setShowLiveConfirm] = useState(false);
   const [needsRestart, setNeedsRestart] = useState(false);
   const prevRunning = useRef(null);
 
   // Input validation states
   const [coinError, setCoinError] = useState('');
   const [riskErrors, setRiskErrors] = useState({});
-
-  // Register modal close callback
-  useEffect(() => {
-    if (closeModalRef) {
-      closeModalRef.current = () => setShowLiveConfirm(false);
-      return () => { closeModalRef.current = null; };
-    }
-  }, [closeModalRef]);
 
   // Clear needsRestart when bot restarts (stopped → running transition)
   useEffect(() => {
@@ -133,34 +123,6 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
     saveConfig(updated);
   }
 
-  function handlePaperToggle() {
-    if (!config) return;
-    const isPaper = !!config.mode?.paper_trading;
-
-    if (isPaper) {
-      // Paper → Live: show confirmation
-      setShowLiveConfirm(true);
-    } else {
-      // Live → Paper: safe, no confirmation needed
-      const updated = JSON.parse(JSON.stringify(config));
-      if (!updated.mode) updated.mode = {};
-      updated.mode.paper_trading = true;
-      saveConfig(updated);
-      if (onPaperModeChange) onPaperModeChange(true);
-      if (addToast) addToast('info', 'Switched to PAPER mode. Restart bot to apply.');
-    }
-  }
-
-  function confirmLiveSwitch() {
-    setShowLiveConfirm(false);
-    const updated = JSON.parse(JSON.stringify(config));
-    if (!updated.mode) updated.mode = {};
-    updated.mode.paper_trading = false;
-    saveConfig(updated);
-    if (onPaperModeChange) onPaperModeChange(false);
-    if (addToast) addToast('warning', 'Switched to LIVE mode. Restart bot to apply.');
-  }
-
   if (!config) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
@@ -174,17 +136,6 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
   return (
     <div className={`flex-1 overflow-auto p-6 ${saving ? 'opacity-75 pointer-events-none' : ''}`}>
       <div className="max-w-2xl mx-auto">
-        {/* Confirm Paper → Live modal */}
-        <ConfirmModal
-          open={showLiveConfirm}
-          title="Switch to LIVE trading?"
-          message="This will enable real orders on Hyperliquid with real money at risk. Make sure you understand the risks before proceeding."
-          confirmLabel="Switch to LIVE"
-          confirmVariant="danger"
-          onConfirm={confirmLiveSwitch}
-          onCancel={() => setShowLiveConfirm(false)}
-        />
-
         {/* Header */}
         <div className="flex items-center gap-3 mb-6">
           <SettingsIcon size={20} className="text-accent" />
@@ -235,21 +186,9 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
                       }`}>
                         {(entry.role || 'secondary').toUpperCase()}
                       </span>
-                      {/* Per-strategy paper/live badge */}
-                      {(() => {
-                        const isPaper = entry.paper_mode != null
-                          ? entry.paper_mode
-                          : !!config.mode?.paper_trading;
-                        return (
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${
-                            isPaper
-                              ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-                              : 'bg-profit/20 text-profit border border-profit/30'
-                          }`}>
-                            {isPaper ? 'PAPER' : 'LIVE'}
-                          </span>
-                        );
-                      })()}
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
+                        PAPER
+                      </span>
                     </div>
                     <span className="text-xs text-gray-500">
                       {entry.coins ? `${entry.coins.length} coins` : 'legacy mode'}
@@ -267,7 +206,6 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
                             className="group flex items-center gap-1.5 px-3 py-1.5 bg-profit/10 border border-profit/30 rounded-lg text-sm text-profit cursor-pointer hover:bg-profit/20 transition-colors"
                             onClick={() => toggleCoin(stratIdx, coin)}
                           >
-                            <ToggleRight size={14} />
                             <span className="font-medium">{coin}</span>
                             <button
                               onClick={(e) => {
@@ -360,61 +298,6 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
                     </div>
                   )}
 
-                  {/* Per-strategy paper mode toggle */}
-                  {!config.mode?.paper_trading && (
-                    <div className="px-4 py-3 border-t border-surface-border">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <span className="text-xs text-gray-400">Paper mode</span>
-                          <p className="text-[10px] text-gray-600 mt-0.5">
-                            Override global mode for this strategy only.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            const updated = JSON.parse(JSON.stringify(config));
-                            const e = updated.strategies.active[stratIdx];
-                            if (e.paper_mode) {
-                              delete e.paper_mode;
-                              delete e.paper_balance;
-                            } else {
-                              e.paper_mode = true;
-                              if (!e.paper_balance) e.paper_balance = config.mode?.paper_initial_balance || 500;
-                            }
-                            saveConfig(updated);
-                          }}
-                        >
-                          {entry.paper_mode ? (
-                            <ToggleRight size={24} className="text-yellow-400" />
-                          ) : (
-                            <ToggleLeft size={24} className="text-gray-600" />
-                          )}
-                        </button>
-                      </div>
-                      {entry.paper_mode && (
-                        <div className="mt-2 flex items-center gap-2">
-                          <label className="text-[10px] text-gray-500">Balance:</label>
-                          <input
-                            type="number"
-                            min="10"
-                            max="100000"
-                            step="10"
-                            value={entry.paper_balance ?? config.mode?.paper_initial_balance ?? 500}
-                            onChange={(e) => {
-                              const val = parseFloat(e.target.value);
-                              if (isNaN(val) || val < 10 || val > 100000) return;
-                              const updated = JSON.parse(JSON.stringify(config));
-                              updated.strategies.active[stratIdx].paper_balance = val;
-                              saveConfig(updated);
-                            }}
-                            className="w-24 px-2 py-1 bg-surface-bg border border-yellow-500/30 rounded text-xs text-white font-mono outline-none focus:border-yellow-400"
-                          />
-                          <span className="text-[10px] text-gray-600">USDC</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
                   {/* Legacy mode — offer to enable multi-coin */}
                   {!entry.coins && (
                     <div className="p-4 flex items-center gap-3">
@@ -499,69 +382,43 @@ export default function Settings({ paperMode, onPaperModeChange, botStatus, addT
           </div>
         </section>
 
-        {/* Mode */}
+        {/* Mode — Paper only (educational) */}
         <section>
           <h2 className="text-xs text-gray-500 uppercase tracking-wider mb-3">Trading Mode</h2>
-          <div className={`bg-surface-card border rounded-lg p-4 ${
-            config.mode?.paper_trading
-              ? 'border-yellow-500/40'
-              : 'border-surface-border'
-          }`}>
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-medium text-white">Paper Trading</span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${
-                    config.mode?.paper_trading
-                      ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-                      : 'bg-profit/20 text-profit border border-profit/30'
-                  }`}>
-                    {config.mode?.paper_trading ? 'PAPER' : 'LIVE'}
-                  </span>
-                </div>
-                <p className="text-xs text-gray-600">
-                  {config.mode?.paper_trading
-                    ? 'Simulated orders — no real money at risk.'
-                    : 'Real orders on Hyperliquid — real money at risk.'}
-                </p>
-              </div>
-              <button
-                onClick={handlePaperToggle}
-                className="shrink-0 ml-4"
-              >
-                {config.mode?.paper_trading ? (
-                  <ToggleRight size={32} className="text-yellow-400" />
-                ) : (
-                  <ToggleLeft size={32} className="text-gray-600" />
-                )}
-              </button>
+          <div className="bg-surface-card border border-yellow-500/40 rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-sm font-medium text-white">Paper Trading</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
+                PAPER
+              </span>
             </div>
+            <p className="text-xs text-gray-600 mb-3">
+              Educational build — simulated orders only, no real money at risk.
+            </p>
 
             {/* Paper bankroll */}
-            {config.mode?.paper_trading && (
-              <div className="mt-3 pt-3 border-t border-yellow-500/20">
-                <label className="text-xs text-gray-500 block mb-1.5">Starting Bankroll (USDC)</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="10"
-                    max="100000"
-                    step="10"
-                    value={config.mode?.paper_initial_balance ?? 100}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      if (isNaN(val) || val < 10 || val > 100000) return;
-                      const updated = JSON.parse(JSON.stringify(config));
-                      if (!updated.mode) updated.mode = {};
-                      updated.mode.paper_initial_balance = val;
-                      saveConfig(updated);
-                    }}
-                    className="w-32 px-3 py-1.5 bg-surface-bg border border-yellow-500/30 rounded-lg text-sm text-white font-mono outline-none focus:border-yellow-400"
-                  />
-                  <span className="text-xs text-gray-600">10 - 100,000</span>
-                </div>
+            <div className="pt-3 border-t border-yellow-500/20">
+              <label className="text-xs text-gray-500 block mb-1.5">Starting Bankroll (USDC)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="10"
+                  max="100000"
+                  step="10"
+                  value={config.mode?.paper_initial_balance ?? 100}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (isNaN(val) || val < 10 || val > 100000) return;
+                    const updated = JSON.parse(JSON.stringify(config));
+                    if (!updated.mode) updated.mode = {};
+                    updated.mode.paper_initial_balance = val;
+                    saveConfig(updated);
+                  }}
+                  className="w-32 px-3 py-1.5 bg-surface-bg border border-yellow-500/30 rounded-lg text-sm text-white font-mono outline-none focus:border-yellow-400"
+                />
+                <span className="text-xs text-gray-600">10 - 100,000</span>
               </div>
-            )}
+            </div>
           </div>
         </section>
       </div>

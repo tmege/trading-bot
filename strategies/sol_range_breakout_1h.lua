@@ -1,5 +1,5 @@
 --[[
-  SOL Range Breakout + Bear Complement 1h — LIVE PRODUCTION
+  SOL Range Breakout + Bear Complement 1h — PAPER (Educational)
   Ne pas modifier sans re-backtest walk-forward
 
   Deux modes combines en une seule strategie (single-position):

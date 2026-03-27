@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import Market from './pages/Market';
@@ -53,7 +53,7 @@ function AppMain() {
   const { notifications, dismiss } = useTradeNotifications();
   const marketData = useMarketData();
   const { toasts, addToast, dismissToast } = useToasts();
-  const [paperMode, setPaperMode] = useState(null);
+  const paperMode = true;
   const activeCoins = useActiveCoins();
 
   // Modal close callback ref (set by child pages)
@@ -76,15 +76,6 @@ function AppMain() {
   });
 
 
-  const loadPaperMode = useCallback(async () => {
-    try {
-      const res = await window.api.config.read();
-      if (res.ok) setPaperMode(!!res.config.mode?.paper_trading);
-    } catch (_) {}
-  }, []);
-
-  useEffect(() => { loadPaperMode(); }, [loadPaperMode]);
-
   const PageComponent = PAGES[page];
 
 
@@ -95,7 +86,7 @@ function AppMain() {
         {/* Traffic lights space (macOS) */}
         <div className="w-20 shrink-0" />
         <span className="text-xs text-gray-500 font-medium tracking-wider select-none">
-          TRADING BOT
+          TRADING BOT — EDUCATIONAL
         </span>
       </div>
       <TradeNotifications notifications={notifications} onDismiss={dismiss} />
@@ -106,7 +97,6 @@ function AppMain() {
           <PageComponent
             botStatus={botStatus}
             paperMode={paperMode}
-            onPaperModeChange={setPaperMode}
             marketData={marketData}
             addToast={addToast}
             closeModalRef={closeModalRef}

@@ -15,9 +15,6 @@ static void signal_handler(int sig) {
 }
 
 static void print_banner(const tb_config_t *cfg) {
-    const char *mode = cfg->paper_trading ? "PAPER" : "LIVE";
-    const char *color = cfg->paper_trading ? "\033[33m" : "\033[32m";
-
     /* Build dynamic coin list from config */
     char coins_str[256] = "";
     for (int i = 0; i < cfg->n_active_strategies; i++) {
@@ -31,12 +28,13 @@ static void print_banner(const tb_config_t *cfg) {
     if (coins_str[0] == '\0') snprintf(coins_str, sizeof(coins_str), "no coins configured");
 
     printf("\n");
-    printf("  ╔══════════════════════════════════════════╗\n");
-    printf("  ║     TRADING BOT v0.5.0                   ║\n");
-    printf("  ║     BB Scalping Multi-Coin — Hyperliquid ║\n");
-    printf("  ║     %-37s║\n", coins_str);
-    printf("  ║     Mode: %s%-5s\033[0m                          ║\n", color, mode);
-    printf("  ╚══════════════════════════════════════════╝\n");
+    printf("  ╔══════════════════════════════════════════════════╗\n");
+    printf("  ║     TRADING BOT — EDUCATIONAL                    ║\n");
+    printf("  ║     Multi-Coin Strategies — Hyperliquid          ║\n");
+    printf("  ║     %-45s║\n", coins_str);
+    printf("  ║     Mode: \033[33mPAPER\033[0m (live trading disabled)         ║\n");
+    printf("  ╚══════════════════════════════════════════════════╝\n");
+    printf("  Educational use only — not for real trading.\n");
     printf("\n");
 }
 

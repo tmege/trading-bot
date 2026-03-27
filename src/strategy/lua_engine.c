@@ -217,8 +217,8 @@ static int load_strategy_file(tb_lua_engine_t *engine, tb_strategy_slot_t *slot)
         lua_setglobal(L, "COIN");
     }
 
-    /* Inject PAPER_MODE global */
-    lua_pushboolean(L, slot->ctx.paper != NULL);
+    /* Inject PAPER_MODE global — always true in educational build */
+    lua_pushboolean(L, 1);
     lua_setglobal(L, "PAPER_MODE");
 
     /* Load and execute the file */
@@ -680,9 +680,9 @@ void tb_lua_engine_set_strategy_paper(tb_lua_engine_t *engine,
     for (int i = 0; i < engine->n_strategies; i++) {
         if (strcmp(engine->slots[i].name, name) == 0) {
             engine->slots[i].ctx.paper = paper;
-            /* Update PAPER_MODE global in Lua state */
+            /* Update PAPER_MODE global — always true in educational build */
             if (engine->slots[i].L) {
-                lua_pushboolean(engine->slots[i].L, paper != NULL);
+                lua_pushboolean(engine->slots[i].L, 1);
                 lua_setglobal(engine->slots[i].L, "PAPER_MODE");
             }
             tb_log_info("lua: strategy '%s' paper=%s", name,

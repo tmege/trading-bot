@@ -54,13 +54,6 @@ module.exports = function registerBotIPC(ipcMain, projectRoot) {
         env: childEnv,
       });
 
-      // SECURITY: Wipe private key from JS objects after spawn.
-      // The C engine reads it from getenv() then calls unsetenv().
-      // We can't truly zero JS strings, but removing references
-      // makes them eligible for GC immediately.
-      if (dotEnv.TB_PRIVATE_KEY) dotEnv.TB_PRIVATE_KEY = '';
-      if (childEnv.TB_PRIVATE_KEY) childEnv.TB_PRIVATE_KEY = '';
-
       startTime = Date.now();
 
       botProcess.stdout.on('data', (data) => {

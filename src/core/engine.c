@@ -154,6 +154,12 @@ int tb_engine_start(tb_engine_t *engine) {
         return 0;
     }
 
+    /* Educational build: reject if paper mode was somehow disabled */
+    if (!engine->cfg.paper_trading) {
+        tb_log_error("engine: live trading disabled in educational build — aborting");
+        return -1;
+    }
+
     tb_log_info("engine starting...");
     tb_config_dump(&engine->cfg);
     engine->start_time = (int64_t)time(NULL);
@@ -441,15 +447,7 @@ int tb_engine_start(tb_engine_t *engine) {
         engine->timer_running = false;
     }
 
-    /* Determine mode label */
-    bool has_per_strategy_paper = false;
-    for (int i = 0; i < cfg->n_active_strategies; i++) {
-        if (engine->paper_exchanges[i]) { has_per_strategy_paper = true; break; }
-    }
-    const char *mode_label = cfg->paper_trading ? "PAPER"
-                           : has_per_strategy_paper ? "MIXED (some paper)"
-                           : "LIVE";
-    tb_log_info("engine started (mode: %s)", mode_label);
+    tb_log_info("engine started (mode: PAPER — educational)");
     return 0;
 
 fail:

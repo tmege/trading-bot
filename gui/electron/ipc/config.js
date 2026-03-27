@@ -54,6 +54,10 @@ module.exports = function registerConfigIPC(ipcMain, projectRoot) {
       // Never allow exchange URLs to be modified from renderer
       merged.exchange = existing.exchange;
 
+      // Educational build: always force paper mode
+      if (!merged.mode) merged.mode = {};
+      merged.mode.paper_trading = true;
+
       // Atomic write: write to .tmp then rename
       const tmpPath = configPath + '.tmp';
       fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 4) + '\n', 'utf-8');

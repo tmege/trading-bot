@@ -2,14 +2,16 @@
 build/
 cmake-build-*/
 
-# Databases (trade history, candle cache — personal financial data)
+# Data (candle cache, trade history, analysis outputs)
 data/*.db
 data/*.db-shm
 data/*.db-wal
 data/*.pid
 data/*.json
+data/analysis/
+data/backtest_results/
 
-# Logs (runtime, potentially sensitive)
+# Logs
 logs/
 
 # Secrets & credentials
@@ -18,11 +20,8 @@ logs/
 *.key
 scripts/license_codes.txt
 
-# Generated analysis/backtest outputs
+# Misc
 *.bak
-data/analysis/*.csv
-data/backtest_results/*.json
-data/backtest_results/*.csv
 
 # IDE
 .vscode/

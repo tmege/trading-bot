@@ -15,7 +15,8 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 # ── Checks ─────────────────────────────────────────────────────────────────
-echo -e "${GREEN}Trading Bot — Start${NC}"
+echo -e "${GREEN}Trading Bot — Start (Educational)${NC}"
+echo -e "${YELLOW}Paper trading mode (educational) — no real funds at risk.${NC}"
 
 # Check binary exists
 if [ ! -f "$BINARY" ]; then
@@ -24,11 +25,11 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
-# Auto-load .env if it exists (credentials persist across sessions)
+# Auto-load .env if it exists (for API keys like TB_ANTHROPIC_API_KEY)
 # SECURITY: Parse KEY=VALUE only, never source (prevents shell injection)
 ENV_FILE="$PROJECT_DIR/.env"
 if [ -f "$ENV_FILE" ]; then
-    echo "Loading credentials from .env"
+    echo "Loading environment from .env"
     while IFS='=' read -r key value; do
         # Skip comments and empty lines
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
@@ -40,22 +41,6 @@ if [ -f "$ENV_FILE" ]; then
             export "$key=$value"
         fi
     done < "$ENV_FILE"
-fi
-
-# Check required env vars (only for live mode — paper mode skips this)
-PAPER_MODE=$(python3 -c "import json; print(json.load(open('$PROJECT_DIR/config/bot_config.json'))['mode']['paper_trading'])" 2>/dev/null || echo "True")
-if [ "$PAPER_MODE" = "False" ] || [ "$PAPER_MODE" = "false" ]; then
-    missing=0
-    for var in TB_PRIVATE_KEY TB_WALLET_ADDRESS; do
-        if [ -z "${!var:-}" ]; then
-            echo -e "${RED}Error: $var is not set${NC}"
-            missing=1
-        fi
-    done
-    if [ $missing -eq 1 ]; then
-        echo "Add credentials to $ENV_FILE or export them manually"
-        exit 1
-    fi
 fi
 
 # Check if already running

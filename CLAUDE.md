@@ -1,6 +1,6 @@
 # Trading Bot — AI Context
 
-Algorithmic trading bot for Hyperliquid (perps). Engine in C (performance), strategies in Lua (flexibility), GUI in Electron+React. Supports paper and live trading, multi-coin per file, hot-reload, compound sizing.
+Educational project by **tmege**. Algorithmic trading bot for Hyperliquid (perps). Engine in C (performance), strategies in Lua (flexibility), GUI in Electron+React. Paper trading only (educational build — live trading disabled), multi-coin per file, hot-reload, compound sizing.
 
 ## Directory Structure
 
@@ -22,7 +22,7 @@ gui/                    Electron + React desktop app
 tests/                  Unit tests + benchmarks (test_*.c, bench_*.c, backtest_*.c)
 scripts/                start.sh, stop.sh, backtest_all.sh, backtest_full_report.sh, backtest_multi_period.sh, grid_search.sh, license_admin.js
 tools/                  candle_fetcher.c, funding_fetcher.c, signal_scanner.c, regime_analyzer.c (all C-native)
-docs/                   strategies.md, backtest-market-periods.md, pentest.md
+docs/                   strategies.md, backtest-market-periods.md, pentest.md, architecture_prompt.md
 data/                   SQLite DBs (trading_bot.db, candle_cache.db — 5m candles + funding_rates), backtest results
 logs/                   Runtime logs
 ```
@@ -72,7 +72,7 @@ cd gui && npm install && npm run dev
 ## Key Files by Domain
 
 **Engine lifecycle**: `src/core/engine.c` (create/start/stop/destroy, wires all subsystems)
-**Config**: `src/core/config.c` + `config/bot_config.json` + `.env` (secrets)
+**Config**: `src/core/config.c` + `config/bot_config.json` + `.env` (optional API keys)
 **Orders**: `src/exchange/order_manager.c` (ALO entries, trigger SL/TP, asset resolution)
 **Signing**: `src/exchange/hl_signing.c` (EIP-712, secp256k1+keccak256)
 **WebSocket**: `src/exchange/hl_ws.c` (allMids, l2Book, candles, fills)
@@ -92,11 +92,11 @@ cd gui && npm install && npm run dev
 
 ## Configuration
 
-- **Secrets**: `.env` file (TB_PRIVATE_KEY, TB_WALLET_ADDRESS) — never hardcoded
+- **Env**: `.env` file (TB_ANTHROPIC_API_KEY for AI digest — optional)
 - **Config**: `config/bot_config.json` — exchange URLs, risk params, active strategies+coins, paper mode
 - **Multi-coin**: `"coins": ["ETH","SOL"]` in strategy config, engine injects `COIN` global
 - **Coin exclusivity**: each coin must belong to exactly one strategy — enforced at engine startup (rejects duplicates), GUI Settings (grays out taken coins), and Lua (no cross-strategy guards needed)
-- **Paper mode**: global (`mode.paper_trading`) or per-strategy (`"paper_mode": true, "paper_balance": 500` in strategy config). Per-strategy paper creates an isolated `tb_paper_exchange_t` with its own balance/positions/orders. Mixed mode (some paper, some live) is supported. Lua global `PAPER_MODE` is injected per slot.
+- **Paper mode**: always forced to `true` at 4 levels (config.c, engine.c, order_manager.c, GUI IPC). Live trading is disabled. Lua global `PAPER_MODE` is always `true`.
 - **Risk (%-based)**: daily_loss_pct=6, emergency_close_pct=5, max_leverage=10, max_position_pct=700
 
 ## Conventions
@@ -143,7 +143,7 @@ Maker: 0.0150%, Taker: 0.0450%. ALO entries (maker), trigger exits (taker). Roun
 ## Dependencies (macOS)
 libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all via Homebrew). yyjson via CMake FetchContent.
 
-## Strategies (production — $672 capital)
+## Strategies (paper — educational)
 - **BTC**: `btc_sniper_1h.lua` — ultra-selective high-conviction (x7, 90% equity, 2 signals L1+S1, ATR<0.4%, TP/SL 2.0%/2.0%)
 - **DOGE**: `doge_sniper_relaxed_1h.lua` — low-vol sniper RR 3:1 (x5, 40% equity, 4 signals L1+L3+S1+S2, ATR<0.9%, TP/SL 4.5%/1.5%, trailing stop, ATR-adaptive sizing)
 - **SOL**: `sol_range_breakout_1h.lua` v2.0.0 — range breakout + bear complement (x5, 40% equity, RB TP/SL 4.5%/1.5%, B1 TP/SL 6.0%/2.0%, trailing stop, ATR-adaptive sizing)
@@ -152,7 +152,7 @@ libcurl, OpenSSL, libwebsockets, Lua 5.4, libsecp256k1, msgpack-c, SQLite3 (all 
 - Coins: BTC, DOGE, SOL (1 coin = 1 strategy instance, exclusive)
 - Risk: daily_loss 6%, emergency 5%, max_leverage 10x, max_position 700%
 - **Features**: trailing stop (configurable activate/offset/step), ATR-adaptive sizing, grid search TP/SL
-- **Mode: LIVE**
+- **Mode: PAPER (educational build — live trading disabled)**
 
 ## Analysis Pipeline
 

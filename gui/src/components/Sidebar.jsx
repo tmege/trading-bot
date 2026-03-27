@@ -20,7 +20,7 @@ export default function Sidebar({ currentPage, onNavigate, botStatus, collapsed 
         <span className={`w-2 h-2 rounded-full ${botStatus.running ? 'bg-profit animate-pulse' : 'bg-gray-600'}`} />
         {!collapsed && (
           <span className={`text-xs font-medium ${botStatus.running ? 'text-profit' : 'text-gray-500'}`}>
-            {botStatus.running ? 'LIVE' : 'OFFLINE'}
+            {botStatus.running ? 'RUNNING' : 'OFFLINE'}
           </span>
         )}
       </div>

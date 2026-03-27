@@ -1,5 +1,5 @@
 --[[
-  DOGE Sniper Relaxed 1h — LIVE PRODUCTION
+  DOGE Sniper Relaxed 1h — PAPER (Educational)
   Ne pas modifier sans re-backtest walk-forward
 
   Signaux : L1 + L3 + S1 + S2 (4 signaux, S1 dominant en bear regime)

@@ -1,6 +1,6 @@
 # Strategies de Trading — Documentation
 
-> 3 strategies actives en production : BTC, DOGE, SOL.
+> Projet educatif par **tmege**. 3 strategies paper : BTC, DOGE, SOL.
 > ETH : aucune strategie viable — en cours de recherche.
 > Moteur C avec indicateurs natifs, Lua sandboxe, multi-coin automatique.
 
@@ -10,9 +10,9 @@
 
 | Asset | Fichier | Statut | Note /10 |
 |-------|---------|--------|----------|
-| BTC | `btc_sniper_1h.lua` | LIVE | 6.5 — explosif mais rare |
-| DOGE | `doge_sniper_relaxed_1h.lua` | LIVE | 7.5 — le plus robuste |
-| SOL | `sol_range_breakout_1h.lua` | LIVE | 5.5 — volatile, bear supplement aide |
+| BTC | `btc_sniper_1h.lua` | PAPER | 6.5 — explosif mais rare |
+| DOGE | `doge_sniper_relaxed_1h.lua` | PAPER | 7.5 — le plus robuste |
+| SOL | `sol_range_breakout_1h.lua` | PAPER | 5.5 — volatile, bear supplement aide |
 | ETH | — | RECHERCHE | 1.0 — strategie morte (ATR<0.4% jamais atteint) |
 
 ---
@@ -206,4 +206,4 @@ Le runner effectue un walk-forward 60% IS / 40% OOS avec verdicts automatiques.
 4. **La frequence vient du nombre d'assets** — pas du timeframe
 5. **15min non viable** — frais = 30% de l'ATR
 6. **Toujours valider en backtest C** — Python surestime systematiquement de 5-13pp WR
-7. **Walk-forward 6 folds minimum** avant deploiement
+7. **Walk-forward 6 folds minimum** avant toute confiance dans une strategie

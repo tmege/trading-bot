@@ -35,7 +35,7 @@
         "level": 0
     },
     "mode": {
-        "paper_trading": false,
+        "paper_trading": true,
         "paper_initial_balance": 500
     }
 }
